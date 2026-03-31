@@ -233,6 +233,73 @@
           "type": "account_id"
         }
       ]
+    },
+    {
+      "name": "sync_reserves",
+      "accounts": [
+        {
+          "name": "pool",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "vault_a",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "vault_b",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "recover_surplus",
+      "accounts": [
+        {
+          "name": "pool",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "vault_a",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "vault_b",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "to_holding_a",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "to_holding_b",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "mode",
+          "type": {
+            "defined": "RecoverSurplusMode"
+          }
+        }
+      ]
     }
   ],
   "instruction_type": "amm_core::Instruction"

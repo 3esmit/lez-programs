@@ -1,13 +1,14 @@
 use std::num::NonZeroU128;
 
 use amm_core::{
-    compute_liquidity_token_pda, compute_liquidity_token_pda_seed, compute_pool_pda,
-    compute_vault_pda, PoolDefinition,
+    compute_liquidity_token_pda, compute_liquidity_token_pda_seed, compute_lp_lock_holding_pda,
+    compute_pool_pda, compute_vault_pda, PoolDefinition, MINIMUM_LIQUIDITY,
 };
 use nssa_core::{
     account::{Account, AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, ProgramId},
 };
+use token_core::TokenDefinition;
 
 #[expect(clippy::too_many_arguments, reason = "TODO: Fix later")]
 pub fn new_definition(
@@ -64,7 +65,8 @@ pub fn new_definition(
 
     // TODO: return here
     // Verify that Pool Account is not active
-    let pool_account_data = if pool.account == Account::default() {
+    let is_new_pool = pool.account == Account::default();
+    let pool_account_data = if is_new_pool {
         PoolDefinition::default()
     } else {
         PoolDefinition::try_from(&pool.account.data)
@@ -78,6 +80,11 @@ pub fn new_definition(
 
     // LP Token minting calculation
     let initial_lp = (token_a_amount.get() * token_b_amount.get()).isqrt();
+    assert!(
+        initial_lp > MINIMUM_LIQUIDITY,
+        "Initial liquidity must exceed minimum liquidity lock"
+    );
+    let user_lp = initial_lp - MINIMUM_LIQUIDITY;
 
     // Update pool account
     let mut pool_post = pool.account.clone();
@@ -120,29 +127,77 @@ pub fn new_definition(
         },
     );
 
-    // Chain call for liquidity token (TokenLP definition -> User LP Holding)
-    let instruction = if pool.account == Account::default() {
+    // Chain call for liquidity token lock holding
+    let lp_lock_holding = AccountWithMetadata {
+        account: Account::default(),
+        is_authorized: false,
+        account_id: compute_lp_lock_holding_pda(amm_program_id, pool.account_id),
+    };
+    let lock_instruction = if is_new_pool {
         token_core::Instruction::NewFungibleDefinition {
             name: String::from("LP Token"),
-            total_supply: initial_lp,
+            total_supply: MINIMUM_LIQUIDITY,
         }
     } else {
         token_core::Instruction::Mint {
-            amount_to_mint: initial_lp,
+            amount_to_mint: MINIMUM_LIQUIDITY,
         }
     };
 
     let mut pool_lp_auth = pool_definition_lp.clone();
     pool_lp_auth.is_authorized = true;
 
-    let call_token_lp = ChainedCall::new(
+    let call_token_lp_lock = ChainedCall::new(
         token_program_id,
-        vec![pool_lp_auth.clone(), user_holding_lp.clone()],
-        &instruction,
+        vec![pool_lp_auth.clone(), lp_lock_holding],
+        &lock_instruction,
     )
     .with_pda_seeds(vec![compute_liquidity_token_pda_seed(pool.account_id)]);
 
-    let chained_calls = vec![call_token_lp, call_token_b, call_token_a];
+    let mut pool_lp_after_lock = pool_lp_auth.clone();
+    if pool_definition_lp.account == Account::default() {
+        pool_lp_after_lock.account.program_owner = token_program_id;
+        pool_lp_after_lock.account.data = Data::from(&TokenDefinition::Fungible {
+            name: String::from("LP Token"),
+            total_supply: MINIMUM_LIQUIDITY,
+            metadata_id: None,
+        });
+    } else {
+        let token_definition = TokenDefinition::try_from(&pool_definition_lp.account.data)
+            .expect("New definition: AMM Program expects a valid LP Token Definition Account");
+        let TokenDefinition::Fungible {
+            name,
+            total_supply,
+            metadata_id,
+        } = token_definition
+        else {
+            panic!("New definition: LP Token Definition Account must be fungible");
+        };
+
+        pool_lp_after_lock.account.data = Data::from(&TokenDefinition::Fungible {
+            name,
+            total_supply: total_supply
+                .checked_add(MINIMUM_LIQUIDITY)
+                .expect("LP total supply overflow on lock mint"),
+            metadata_id,
+        });
+    }
+
+    let call_token_lp_user = ChainedCall::new(
+        token_program_id,
+        vec![pool_lp_after_lock, user_holding_lp.clone()],
+        &token_core::Instruction::Mint {
+            amount_to_mint: user_lp,
+        },
+    )
+    .with_pda_seeds(vec![compute_liquidity_token_pda_seed(pool.account_id)]);
+
+    let chained_calls = vec![
+        call_token_lp_lock,
+        call_token_lp_user,
+        call_token_b,
+        call_token_a,
+    ];
 
     let post_states = vec![
         pool_post.clone(),
