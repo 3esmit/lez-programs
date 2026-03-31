@@ -4,7 +4,7 @@ use nssa_core::{
     program::{AccountPostState, ChainedCall},
 };
 
-use crate::vault_utils::{read_fungible_holding, read_vault_fungible_balances};
+use crate::vault_utils::read_fungible_holding;
 
 pub fn recover_surplus(
     pool: AccountWithMetadata,
@@ -40,8 +40,10 @@ pub fn recover_surplus(
         "Recipient B holding must use the same Token Program"
     );
 
-    let (vault_a_definition_id, _) = read_fungible_holding(&vault_a, "Recover surplus Vault A");
-    let (vault_b_definition_id, _) = read_fungible_holding(&vault_b, "Recover surplus Vault B");
+    let (vault_a_definition_id, vault_a_balance) =
+        read_fungible_holding(&vault_a, "Recover surplus Vault A");
+    let (vault_b_definition_id, vault_b_balance) =
+        read_fungible_holding(&vault_b, "Recover surplus Vault B");
     assert_eq!(
         vault_a_definition_id, pool_def_data.definition_token_a_id,
         "Vault A token definition mismatch"
@@ -73,8 +75,6 @@ pub fn recover_surplus(
         }
     }
 
-    let (vault_a_balance, vault_b_balance) =
-        read_vault_fungible_balances("Recover surplus", &vault_a, &vault_b);
     assert!(
         vault_a_balance >= pool_def_data.reserve_a,
         "Recover surplus: vault A balance is less than its reserve"

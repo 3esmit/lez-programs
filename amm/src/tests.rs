@@ -2039,6 +2039,25 @@ fn test_recover_surplus_forbidden_for_active_pool() {
     );
 }
 
+#[should_panic(expected = "Vault A token definition mismatch")]
+#[test]
+fn test_recover_surplus_panics_when_vault_a_definition_mismatches_pool() {
+    let mut wrong_vault_a = AccountForTests::vault_a_init();
+    wrong_vault_a.account.data = Data::from(&TokenHolding::Fungible {
+        definition_id: IdForTests::token_b_definition_id(),
+        balance: BalanceForTests::vault_a_reserve_init(),
+    });
+
+    let _ = recover_surplus(
+        AccountForTests::pool_definition_inactive(),
+        wrong_vault_a,
+        AccountForTests::vault_b_init(),
+        AccountForTests::user_holding_a(),
+        AccountForTests::user_holding_b(),
+        RecoverSurplusMode::InactiveOrZeroSupplyOnly,
+    );
+}
+
 #[should_panic(expected = "Recover surplus: vault A balance is less than its reserve")]
 #[test]
 fn test_recover_surplus_panics_when_vault_a_under_collateralized() {
