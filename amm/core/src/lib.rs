@@ -23,6 +23,7 @@ pub enum Instruction {
     NewDefinition {
         token_a_amount: u128,
         token_b_amount: u128,
+        fees: u128,
         amm_program_id: ProgramId,
     },
 
@@ -85,12 +86,32 @@ pub struct PoolDefinition {
     pub liquidity_pool_supply: u128,
     pub reserve_a: u128,
     pub reserve_b: u128,
-    /// Fees are currently not used
+    /// Fee tier in basis points.
     pub fees: u128,
     /// A pool becomes inactive (active = false)
     /// once all of its liquidity has been removed (e.g., reserves are emptied and
     /// liquidity_pool_supply = 0)
     pub active: bool,
+}
+
+pub const FEE_BPS_DENOMINATOR: u128 = 10_000;
+pub const FEE_TIER_BPS_1: u128 = 1;
+pub const FEE_TIER_BPS_5: u128 = 5;
+pub const FEE_TIER_BPS_30: u128 = 30;
+pub const FEE_TIER_BPS_100: u128 = 100;
+
+pub fn is_supported_fee_tier(fees: u128) -> bool {
+    matches!(
+        fees,
+        FEE_TIER_BPS_1 | FEE_TIER_BPS_5 | FEE_TIER_BPS_30 | FEE_TIER_BPS_100
+    )
+}
+
+pub fn assert_supported_fee_tier(fees: u128) {
+    assert!(
+        is_supported_fee_tier(fees),
+        "Fee tier must be one of 1, 5, 30, or 100 basis points"
+    );
 }
 
 impl TryFrom<&Data> for PoolDefinition {

@@ -1,4 +1,4 @@
-use amm_core::PoolDefinition;
+use amm_core::{PoolDefinition, FEE_TIER_BPS_1, FEE_TIER_BPS_100, FEE_TIER_BPS_30, FEE_TIER_BPS_5};
 use nssa::{
     program_deployment_transaction::{self, ProgramDeploymentTransaction},
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
@@ -84,6 +84,10 @@ impl Ids {
 }
 
 impl Balances {
+    fn fee_tier() -> u128 {
+        FEE_TIER_BPS_30
+    }
+
     fn user_a_init() -> u128 {
         10_000
     }
@@ -283,7 +287,7 @@ impl Accounts {
                 liquidity_pool_supply: Balances::pool_lp_supply_init(),
                 reserve_a: Balances::vault_a_init(),
                 reserve_b: Balances::vault_b_init(),
-                fees: 0_u128,
+                fees: Balances::fee_tier(),
                 active: true,
             }),
             nonce: Nonce(0),
@@ -380,7 +384,7 @@ impl Accounts {
                 liquidity_pool_supply: Balances::pool_lp_supply_init(),
                 reserve_a: Balances::vault_a_swap_1(),
                 reserve_b: Balances::vault_b_swap_1(),
-                fees: 0_u128,
+                fees: Balances::fee_tier(),
                 active: true,
             }),
             nonce: Nonce(0),
@@ -448,7 +452,7 @@ impl Accounts {
                 liquidity_pool_supply: Balances::pool_lp_supply_init(),
                 reserve_a: Balances::vault_a_swap_2(),
                 reserve_b: Balances::vault_b_swap_2(),
-                fees: 0_u128,
+                fees: Balances::fee_tier(),
                 active: true,
             }),
             nonce: Nonce(0),
@@ -516,7 +520,7 @@ impl Accounts {
                 liquidity_pool_supply: Balances::token_lp_supply_add(),
                 reserve_a: Balances::vault_a_add(),
                 reserve_b: Balances::vault_b_add(),
-                fees: 0_u128,
+                fees: Balances::fee_tier(),
                 active: true,
             }),
             nonce: Nonce(0),
@@ -609,7 +613,7 @@ impl Accounts {
                 liquidity_pool_supply: Balances::token_lp_supply_remove(),
                 reserve_a: Balances::vault_a_remove(),
                 reserve_b: Balances::vault_b_remove(),
-                fees: 0_u128,
+                fees: Balances::fee_tier(),
                 active: true,
             }),
             nonce: Nonce(0),
@@ -739,7 +743,7 @@ impl Accounts {
                 liquidity_pool_supply: 0,
                 reserve_a: 0,
                 reserve_b: 0,
-                fees: 0_u128,
+                fees: Balances::fee_tier(),
                 active: false,
             }),
             nonce: Nonce(0),
@@ -808,7 +812,7 @@ impl Accounts {
                 liquidity_pool_supply: Balances::lp_supply_init(),
                 reserve_a: Balances::vault_a_init(),
                 reserve_b: Balances::vault_b_init(),
-                fees: 0_u128,
+                fees: Balances::fee_tier(),
                 active: true,
             }),
             nonce: Nonce(0),
@@ -885,6 +889,37 @@ fn state_for_amm_tests_with_new_def() -> V03State {
     state
 }
 
+fn execute_new_definition(state: &mut V03State, fees: u128) {
+    let instruction = amm_core::Instruction::NewDefinition {
+        token_a_amount: Balances::vault_a_init(),
+        token_b_amount: Balances::vault_b_init(),
+        fees,
+        amm_program_id: Ids::amm_program(),
+    };
+
+    let message = public_transaction::Message::try_new(
+        Ids::amm_program(),
+        vec![
+            Ids::pool_definition(),
+            Ids::vault_a(),
+            Ids::vault_b(),
+            Ids::token_lp_definition(),
+            Ids::user_a(),
+            Ids::user_b(),
+            Ids::user_lp(),
+        ],
+        vec![Nonce(0), Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set =
+        public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a(), &Keys::user_b()]);
+
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0).unwrap();
+}
+
 #[test]
 fn amm_remove_liquidity() {
     let mut state = state_for_amm_tests();
@@ -957,33 +992,7 @@ fn amm_new_definition_inactive_initialized_pool_and_uninit_user_lp() {
         Accounts::token_lp_definition_init_inactive(),
     );
 
-    let instruction = amm_core::Instruction::NewDefinition {
-        token_a_amount: Balances::vault_a_init(),
-        token_b_amount: Balances::vault_b_init(),
-        amm_program_id: Ids::amm_program(),
-    };
-
-    let message = public_transaction::Message::try_new(
-        Ids::amm_program(),
-        vec![
-            Ids::pool_definition(),
-            Ids::vault_a(),
-            Ids::vault_b(),
-            Ids::token_lp_definition(),
-            Ids::user_a(),
-            Ids::user_b(),
-            Ids::user_lp(),
-        ],
-        vec![Nonce(0), Nonce(0)],
-        instruction,
-    )
-    .unwrap();
-
-    let witness_set =
-        public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a(), &Keys::user_b()]);
-
-    let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0).unwrap();
+    execute_new_definition(&mut state, Balances::fee_tier());
 
     assert_eq!(
         state.get_account_by_id(Ids::pool_definition()),
@@ -1027,33 +1036,7 @@ fn amm_new_definition_inactive_initialized_pool_init_user_lp() {
     );
     state.force_insert_account(Ids::user_lp(), Accounts::user_lp_holding_init_zero());
 
-    let instruction = amm_core::Instruction::NewDefinition {
-        token_a_amount: Balances::vault_a_init(),
-        token_b_amount: Balances::vault_b_init(),
-        amm_program_id: Ids::amm_program(),
-    };
-
-    let message = public_transaction::Message::try_new(
-        Ids::amm_program(),
-        vec![
-            Ids::pool_definition(),
-            Ids::vault_a(),
-            Ids::vault_b(),
-            Ids::token_lp_definition(),
-            Ids::user_a(),
-            Ids::user_b(),
-            Ids::user_lp(),
-        ],
-        vec![Nonce(0), Nonce(0)],
-        instruction,
-    )
-    .unwrap();
-
-    let witness_set =
-        public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a(), &Keys::user_b()]);
-
-    let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0).unwrap();
+    execute_new_definition(&mut state, Balances::fee_tier());
 
     assert_eq!(
         state.get_account_by_id(Ids::pool_definition()),
@@ -1090,34 +1073,7 @@ fn amm_new_definition_uninitialized_pool() {
     let mut state = state_for_amm_tests_with_new_def();
     state.force_insert_account(Ids::vault_a(), Accounts::vault_a_init_inactive());
     state.force_insert_account(Ids::vault_b(), Accounts::vault_b_init_inactive());
-
-    let instruction = amm_core::Instruction::NewDefinition {
-        token_a_amount: Balances::vault_a_init(),
-        token_b_amount: Balances::vault_b_init(),
-        amm_program_id: Ids::amm_program(),
-    };
-
-    let message = public_transaction::Message::try_new(
-        Ids::amm_program(),
-        vec![
-            Ids::pool_definition(),
-            Ids::vault_a(),
-            Ids::vault_b(),
-            Ids::token_lp_definition(),
-            Ids::user_a(),
-            Ids::user_b(),
-            Ids::user_lp(),
-        ],
-        vec![Nonce(0), Nonce(0)],
-        instruction,
-    )
-    .unwrap();
-
-    let witness_set =
-        public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a(), &Keys::user_b()]);
-
-    let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0).unwrap();
+    execute_new_definition(&mut state, Balances::fee_tier());
 
     assert_eq!(
         state.get_account_by_id(Ids::pool_definition()),
@@ -1147,6 +1103,27 @@ fn amm_new_definition_uninitialized_pool() {
         state.get_account_by_id(Ids::user_lp()),
         Accounts::user_lp_holding_new_init()
     );
+}
+
+#[test]
+fn amm_new_definition_supports_all_fee_tiers() {
+    for fees in [
+        FEE_TIER_BPS_1,
+        FEE_TIER_BPS_5,
+        FEE_TIER_BPS_30,
+        FEE_TIER_BPS_100,
+    ] {
+        let mut state = state_for_amm_tests_with_new_def();
+        state.force_insert_account(Ids::vault_a(), Accounts::vault_a_init_inactive());
+        state.force_insert_account(Ids::vault_b(), Accounts::vault_b_init_inactive());
+
+        execute_new_definition(&mut state, fees);
+
+        let pool_definition =
+            PoolDefinition::try_from(&state.get_account_by_id(Ids::pool_definition()).data)
+                .expect("new definition should create a valid pool");
+        assert_eq!(pool_definition.fees, fees);
+    }
 }
 
 #[test]

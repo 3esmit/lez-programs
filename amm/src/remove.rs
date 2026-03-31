@@ -1,6 +1,9 @@
 use std::num::NonZeroU128;
 
-use amm_core::{compute_liquidity_token_pda_seed, compute_vault_pda_seed, PoolDefinition};
+use amm_core::{
+    assert_supported_fee_tier, compute_liquidity_token_pda_seed, compute_vault_pda_seed,
+    PoolDefinition,
+};
 use nssa_core::{
     account::{AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall},
@@ -24,6 +27,7 @@ pub fn remove_liquidity(
     // 1. Fetch Pool state
     let pool_def_data = PoolDefinition::try_from(&pool.account.data)
         .expect("Remove liquidity: AMM Program expects a valid Pool Definition Account");
+    assert_supported_fee_tier(pool_def_data.fees);
 
     assert!(pool_def_data.active, "Pool is inactive");
     assert_eq!(

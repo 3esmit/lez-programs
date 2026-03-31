@@ -4,7 +4,8 @@ use std::num::NonZero;
 
 use amm_core::{
     compute_liquidity_token_pda, compute_liquidity_token_pda_seed, compute_pool_pda,
-    compute_vault_pda, compute_vault_pda_seed, PoolDefinition,
+    compute_vault_pda, compute_vault_pda_seed, PoolDefinition, FEE_TIER_BPS_1, FEE_TIER_BPS_100,
+    FEE_TIER_BPS_30, FEE_TIER_BPS_5,
 };
 use nssa_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
@@ -25,6 +26,10 @@ struct IdForTests;
 struct AccountWithMetadataForTests;
 
 impl BalanceForTests {
+    fn fee_tier() -> u128 {
+        FEE_TIER_BPS_30
+    }
+
     fn vault_a_reserve_init() -> u128 {
         1_000
     }
@@ -652,7 +657,7 @@ impl AccountWithMetadataForTests {
                     liquidity_pool_supply: BalanceForTests::lp_supply_init(),
                     reserve_a: BalanceForTests::vault_a_reserve_init(),
                     reserve_b: BalanceForTests::vault_b_reserve_init(),
-                    fees: 0u128,
+                    fees: BalanceForTests::fee_tier(),
                     active: true,
                 }),
                 nonce: Nonce(0),
@@ -676,7 +681,7 @@ impl AccountWithMetadataForTests {
                     liquidity_pool_supply: BalanceForTests::lp_supply_init(),
                     reserve_a: 0,
                     reserve_b: BalanceForTests::vault_b_reserve_init(),
-                    fees: 0u128,
+                    fees: BalanceForTests::fee_tier(),
                     active: true,
                 }),
                 nonce: Nonce(0),
@@ -700,7 +705,7 @@ impl AccountWithMetadataForTests {
                     liquidity_pool_supply: BalanceForTests::lp_supply_init(),
                     reserve_a: BalanceForTests::vault_a_reserve_init(),
                     reserve_b: 0,
-                    fees: 0u128,
+                    fees: BalanceForTests::fee_tier(),
                     active: true,
                 }),
                 nonce: Nonce(0),
@@ -724,7 +729,7 @@ impl AccountWithMetadataForTests {
                     liquidity_pool_supply: BalanceForTests::vault_a_reserve_low(),
                     reserve_a: BalanceForTests::vault_a_reserve_low(),
                     reserve_b: BalanceForTests::vault_b_reserve_high(),
-                    fees: 0u128,
+                    fees: BalanceForTests::fee_tier(),
                     active: true,
                 }),
                 nonce: Nonce(0),
@@ -748,7 +753,7 @@ impl AccountWithMetadataForTests {
                     liquidity_pool_supply: BalanceForTests::vault_a_reserve_high(),
                     reserve_a: BalanceForTests::vault_a_reserve_high(),
                     reserve_b: BalanceForTests::vault_b_reserve_low(),
-                    fees: 0u128,
+                    fees: BalanceForTests::fee_tier(),
                     active: true,
                 }),
                 nonce: Nonce(0),
@@ -772,7 +777,7 @@ impl AccountWithMetadataForTests {
                     liquidity_pool_supply: BalanceForTests::lp_supply_init(),
                     reserve_a: BalanceForTests::vault_a_swap_test_1(),
                     reserve_b: BalanceForTests::vault_b_swap_test_1(),
-                    fees: 0u128,
+                    fees: BalanceForTests::fee_tier(),
                     active: true,
                 }),
                 nonce: Nonce(0),
@@ -796,7 +801,7 @@ impl AccountWithMetadataForTests {
                     liquidity_pool_supply: BalanceForTests::lp_supply_init(),
                     reserve_a: BalanceForTests::vault_a_swap_test_2(),
                     reserve_b: BalanceForTests::vault_b_swap_test_2(),
-                    fees: 0u128,
+                    fees: BalanceForTests::fee_tier(),
                     active: true,
                 }),
                 nonce: Nonce(0),
@@ -820,7 +825,7 @@ impl AccountWithMetadataForTests {
                     liquidity_pool_supply: BalanceForTests::vault_a_reserve_low(),
                     reserve_a: BalanceForTests::vault_a_reserve_init(),
                     reserve_b: BalanceForTests::vault_b_reserve_init(),
-                    fees: 0u128,
+                    fees: BalanceForTests::fee_tier(),
                     active: true,
                 }),
                 nonce: Nonce(0),
@@ -844,7 +849,7 @@ impl AccountWithMetadataForTests {
                     liquidity_pool_supply: 989,
                     reserve_a: BalanceForTests::vault_a_add_successful(),
                     reserve_b: BalanceForTests::vault_b_add_successful(),
-                    fees: 0u128,
+                    fees: BalanceForTests::fee_tier(),
                     active: true,
                 }),
                 nonce: Nonce(0),
@@ -868,7 +873,7 @@ impl AccountWithMetadataForTests {
                     liquidity_pool_supply: 607,
                     reserve_a: BalanceForTests::vault_a_remove_successful(),
                     reserve_b: BalanceForTests::vault_b_remove_successful(),
-                    fees: 0u128,
+                    fees: BalanceForTests::fee_tier(),
                     active: true,
                 }),
                 nonce: Nonce(0),
@@ -892,7 +897,7 @@ impl AccountWithMetadataForTests {
                     liquidity_pool_supply: BalanceForTests::lp_supply_init(),
                     reserve_a: BalanceForTests::vault_a_reserve_init(),
                     reserve_b: BalanceForTests::vault_b_reserve_init(),
-                    fees: 0u128,
+                    fees: BalanceForTests::fee_tier(),
                     active: false,
                 }),
                 nonce: Nonce(0),
@@ -916,7 +921,7 @@ impl AccountWithMetadataForTests {
                     liquidity_pool_supply: BalanceForTests::lp_supply_init(),
                     reserve_a: BalanceForTests::vault_a_reserve_init(),
                     reserve_b: BalanceForTests::vault_b_reserve_init(),
-                    fees: 0u128,
+                    fees: BalanceForTests::fee_tier(),
                     active: false,
                 }),
                 nonce: Nonce(0),
@@ -972,7 +977,7 @@ impl AccountWithMetadataForTests {
                     liquidity_pool_supply: BalanceForTests::lp_supply_init(),
                     reserve_a: BalanceForTests::vault_a_reserve_init(),
                     reserve_b: BalanceForTests::vault_b_reserve_init(),
-                    fees: 0u128,
+                    fees: BalanceForTests::fee_tier(),
                     active: true,
                 }),
                 nonce: Nonce(0),
@@ -1419,6 +1424,7 @@ fn test_call_new_definition_with_zero_balance_1() {
         AccountWithMetadataForTests::user_holding_lp_uninit(),
         NonZero::new(0).expect("Balances must be nonzero"),
         NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
+        BalanceForTests::fee_tier(),
         AMM_PROGRAM_ID,
     );
 }
@@ -1436,6 +1442,7 @@ fn test_call_new_definition_with_zero_balance_2() {
         AccountWithMetadataForTests::user_holding_lp_uninit(),
         NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
         NonZero::new(0).expect("Balances must be nonzero"),
+        BalanceForTests::fee_tier(),
         AMM_PROGRAM_ID,
     );
 }
@@ -1453,6 +1460,7 @@ fn test_call_new_definition_same_token_definition() {
         AccountWithMetadataForTests::user_holding_lp_uninit(),
         NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
         NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
+        BalanceForTests::fee_tier(),
         AMM_PROGRAM_ID,
     );
 }
@@ -1470,6 +1478,7 @@ fn test_call_new_definition_wrong_liquidity_id() {
         AccountWithMetadataForTests::user_holding_lp_uninit(),
         NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
         NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
+        BalanceForTests::fee_tier(),
         AMM_PROGRAM_ID,
     );
 }
@@ -1487,6 +1496,7 @@ fn test_call_new_definition_wrong_pool_id() {
         AccountWithMetadataForTests::user_holding_lp_uninit(),
         NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
         NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
+        BalanceForTests::fee_tier(),
         AMM_PROGRAM_ID,
     );
 }
@@ -1504,6 +1514,7 @@ fn test_call_new_definition_wrong_vault_id_1() {
         AccountWithMetadataForTests::user_holding_lp_uninit(),
         NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
         NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
+        BalanceForTests::fee_tier(),
         AMM_PROGRAM_ID,
     );
 }
@@ -1521,6 +1532,7 @@ fn test_call_new_definition_wrong_vault_id_2() {
         AccountWithMetadataForTests::user_holding_lp_uninit(),
         NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
         NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
+        BalanceForTests::fee_tier(),
         AMM_PROGRAM_ID,
     );
 }
@@ -1538,6 +1550,7 @@ fn test_call_new_definition_cannot_initialize_active_pool() {
         AccountWithMetadataForTests::user_holding_lp_uninit(),
         NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
         NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
+        BalanceForTests::fee_tier(),
         AMM_PROGRAM_ID,
     );
 }
@@ -1555,6 +1568,7 @@ fn test_call_new_definition_chained_call_successful() {
         AccountWithMetadataForTests::user_holding_lp_uninit(),
         NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
         NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
+        BalanceForTests::fee_tier(),
         AMM_PROGRAM_ID,
     );
 
@@ -1755,6 +1769,7 @@ fn test_new_definition_lp_asymmetric_amounts() {
         AccountWithMetadataForTests::user_holding_lp_uninit(),
         NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
         NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
+        BalanceForTests::fee_tier(),
         AMM_PROGRAM_ID,
     );
 
@@ -1788,6 +1803,7 @@ fn test_new_definition_lp_symmetric_amounts() {
         AccountWithMetadataForTests::user_holding_lp_uninit(),
         NonZero::new(token_a_amount).unwrap(),
         NonZero::new(token_b_amount).unwrap(),
+        BalanceForTests::fee_tier(),
         AMM_PROGRAM_ID,
     );
 
@@ -1811,4 +1827,50 @@ fn test_new_definition_lp_symmetric_amounts() {
     )]);
 
     assert_eq!(chained_call_lp, expected_lp_call);
+}
+
+#[test]
+fn test_new_definition_supports_all_fee_tiers() {
+    for fees in [
+        FEE_TIER_BPS_1,
+        FEE_TIER_BPS_5,
+        FEE_TIER_BPS_30,
+        FEE_TIER_BPS_100,
+    ] {
+        let (post_states, _) = new_definition(
+            AccountWithMetadataForTests::pool_definition_inactive(),
+            AccountWithMetadataForTests::vault_a_init(),
+            AccountWithMetadataForTests::vault_b_init(),
+            AccountWithMetadataForTests::pool_lp_init(),
+            AccountWithMetadataForTests::user_holding_a(),
+            AccountWithMetadataForTests::user_holding_b(),
+            AccountWithMetadataForTests::user_holding_lp_uninit(),
+            NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
+            NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
+            fees,
+            AMM_PROGRAM_ID,
+        );
+
+        let pool_post = post_states[0].clone();
+        let pool_def = PoolDefinition::try_from(&pool_post.account().data).unwrap();
+        assert_eq!(pool_def.fees, fees);
+    }
+}
+
+#[should_panic(expected = "Fee tier must be one of 1, 5, 30, or 100 basis points")]
+#[test]
+fn test_new_definition_rejects_unsupported_fee_tier() {
+    let _ = new_definition(
+        AccountWithMetadataForTests::pool_definition_inactive(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::user_holding_lp_uninit(),
+        NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
+        NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
+        2,
+        AMM_PROGRAM_ID,
+    );
 }
