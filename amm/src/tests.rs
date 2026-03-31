@@ -153,6 +153,30 @@ impl BalanceForTests {
     fn vault_b_remove_successful() -> u128 {
         430
     }
+
+    fn remove_actual_b_successful() -> u128 {
+        70
+    }
+
+    fn vault_a_balance_with_surplus() -> u128 {
+        1_100
+    }
+
+    fn vault_b_balance_with_surplus() -> u128 {
+        600
+    }
+
+    fn remove_actual_a_with_surplus() -> u128 {
+        155
+    }
+
+    fn remove_actual_b_with_surplus() -> u128 {
+        84
+    }
+
+    fn remove_min_amount_b_surplus() -> u128 {
+        80
+    }
 }
 
 impl ChainedCallForTests {
@@ -290,7 +314,41 @@ impl ChainedCallForTests {
             TOKEN_PROGRAM_ID,
             vec![vault_b_auth, AccountWithMetadataForTests::user_holding_b()],
             &token_core::Instruction::Transfer {
-                amount_to_transfer: 70,
+                amount_to_transfer: BalanceForTests::remove_actual_b_successful(),
+            },
+        )
+        .with_pda_seeds(vec![compute_vault_pda_seed(
+            IdForTests::pool_definition_id(),
+            IdForTests::token_b_definition_id(),
+        )])
+    }
+
+    fn cc_remove_token_a_with_surplus() -> ChainedCall {
+        let mut vault_a_auth = AccountWithMetadataForTests::vault_a_with_surplus();
+        vault_a_auth.is_authorized = true;
+
+        ChainedCall::new(
+            TOKEN_PROGRAM_ID,
+            vec![vault_a_auth, AccountWithMetadataForTests::user_holding_a()],
+            &token_core::Instruction::Transfer {
+                amount_to_transfer: BalanceForTests::remove_actual_a_with_surplus(),
+            },
+        )
+        .with_pda_seeds(vec![compute_vault_pda_seed(
+            IdForTests::pool_definition_id(),
+            IdForTests::token_a_definition_id(),
+        )])
+    }
+
+    fn cc_remove_token_b_with_surplus() -> ChainedCall {
+        let mut vault_b_auth = AccountWithMetadataForTests::vault_b_with_surplus();
+        vault_b_auth.is_authorized = true;
+
+        ChainedCall::new(
+            TOKEN_PROGRAM_ID,
+            vec![vault_b_auth, AccountWithMetadataForTests::user_holding_b()],
+            &token_core::Instruction::Transfer {
+                amount_to_transfer: BalanceForTests::remove_actual_b_with_surplus(),
             },
         )
         .with_pda_seeds(vec![compute_vault_pda_seed(
@@ -468,6 +526,38 @@ impl AccountWithMetadataForTests {
                 data: Data::from(&TokenHolding::Fungible {
                     definition_id: IdForTests::token_b_definition_id(),
                     balance: BalanceForTests::vault_b_reserve_init(),
+                }),
+                nonce: Nonce(0),
+            },
+            is_authorized: true,
+            account_id: IdForTests::vault_b_id(),
+        }
+    }
+
+    fn vault_a_with_surplus() -> AccountWithMetadata {
+        AccountWithMetadata {
+            account: Account {
+                program_owner: TOKEN_PROGRAM_ID,
+                balance: 0u128,
+                data: Data::from(&TokenHolding::Fungible {
+                    definition_id: IdForTests::token_a_definition_id(),
+                    balance: BalanceForTests::vault_a_balance_with_surplus(),
+                }),
+                nonce: Nonce(0),
+            },
+            is_authorized: true,
+            account_id: IdForTests::vault_a_id(),
+        }
+    }
+
+    fn vault_b_with_surplus() -> AccountWithMetadata {
+        AccountWithMetadata {
+            account: Account {
+                program_owner: TOKEN_PROGRAM_ID,
+                balance: 0u128,
+                data: Data::from(&TokenHolding::Fungible {
+                    definition_id: IdForTests::token_b_definition_id(),
+                    balance: BalanceForTests::vault_b_balance_with_surplus(),
                 }),
                 nonce: Nonce(0),
             },
@@ -1375,6 +1465,40 @@ fn test_call_remove_liquidity_min_bal_zero_2() {
     );
 }
 
+#[should_panic(expected = "Reserve for Token A exceeds vault balance")]
+#[test]
+fn test_call_remove_liquidity_reserves_vault_mismatch_1() {
+    let _post_states = remove_liquidity(
+        AccountWithMetadataForTests::pool_definition_init(),
+        AccountWithMetadataForTests::vault_a_init_low(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::user_holding_lp_init(),
+        NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
+        BalanceForTests::remove_min_amount_a(),
+        BalanceForTests::remove_min_amount_b(),
+    );
+}
+
+#[should_panic(expected = "Reserve for Token B exceeds vault balance")]
+#[test]
+fn test_call_remove_liquidity_reserves_vault_mismatch_2() {
+    let _post_states = remove_liquidity(
+        AccountWithMetadataForTests::pool_definition_init(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init_low(),
+        AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::user_holding_lp_init(),
+        NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
+        BalanceForTests::remove_min_amount_a(),
+        BalanceForTests::remove_min_amount_b(),
+    );
+}
+
 #[test]
 fn test_call_remove_liquidity_chained_call_successful() {
     let (post_states, chained_calls) = remove_liquidity(
@@ -1403,6 +1527,37 @@ fn test_call_remove_liquidity_chained_call_successful() {
 
     assert!(chained_call_a == ChainedCallForTests::cc_remove_token_a());
     assert!(chained_call_b == ChainedCallForTests::cc_remove_token_b());
+    assert!(chained_call_lp == ChainedCallForTests::cc_remove_pool_lp());
+}
+
+#[test]
+fn test_call_remove_liquidity_chained_call_with_vault_surplus_successful() {
+    let (post_states, chained_calls) = remove_liquidity(
+        AccountWithMetadataForTests::pool_definition_init(),
+        AccountWithMetadataForTests::vault_a_with_surplus(),
+        AccountWithMetadataForTests::vault_b_with_surplus(),
+        AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::user_holding_lp_init(),
+        NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
+        BalanceForTests::remove_min_amount_a(),
+        BalanceForTests::remove_min_amount_b_surplus(),
+    );
+
+    let pool_post = post_states[0].clone();
+
+    assert!(
+        AccountWithMetadataForTests::pool_definition_remove_successful().account
+            == *pool_post.account()
+    );
+
+    let chained_call_lp = chained_calls[0].clone();
+    let chained_call_b = chained_calls[1].clone();
+    let chained_call_a = chained_calls[2].clone();
+
+    assert!(chained_call_a == ChainedCallForTests::cc_remove_token_a_with_surplus());
+    assert!(chained_call_b == ChainedCallForTests::cc_remove_token_b_with_surplus());
     assert!(chained_call_lp == ChainedCallForTests::cc_remove_pool_lp());
 }
 

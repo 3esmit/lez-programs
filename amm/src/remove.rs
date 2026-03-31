@@ -56,7 +56,41 @@ pub fn remove_liquidity(
         "Minimum withdraw amount must be nonzero"
     );
 
-    // 2. Compute withdrawal amounts
+    // 2. Read live vault balances and compute withdrawal amounts
+    let vault_a_token_holding = token_core::TokenHolding::try_from(&vault_a.account.data)
+        .expect("Remove liquidity: AMM Program expects a valid Token Holding Account for Vault A");
+    let token_core::TokenHolding::Fungible {
+        definition_id: _,
+        balance: vault_a_balance,
+    } = vault_a_token_holding
+    else {
+        panic!(
+            "Remove liquidity: AMM Program expects a valid Fungible Token Holding Account for Vault A"
+        );
+    };
+
+    assert!(
+        vault_a_balance >= pool_def_data.reserve_a,
+        "Reserve for Token A exceeds vault balance"
+    );
+
+    let vault_b_token_holding = token_core::TokenHolding::try_from(&vault_b.account.data)
+        .expect("Remove liquidity: AMM Program expects a valid Token Holding Account for Vault B");
+    let token_core::TokenHolding::Fungible {
+        definition_id: _,
+        balance: vault_b_balance,
+    } = vault_b_token_holding
+    else {
+        panic!(
+            "Remove liquidity: AMM Program expects a valid Fungible Token Holding Account for Vault B"
+        );
+    };
+
+    assert!(
+        vault_b_balance >= pool_def_data.reserve_b,
+        "Reserve for Token B exceeds vault balance"
+    );
+
     let user_holding_lp_data = token_core::TokenHolding::try_from(&user_holding_lp.account.data)
         .expect("Remove liquidity: AMM Program expects a valid Token Account for liquidity token");
     let token_core::TokenHolding::Fungible {
@@ -79,33 +113,36 @@ pub fn remove_liquidity(
         "Invalid liquidity account provided"
     );
 
-    let withdraw_amount_a =
+    let reserve_withdraw_amount_a =
         (pool_def_data.reserve_a * remove_liquidity_amount) / pool_def_data.liquidity_pool_supply;
-    let withdraw_amount_b =
+    let reserve_withdraw_amount_b =
         (pool_def_data.reserve_b * remove_liquidity_amount) / pool_def_data.liquidity_pool_supply;
+    let actual_withdraw_amount_a =
+        (vault_a_balance * remove_liquidity_amount) / pool_def_data.liquidity_pool_supply;
+    let actual_withdraw_amount_b =
+        (vault_b_balance * remove_liquidity_amount) / pool_def_data.liquidity_pool_supply;
 
     // 3. Validate and slippage check
     assert!(
-        withdraw_amount_a >= min_amount_to_remove_token_a,
+        actual_withdraw_amount_a >= min_amount_to_remove_token_a,
         "Insufficient minimal withdraw amount (Token A) provided for liquidity amount"
     );
     assert!(
-        withdraw_amount_b >= min_amount_to_remove_token_b,
+        actual_withdraw_amount_b >= min_amount_to_remove_token_b,
         "Insufficient minimal withdraw amount (Token B) provided for liquidity amount"
     );
 
-    // 4. Calculate LP to reduce cap by
-    let delta_lp: u128 = (pool_def_data.liquidity_pool_supply * remove_liquidity_amount)
-        / pool_def_data.liquidity_pool_supply;
+    // 4. Burn exactly the requested LP amount.
+    let burn_amount_lp = remove_liquidity_amount;
 
-    let active: bool = pool_def_data.liquidity_pool_supply - delta_lp != 0;
+    let active: bool = pool_def_data.liquidity_pool_supply - burn_amount_lp != 0;
 
     // 5. Update pool account
     let mut pool_post = pool.account.clone();
     let pool_post_definition = PoolDefinition {
-        liquidity_pool_supply: pool_def_data.liquidity_pool_supply - delta_lp,
-        reserve_a: pool_def_data.reserve_a - withdraw_amount_a,
-        reserve_b: pool_def_data.reserve_b - withdraw_amount_b,
+        liquidity_pool_supply: pool_def_data.liquidity_pool_supply - burn_amount_lp,
+        reserve_a: pool_def_data.reserve_a - reserve_withdraw_amount_a,
+        reserve_b: pool_def_data.reserve_b - reserve_withdraw_amount_b,
         active,
         ..pool_def_data.clone()
     };
@@ -119,7 +156,7 @@ pub fn remove_liquidity(
         token_program_id,
         vec![running_vault_a, user_holding_a.clone()],
         &token_core::Instruction::Transfer {
-            amount_to_transfer: withdraw_amount_a,
+            amount_to_transfer: actual_withdraw_amount_a,
         },
     )
     .with_pda_seeds(vec![compute_vault_pda_seed(
@@ -131,7 +168,7 @@ pub fn remove_liquidity(
         token_program_id,
         vec![running_vault_b, user_holding_b.clone()],
         &token_core::Instruction::Transfer {
-            amount_to_transfer: withdraw_amount_b,
+            amount_to_transfer: actual_withdraw_amount_b,
         },
     )
     .with_pda_seeds(vec![compute_vault_pda_seed(
@@ -145,7 +182,7 @@ pub fn remove_liquidity(
         token_program_id,
         vec![pool_definition_lp_auth, user_holding_lp.clone()],
         &token_core::Instruction::Burn {
-            amount_to_burn: delta_lp,
+            amount_to_burn: burn_amount_lp,
         },
     )
     .with_pda_seeds(vec![compute_liquidity_token_pda_seed(pool.account_id)]);

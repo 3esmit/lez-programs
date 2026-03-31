@@ -132,6 +132,14 @@ impl Balances {
         500
     }
 
+    fn remove_min_a_with_surplus() -> u128 {
+        1_100
+    }
+
+    fn remove_min_b_with_surplus() -> u128 {
+        550
+    }
+
     fn add_min_lp() -> u128 {
         1_000
     }
@@ -216,12 +224,36 @@ impl Balances {
         2_000
     }
 
+    fn vault_a_with_surplus() -> u128 {
+        5_500
+    }
+
+    fn vault_b_with_surplus() -> u128 {
+        2_750
+    }
+
+    fn vault_a_remove_with_surplus() -> u128 {
+        4_400
+    }
+
+    fn vault_b_remove_with_surplus() -> u128 {
+        2_200
+    }
+
     fn user_a_remove() -> u128 {
         11_000
     }
 
     fn user_b_remove() -> u128 {
         10_500
+    }
+
+    fn user_a_remove_with_surplus() -> u128 {
+        11_100
+    }
+
+    fn user_b_remove_with_surplus() -> u128 {
+        10_550
     }
 
     fn user_lp_remove() -> u128 {
@@ -348,6 +380,30 @@ impl Accounts {
             data: Data::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_b_definition(),
                 balance: Balances::vault_b_init(),
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
+    fn vault_a_with_surplus() -> Account {
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_a_definition(),
+                balance: Balances::vault_a_with_surplus(),
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
+    fn vault_b_with_surplus() -> Account {
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_b_definition(),
+                balance: Balances::vault_b_with_surplus(),
             }),
             nonce: Nonce(0),
         }
@@ -640,6 +696,30 @@ impl Accounts {
         }
     }
 
+    fn vault_a_remove_with_surplus() -> Account {
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_a_definition(),
+                balance: Balances::vault_a_remove_with_surplus(),
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
+    fn vault_b_remove_with_surplus() -> Account {
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_b_definition(),
+                balance: Balances::vault_b_remove_with_surplus(),
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
     fn user_a_holding_remove() -> Account {
         Account {
             program_owner: Ids::token_program(),
@@ -659,6 +739,30 @@ impl Accounts {
             data: Data::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_b_definition(),
                 balance: Balances::user_b_remove(),
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
+    fn user_a_holding_remove_with_surplus() -> Account {
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_a_definition(),
+                balance: Balances::user_a_remove_with_surplus(),
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
+    fn user_b_holding_remove_with_surplus() -> Account {
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_b_definition(),
+                balance: Balances::user_b_remove_with_surplus(),
             }),
             nonce: Nonce(0),
         }
@@ -939,6 +1043,69 @@ fn amm_remove_liquidity() {
     assert_eq!(
         state.get_account_by_id(Ids::user_b()),
         Accounts::user_b_holding_remove()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::user_lp()),
+        Accounts::user_lp_holding_remove()
+    );
+}
+
+#[test]
+fn amm_remove_liquidity_with_surplus() {
+    let mut state = state_for_amm_tests();
+    state.force_insert_account(Ids::vault_a(), Accounts::vault_a_with_surplus());
+    state.force_insert_account(Ids::vault_b(), Accounts::vault_b_with_surplus());
+
+    let instruction = amm_core::Instruction::RemoveLiquidity {
+        remove_liquidity_amount: Balances::remove_lp(),
+        min_amount_to_remove_token_a: Balances::remove_min_a_with_surplus(),
+        min_amount_to_remove_token_b: Balances::remove_min_b_with_surplus(),
+    };
+
+    let message = public_transaction::Message::try_new(
+        Ids::amm_program(),
+        vec![
+            Ids::pool_definition(),
+            Ids::vault_a(),
+            Ids::vault_b(),
+            Ids::token_lp_definition(),
+            Ids::user_a(),
+            Ids::user_b(),
+            Ids::user_lp(),
+        ],
+        vec![Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_lp()]);
+
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0).unwrap();
+
+    assert_eq!(
+        state.get_account_by_id(Ids::pool_definition()),
+        Accounts::pool_definition_remove()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::vault_a()),
+        Accounts::vault_a_remove_with_surplus()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::vault_b()),
+        Accounts::vault_b_remove_with_surplus()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::token_lp_definition()),
+        Accounts::token_lp_definition_remove()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::user_a()),
+        Accounts::user_a_holding_remove_with_surplus()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::user_b()),
+        Accounts::user_b_holding_remove_with_surplus()
     );
     assert_eq!(
         state.get_account_by_id(Ids::user_lp()),
