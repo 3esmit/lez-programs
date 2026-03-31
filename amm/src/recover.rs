@@ -6,7 +6,6 @@ use nssa_core::{
 
 use crate::vault_utils::{read_fungible_holding, read_vault_fungible_balances};
 
-#[expect(clippy::too_many_arguments, reason = "TODO: Fix later")]
 pub fn recover_surplus(
     pool: AccountWithMetadata,
     vault_a: AccountWithMetadata,
