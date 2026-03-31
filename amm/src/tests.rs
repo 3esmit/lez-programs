@@ -1958,6 +1958,26 @@ fn test_sync_reserves_with_donation() {
     assert_eq!(pool_post.reserve_b, BalanceForTests::vault_b_reserve_init());
 }
 
+#[should_panic(expected = "Sync reserves: vault A balance is less than its reserve")]
+#[test]
+fn test_sync_reserves_panics_when_vault_a_under_collateralized() {
+    let _ = sync_reserves(
+        AccountForTests::pool_definition_init(),
+        AccountForTests::vault_a_init_low(),
+        AccountForTests::vault_b_init(),
+    );
+}
+
+#[should_panic(expected = "Sync reserves: vault B balance is less than its reserve")]
+#[test]
+fn test_sync_reserves_panics_when_vault_b_under_collateralized() {
+    let _ = sync_reserves(
+        AccountForTests::pool_definition_init(),
+        AccountForTests::vault_a_init(),
+        AccountForTests::vault_b_init_low(),
+    );
+}
+
 #[test]
 fn test_recover_surplus_inactive_pool_transfers_only_surplus() {
     let donation_a = 25u128;

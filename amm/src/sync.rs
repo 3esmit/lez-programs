@@ -26,6 +26,14 @@ pub fn sync_reserves(
 
     let (vault_a_balance, vault_b_balance) =
         read_vault_fungible_balances("Sync reserves", &vault_a, &vault_b);
+    assert!(
+        vault_a_balance >= pool_def_data.reserve_a,
+        "Sync reserves: vault A balance is less than its reserve"
+    );
+    assert!(
+        vault_b_balance >= pool_def_data.reserve_b,
+        "Sync reserves: vault B balance is less than its reserve"
+    );
 
     let mut pool_post = pool.account.clone();
     let pool_post_definition = PoolDefinition {
