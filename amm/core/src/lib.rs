@@ -233,7 +233,7 @@ pub fn compute_lp_lock_holding_pda(amm_program_id: ProgramId, pool_id: AccountId
 }
 
 pub fn compute_lp_lock_holding_pda_seed(pool_id: AccountId) -> PdaSeed {
-    use risc0_zkvm::sha::{Impl, Sha256 as _};
+    use risc0_zkvm::sha::{Impl, Sha256};
 
     let mut bytes = [0; 64];
     bytes[0..32].copy_from_slice(&pool_id.to_bytes());
