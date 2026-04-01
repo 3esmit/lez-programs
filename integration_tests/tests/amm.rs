@@ -172,8 +172,16 @@ impl Balances {
         200
     }
 
+    fn reserve_a_swap_1() -> u128 {
+        3_575
+    }
+
+    fn reserve_b_swap_1() -> u128 {
+        3_497
+    }
+
     fn vault_a_swap_1() -> u128 {
-        3_572
+        3_575
     }
 
     fn vault_b_swap_1() -> u128 {
@@ -181,11 +189,19 @@ impl Balances {
     }
 
     fn user_a_swap_1() -> u128 {
-        11_428
+        11_425
     }
 
     fn user_b_swap_1() -> u128 {
         9_000
+    }
+
+    fn reserve_a_swap_2() -> u128 {
+        5_997
+    }
+
+    fn reserve_b_swap_2() -> u128 {
+        2_085
     }
 
     fn vault_a_swap_2() -> u128 {
@@ -193,7 +209,7 @@ impl Balances {
     }
 
     fn vault_b_swap_2() -> u128 {
-        2_084
+        2_085
     }
 
     fn user_a_swap_2() -> u128 {
@@ -201,7 +217,7 @@ impl Balances {
     }
 
     fn user_b_swap_2() -> u128 {
-        10_416
+        10_415
     }
 
     fn vault_a_add() -> u128 {
@@ -462,8 +478,8 @@ impl Accounts {
                 vault_b_id: Ids::vault_b(),
                 liquidity_pool_id: Ids::token_lp_definition(),
                 liquidity_pool_supply: Balances::pool_lp_supply_init(),
-                reserve_a: Balances::vault_a_swap_1(),
-                reserve_b: Balances::vault_b_swap_1(),
+                reserve_a: Balances::reserve_a_swap_1(),
+                reserve_b: Balances::reserve_b_swap_1(),
                 fees: Balances::fee_tier(),
                 active: true,
             }),
@@ -530,8 +546,8 @@ impl Accounts {
                 vault_b_id: Ids::vault_b(),
                 liquidity_pool_id: Ids::token_lp_definition(),
                 liquidity_pool_supply: Balances::pool_lp_supply_init(),
-                reserve_a: Balances::vault_a_swap_2(),
-                reserve_b: Balances::vault_b_swap_2(),
+                reserve_a: Balances::reserve_a_swap_2(),
+                reserve_b: Balances::reserve_b_swap_2(),
                 fees: Balances::fee_tier(),
                 active: true,
             }),
@@ -1030,6 +1046,11 @@ fn state_for_amm_tests_with_new_def() -> V03State {
 }
 
 fn try_execute_new_definition(state: &mut V03State, fees: u128) -> Result<(), NssaError> {
+fn current_nonce(state: &V03State, account_id: AccountId) -> Nonce {
+    state.get_account_by_id(account_id).nonce
+}
+
+fn try_execute_new_definition(state: &mut V03State, fees: u128) -> Result<(), NssaError> {
     let instruction = amm_core::Instruction::NewDefinition {
         token_a_amount: Balances::vault_a_init(),
         token_b_amount: Balances::vault_b_init(),
@@ -1049,7 +1070,10 @@ fn try_execute_new_definition(state: &mut V03State, fees: u128) -> Result<(), Ns
             Ids::user_b(),
             Ids::user_lp(),
         ],
-        vec![Nonce(0), Nonce(0)],
+        vec![
+            current_nonce(state, Ids::user_a()),
+            current_nonce(state, Ids::user_b()),
+        ],
         instruction,
     )
     .unwrap();
@@ -1063,6 +1087,163 @@ fn try_execute_new_definition(state: &mut V03State, fees: u128) -> Result<(), Ns
 
 fn execute_new_definition(state: &mut V03State, fees: u128) {
     try_execute_new_definition(state, fees).unwrap();
+}
+
+fn execute_swap_a_to_b(state: &mut V03State, swap_amount_in: u128, min_amount_out: u128) {
+    let instruction = amm_core::Instruction::SwapExactInput {
+        swap_amount_in,
+        min_amount_out,
+        token_definition_id_in: Ids::token_a_definition(),
+    };
+
+    let message = public_transaction::Message::try_new(
+        Ids::amm_program(),
+        vec![
+            Ids::pool_definition(),
+            Ids::vault_a(),
+            Ids::vault_b(),
+            Ids::user_a(),
+            Ids::user_b(),
+        ],
+        vec![current_nonce(state, Ids::user_a())],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a()]);
+
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0).unwrap();
+}
+
+fn execute_swap_b_to_a(state: &mut V03State, swap_amount_in: u128, min_amount_out: u128) {
+    let instruction = amm_core::Instruction::SwapExactInput {
+        swap_amount_in,
+        min_amount_out,
+        token_definition_id_in: Ids::token_b_definition(),
+    };
+
+    let message = public_transaction::Message::try_new(
+        Ids::amm_program(),
+        vec![
+            Ids::pool_definition(),
+            Ids::vault_a(),
+            Ids::vault_b(),
+            Ids::user_a(),
+            Ids::user_b(),
+        ],
+        vec![current_nonce(state, Ids::user_b())],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_b()]);
+
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0).unwrap();
+}
+
+fn execute_add_liquidity(
+    state: &mut V03State,
+    min_amount_liquidity: u128,
+    max_amount_to_add_token_a: u128,
+    max_amount_to_add_token_b: u128,
+) {
+    let instruction = amm_core::Instruction::AddLiquidity {
+        min_amount_liquidity,
+        max_amount_to_add_token_a,
+        max_amount_to_add_token_b,
+    };
+
+    let message = public_transaction::Message::try_new(
+        Ids::amm_program(),
+        vec![
+            Ids::pool_definition(),
+            Ids::vault_a(),
+            Ids::vault_b(),
+            Ids::token_lp_definition(),
+            Ids::user_a(),
+            Ids::user_b(),
+            Ids::user_lp(),
+        ],
+        vec![
+            current_nonce(state, Ids::user_a()),
+            current_nonce(state, Ids::user_b()),
+        ],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set =
+        public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a(), &Keys::user_b()]);
+
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0).unwrap();
+}
+
+fn execute_remove_liquidity(
+    state: &mut V03State,
+    remove_liquidity_amount: u128,
+    min_amount_to_remove_token_a: u128,
+    min_amount_to_remove_token_b: u128,
+) {
+    let instruction = amm_core::Instruction::RemoveLiquidity {
+        remove_liquidity_amount,
+        min_amount_to_remove_token_a,
+        min_amount_to_remove_token_b,
+    };
+
+    let message = public_transaction::Message::try_new(
+        Ids::amm_program(),
+        vec![
+            Ids::pool_definition(),
+            Ids::vault_a(),
+            Ids::vault_b(),
+            Ids::token_lp_definition(),
+            Ids::user_a(),
+            Ids::user_b(),
+            Ids::user_lp(),
+        ],
+        vec![current_nonce(state, Ids::user_lp())],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_lp()]);
+
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0).unwrap();
+}
+
+fn fungible_balance(account: &Account) -> u128 {
+    let holding = TokenHolding::try_from(&account.data).expect("expected token holding");
+    let TokenHolding::Fungible {
+        definition_id: _,
+        balance,
+    } = holding
+    else {
+        panic!("expected fungible token holding")
+    };
+
+    balance
+}
+
+fn pool_definition(account: &Account) -> PoolDefinition {
+    PoolDefinition::try_from(&account.data).expect("expected pool definition")
+}
+
+fn fungible_total_supply(account: &Account) -> u128 {
+    let definition = TokenDefinition::try_from(&account.data).expect("expected token definition");
+    let TokenDefinition::Fungible {
+        name: _,
+        total_supply,
+        metadata_id: _,
+    } = definition
+    else {
+        panic!("expected fungible token definition")
+    };
+
+    total_supply
 }
 
 #[test]
@@ -1586,5 +1767,108 @@ fn amm_swap_a_to_b() {
     assert_eq!(
         state.get_account_by_id(Ids::user_b()),
         Accounts::user_b_holding_swap_2()
+    );
+}
+
+#[test]
+fn amm_fee_accumulates_across_multiple_swaps_and_pays_out_on_remove() {
+    let mut state = state_for_amm_tests();
+
+    execute_swap_a_to_b(&mut state, 1_000, 200);
+    execute_swap_b_to_a(&mut state, 1_000, 200);
+
+    let pool_before_remove = pool_definition(&state.get_account_by_id(Ids::pool_definition()));
+    assert_eq!(pool_before_remove.reserve_a, 4_058);
+    assert_eq!(pool_before_remove.reserve_b, 3_082);
+    assert_eq!(pool_before_remove.fees, Balances::fee_tier());
+
+    let vault_a_before_remove = fungible_balance(&state.get_account_by_id(Ids::vault_a()));
+    let vault_b_before_remove = fungible_balance(&state.get_account_by_id(Ids::vault_b()));
+    assert_eq!(vault_a_before_remove, 4_061);
+    assert_eq!(vault_b_before_remove, 3_085);
+    assert_eq!(vault_a_before_remove - pool_before_remove.reserve_a, 3);
+    assert_eq!(vault_b_before_remove - pool_before_remove.reserve_b, 3);
+
+    execute_remove_liquidity(&mut state, 1_000, 812, 617);
+
+    let pool_after_remove = pool_definition(&state.get_account_by_id(Ids::pool_definition()));
+    assert_eq!(pool_after_remove.reserve_a, 3_247);
+    assert_eq!(pool_after_remove.reserve_b, 2_466);
+    assert_eq!(pool_after_remove.liquidity_pool_supply, 4_000);
+
+    let vault_a_after_remove = fungible_balance(&state.get_account_by_id(Ids::vault_a()));
+    let vault_b_after_remove = fungible_balance(&state.get_account_by_id(Ids::vault_b()));
+    assert_eq!(vault_a_after_remove, 3_249);
+    assert_eq!(vault_b_after_remove, 2_468);
+    assert_eq!(vault_a_after_remove - pool_after_remove.reserve_a, 2);
+    assert_eq!(vault_b_after_remove - pool_after_remove.reserve_b, 2);
+
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::user_a())),
+        11_751
+    );
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::user_b())),
+        10_032
+    );
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::user_lp())),
+        1_000
+    );
+    assert_eq!(
+        fungible_total_supply(&state.get_account_by_id(Ids::token_lp_definition())),
+        4_000
+    );
+}
+
+#[test]
+fn amm_add_liquidity_after_fee_accrual_preserves_surplus() {
+    let mut state = state_for_amm_tests();
+
+    execute_swap_a_to_b(&mut state, 1_000, 200);
+    execute_swap_b_to_a(&mut state, 1_000, 200);
+    execute_swap_a_to_b(&mut state, 1_000, 200);
+    execute_swap_b_to_a(&mut state, 1_000, 200);
+
+    let pool_before_add = pool_definition(&state.get_account_by_id(Ids::pool_definition()));
+    let vault_a_before_add = fungible_balance(&state.get_account_by_id(Ids::vault_a()));
+    let vault_b_before_add = fungible_balance(&state.get_account_by_id(Ids::vault_b()));
+
+    assert_eq!(pool_before_add.reserve_a, 3_604);
+    assert_eq!(pool_before_add.reserve_b, 3_472);
+    assert_eq!(vault_a_before_add, 3_610);
+    assert_eq!(vault_b_before_add, 3_478);
+    assert_eq!(vault_a_before_add - pool_before_add.reserve_a, 6);
+    assert_eq!(vault_b_before_add - pool_before_add.reserve_b, 6);
+
+    execute_add_liquidity(&mut state, 1_436, 2_000, 1_000);
+
+    let pool_after_add = pool_definition(&state.get_account_by_id(Ids::pool_definition()));
+    let vault_a_after_add = fungible_balance(&state.get_account_by_id(Ids::vault_a()));
+    let vault_b_after_add = fungible_balance(&state.get_account_by_id(Ids::vault_b()));
+
+    assert_eq!(pool_after_add.reserve_a, 4_641);
+    assert_eq!(pool_after_add.reserve_b, 4_472);
+    assert_eq!(pool_after_add.liquidity_pool_supply, 6_436);
+    assert_eq!(vault_a_after_add, 4_647);
+    assert_eq!(vault_b_after_add, 4_478);
+    assert_eq!(vault_a_after_add - pool_after_add.reserve_a, 6);
+    assert_eq!(vault_b_after_add - pool_after_add.reserve_b, 6);
+
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::user_a())),
+        10_353
+    );
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::user_b())),
+        8_022
+    );
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::user_lp())),
+        3_436
+    );
+    assert_eq!(
+        fungible_total_supply(&state.get_account_by_id(Ids::token_lp_definition())),
+        6_436
     );
 }

@@ -5,7 +5,8 @@ use std::num::NonZero;
 use amm_core::{
     compute_liquidity_token_pda, compute_liquidity_token_pda_seed, compute_lp_lock_holding_pda,
     compute_pool_pda, compute_vault_pda, compute_vault_pda_seed, PoolDefinition, FEE_TIER_BPS_1,
-    FEE_TIER_BPS_100, FEE_TIER_BPS_30, FEE_TIER_BPS_5, MINIMUM_LIQUIDITY,
+    FEE_TIER_BPS_100, FEE_TIER_BPS_30, FEE_TIER_BPS_5, FEE_BPS_DENOMINATOR,
+    MINIMUM_LIQUIDITY,
 };
 use nssa_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
@@ -124,8 +125,20 @@ impl BalanceForTests {
         BalanceForTests::lp_supply_init() - MINIMUM_LIQUIDITY
     }
 
+    fn effective_swap_amount_in_a() -> u128 {
+        BalanceForTests::add_max_amount_a()
+            * (FEE_BPS_DENOMINATOR - BalanceForTests::fee_tier())
+            / FEE_BPS_DENOMINATOR
+    }
+
+    fn effective_swap_amount_in_b() -> u128 {
+        BalanceForTests::add_max_amount_b()
+            * (FEE_BPS_DENOMINATOR - BalanceForTests::fee_tier())
+            / FEE_BPS_DENOMINATOR
+    }
+
     fn vault_a_swap_test_1() -> u128 {
-        BalanceForTests::vault_a_reserve_init() + BalanceForTests::add_max_amount_a()
+        BalanceForTests::vault_a_reserve_init() + BalanceForTests::effective_swap_amount_in_a()
     }
 
     fn vault_a_swap_test_2() -> u128 {
@@ -137,7 +150,7 @@ impl BalanceForTests {
     }
 
     fn vault_b_swap_test_2() -> u128 {
-        BalanceForTests::vault_b_reserve_init() + BalanceForTests::add_max_amount_b()
+        BalanceForTests::vault_b_reserve_init() + BalanceForTests::effective_swap_amount_in_b()
     }
 
     fn min_amount_out() -> u128 {
@@ -169,6 +182,72 @@ impl BalanceForTests {
         166
     }
 
+    fn vault_a_balance_with_surplus() -> u128 {
+        BalanceForTests::vault_a_reserve_init() + (BalanceForTests::vault_a_reserve_init() / 10)
+    }
+
+    fn vault_b_balance_with_surplus() -> u128 {
+        BalanceForTests::vault_b_reserve_init() + (BalanceForTests::vault_b_reserve_init() / 10)
+    }
+
+    fn exact_output_effective_amount_in_token_a() -> u128 {
+        BalanceForTests::vault_a_reserve_init()
+            .checked_mul(BalanceForTests::max_amount_in())
+            .expect("vault_a_reserve_init * max_amount_in overflows u128")
+            .div_ceil(BalanceForTests::vault_b_reserve_init() - BalanceForTests::max_amount_in())
+    }
+
+    fn exact_output_effective_amount_in_token_b() -> u128 {
+        BalanceForTests::vault_b_reserve_init()
+            .checked_mul(285)
+            .expect("vault_b_reserve_init * exact_amount_out overflows u128")
+            .div_ceil(BalanceForTests::vault_a_reserve_init() - 285)
+    }
+
+    fn exact_output_deposit_amount_token_a() -> u128 {
+        BalanceForTests::exact_output_effective_amount_in_token_a()
+            .checked_mul(FEE_BPS_DENOMINATOR)
+            .expect("effective amount in * fee denominator overflows u128")
+            .div_ceil(FEE_BPS_DENOMINATOR - BalanceForTests::fee_tier())
+    }
+
+    fn exact_output_deposit_amount_token_b() -> u128 {
+        BalanceForTests::exact_output_effective_amount_in_token_b()
+            .checked_mul(FEE_BPS_DENOMINATOR)
+            .expect("effective amount in * fee denominator overflows u128")
+            .div_ceil(FEE_BPS_DENOMINATOR - BalanceForTests::fee_tier())
+    }
+
+    fn reserve_a_add_with_surplus() -> u128 {
+        BalanceForTests::vault_a_reserve_init() + BalanceForTests::add_successful_amount_a_with_surplus()
+    }
+
+    fn reserve_b_add_with_surplus() -> u128 {
+        BalanceForTests::vault_b_reserve_init() + BalanceForTests::add_successful_amount_b_with_surplus()
+    }
+
+    fn add_successful_amount_a_with_surplus() -> u128 {
+        (BalanceForTests::vault_a_balance_with_surplus() * BalanceForTests::add_max_amount_b())
+            / BalanceForTests::vault_b_balance_with_surplus()
+    }
+
+    fn add_successful_amount_b_with_surplus() -> u128 {
+        BalanceForTests::add_max_amount_b()
+    }
+
+    fn lp_supply_with_surplus() -> u128 {
+        BalanceForTests::lp_supply_init() + BalanceForTests::lp_mint_with_surplus()
+    }
+
+    fn lp_mint_with_surplus() -> u128 {
+        std::cmp::min(
+            BalanceForTests::lp_supply_init() * BalanceForTests::add_successful_amount_a_with_surplus()
+                / BalanceForTests::vault_a_balance_with_surplus(),
+            BalanceForTests::lp_supply_init() * BalanceForTests::add_successful_amount_b_with_surplus()
+                / BalanceForTests::vault_b_balance_with_surplus(),
+        )
+    }
+
     fn vault_a_remove_successful() -> u128 {
         BalanceForTests::vault_a_reserve_init() - BalanceForTests::remove_actual_a_successful()
     }
@@ -178,13 +257,15 @@ impl BalanceForTests {
     }
 
     fn swap_amount_out_b() -> u128 {
-        (BalanceForTests::vault_b_reserve_init() * BalanceForTests::add_max_amount_a())
-            / (BalanceForTests::vault_a_reserve_init() + BalanceForTests::add_max_amount_a())
+        (BalanceForTests::vault_b_reserve_init() * BalanceForTests::effective_swap_amount_in_a())
+            / (BalanceForTests::vault_a_reserve_init()
+                + BalanceForTests::effective_swap_amount_in_a())
     }
 
     fn swap_amount_out_a() -> u128 {
-        (BalanceForTests::vault_a_reserve_init() * BalanceForTests::add_max_amount_b())
-            / (BalanceForTests::vault_b_reserve_init() + BalanceForTests::add_max_amount_b())
+        (BalanceForTests::vault_a_reserve_init() * BalanceForTests::effective_swap_amount_in_b())
+            / (BalanceForTests::vault_b_reserve_init()
+                + BalanceForTests::effective_swap_amount_in_b())
     }
 
     fn add_delta_lp_successful() -> u128 {
@@ -207,14 +288,6 @@ impl BalanceForTests {
 
     fn remove_lp_supply_successful() -> u128 {
         BalanceForTests::lp_supply_init() - BalanceForTests::remove_amount_lp()
-    }
-
-    fn vault_a_balance_with_surplus() -> u128 {
-        BalanceForTests::vault_a_reserve_init() + (BalanceForTests::vault_a_reserve_init() / 10)
-    }
-
-    fn vault_b_balance_with_surplus() -> u128 {
-        BalanceForTests::vault_b_reserve_init() + (BalanceForTests::vault_b_reserve_init() / 10)
     }
 
     fn remove_actual_a_with_surplus() -> u128 {
@@ -298,7 +371,7 @@ impl ChainedCallForTests {
     }
 
     fn cc_swap_exact_output_token_a_test_1() -> ChainedCall {
-        let swap_amount: u128 = 498;
+        let swap_amount = BalanceForTests::exact_output_deposit_amount_token_a();
 
         ChainedCall::new(
             TOKEN_PROGRAM_ID,
@@ -351,7 +424,7 @@ impl ChainedCallForTests {
     }
 
     fn cc_swap_exact_output_token_b_test_2() -> ChainedCall {
-        let swap_amount: u128 = 200;
+        let swap_amount = BalanceForTests::exact_output_deposit_amount_token_b();
 
         ChainedCall::new(
             TOKEN_PROGRAM_ID,
@@ -410,6 +483,51 @@ impl ChainedCallForTests {
         )])
     }
 
+    fn cc_add_token_a_with_surplus() -> ChainedCall {
+        ChainedCall::new(
+            TOKEN_PROGRAM_ID,
+            vec![
+                AccountWithMetadataForTests::user_holding_a(),
+                AccountWithMetadataForTests::vault_a_with_surplus(),
+            ],
+            &token_core::Instruction::Transfer {
+                amount_to_transfer: BalanceForTests::add_successful_amount_a_with_surplus(),
+            },
+        )
+    }
+
+    fn cc_add_token_b_with_surplus() -> ChainedCall {
+        ChainedCall::new(
+            TOKEN_PROGRAM_ID,
+            vec![
+                AccountWithMetadataForTests::user_holding_b(),
+                AccountWithMetadataForTests::vault_b_with_surplus(),
+            ],
+            &token_core::Instruction::Transfer {
+                amount_to_transfer: BalanceForTests::add_successful_amount_b_with_surplus(),
+            },
+        )
+    }
+
+    fn cc_add_pool_lp_with_surplus() -> ChainedCall {
+        let mut pool_lp_auth = AccountWithMetadataForTests::pool_lp_init();
+        pool_lp_auth.is_authorized = true;
+
+        ChainedCall::new(
+            TOKEN_PROGRAM_ID,
+            vec![
+                pool_lp_auth,
+                AccountWithMetadataForTests::user_holding_lp_init(),
+            ],
+            &token_core::Instruction::Mint {
+                amount_to_mint: BalanceForTests::lp_mint_with_surplus(),
+            },
+        )
+        .with_pda_seeds(vec![compute_liquidity_token_pda_seed(
+            IdForTests::pool_definition_id(),
+        )])
+    }
+
     fn cc_remove_token_a() -> ChainedCall {
         let mut vault_a_auth = AccountWithMetadataForTests::vault_a_init();
         vault_a_auth.is_authorized = true;
@@ -444,6 +562,25 @@ impl ChainedCallForTests {
         )])
     }
 
+    fn cc_remove_pool_lp() -> ChainedCall {
+        let mut pool_lp_auth = AccountWithMetadataForTests::pool_lp_init();
+        pool_lp_auth.is_authorized = true;
+
+        ChainedCall::new(
+            TOKEN_PROGRAM_ID,
+            vec![
+                pool_lp_auth,
+                AccountWithMetadataForTests::user_holding_lp_init(),
+            ],
+            &token_core::Instruction::Burn {
+                amount_to_burn: BalanceForTests::remove_amount_lp(),
+            },
+        )
+        .with_pda_seeds(vec![compute_liquidity_token_pda_seed(
+            IdForTests::pool_definition_id(),
+        )])
+    }
+
     fn cc_remove_token_a_with_surplus() -> ChainedCall {
         let mut vault_a_auth = AccountWithMetadataForTests::vault_a_with_surplus();
         vault_a_auth.is_authorized = true;
@@ -475,25 +612,6 @@ impl ChainedCallForTests {
         .with_pda_seeds(vec![compute_vault_pda_seed(
             IdForTests::pool_definition_id(),
             IdForTests::token_b_definition_id(),
-        )])
-    }
-
-    fn cc_remove_pool_lp() -> ChainedCall {
-        let mut pool_lp_auth = AccountWithMetadataForTests::pool_lp_init();
-        pool_lp_auth.is_authorized = true;
-
-        ChainedCall::new(
-            TOKEN_PROGRAM_ID,
-            vec![
-                pool_lp_auth,
-                AccountWithMetadataForTests::user_holding_lp_init(),
-            ],
-            &token_core::Instruction::Burn {
-                amount_to_burn: BalanceForTests::remove_amount_lp(),
-            },
-        )
-        .with_pda_seeds(vec![compute_liquidity_token_pda_seed(
-            IdForTests::pool_definition_id(),
         )])
     }
 
@@ -1156,8 +1274,10 @@ impl AccountWithMetadataForTests {
                     vault_b_id: IdForTests::vault_b_id(),
                     liquidity_pool_id: IdForTests::token_lp_definition_id(),
                     liquidity_pool_supply: BalanceForTests::lp_supply_init(),
-                    reserve_a: 1498_u128,
-                    reserve_b: 334_u128,
+                    reserve_a: BalanceForTests::vault_a_reserve_init()
+                        + BalanceForTests::exact_output_effective_amount_in_token_a(),
+                    reserve_b: BalanceForTests::vault_b_reserve_init()
+                        - BalanceForTests::max_amount_in(),
                     fees: BalanceForTests::fee_tier(),
                     active: true,
                 }),
@@ -1180,8 +1300,9 @@ impl AccountWithMetadataForTests {
                     vault_b_id: IdForTests::vault_b_id(),
                     liquidity_pool_id: IdForTests::token_lp_definition_id(),
                     liquidity_pool_supply: BalanceForTests::lp_supply_init(),
-                    reserve_a: 715_u128,
-                    reserve_b: 700_u128,
+                    reserve_a: BalanceForTests::vault_a_reserve_init() - 285,
+                    reserve_b: BalanceForTests::vault_b_reserve_init()
+                        + BalanceForTests::exact_output_effective_amount_in_token_b(),
                     fees: BalanceForTests::fee_tier(),
                     active: true,
                 }),
@@ -1230,6 +1351,54 @@ impl AccountWithMetadataForTests {
                     liquidity_pool_supply: BalanceForTests::add_lp_supply_successful(),
                     reserve_a: BalanceForTests::vault_a_add_successful(),
                     reserve_b: BalanceForTests::vault_b_add_successful(),
+                    fees: BalanceForTests::fee_tier(),
+                    active: true,
+                }),
+                nonce: Nonce(0),
+            },
+            is_authorized: true,
+            account_id: IdForTests::pool_definition_id(),
+        }
+    }
+
+    fn pool_definition_add_with_surplus_successful() -> AccountWithMetadata {
+        AccountWithMetadata {
+            account: Account {
+                program_owner: ProgramId::default(),
+                balance: 0u128,
+                data: Data::from(&PoolDefinition {
+                    definition_token_a_id: IdForTests::token_a_definition_id(),
+                    definition_token_b_id: IdForTests::token_b_definition_id(),
+                    vault_a_id: IdForTests::vault_a_id(),
+                    vault_b_id: IdForTests::vault_b_id(),
+                    liquidity_pool_id: IdForTests::token_lp_definition_id(),
+                    liquidity_pool_supply: BalanceForTests::lp_supply_with_surplus(),
+                    reserve_a: BalanceForTests::reserve_a_add_with_surplus(),
+                    reserve_b: BalanceForTests::reserve_b_add_with_surplus(),
+                    fees: BalanceForTests::fee_tier(),
+                    active: true,
+                }),
+                nonce: Nonce(0),
+            },
+            is_authorized: true,
+            account_id: IdForTests::pool_definition_id(),
+        }
+    }
+
+    fn pool_definition_init_low_balances() -> AccountWithMetadata {
+        AccountWithMetadata {
+            account: Account {
+                program_owner: ProgramId::default(),
+                balance: 0u128,
+                data: Data::from(&PoolDefinition {
+                    definition_token_a_id: IdForTests::token_a_definition_id(),
+                    definition_token_b_id: IdForTests::token_b_definition_id(),
+                    vault_a_id: IdForTests::vault_a_id(),
+                    vault_b_id: IdForTests::vault_b_id(),
+                    liquidity_pool_id: IdForTests::token_lp_definition_id(),
+                    liquidity_pool_supply: BalanceForTests::vault_a_reserve_low(),
+                    reserve_a: BalanceForTests::vault_a_reserve_low(),
+                    reserve_b: BalanceForTests::vault_b_reserve_low(),
                     fees: BalanceForTests::fee_tier(),
                     active: true,
                 }),
@@ -1667,6 +1836,46 @@ fn test_call_add_liquidity_chained_call_successsful() {
     assert!(chained_call_a == ChainedCallForTests::cc_add_token_a());
     assert!(chained_call_b == ChainedCallForTests::cc_add_token_b());
     assert!(chained_call_lp == ChainedCallForTests::cc_add_pool_lp());
+}
+
+#[test]
+fn test_call_add_liquidity_with_fee_surplus_preserves_existing_lp_value() {
+    let (post_states, chained_calls) = add_liquidity(
+        AccountWithMetadataForTests::pool_definition_init(),
+        AccountWithMetadataForTests::vault_a_with_surplus(),
+        AccountWithMetadataForTests::vault_b_with_surplus(),
+        AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::user_holding_lp_init(),
+        NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
+        BalanceForTests::add_max_amount_a(),
+        BalanceForTests::add_max_amount_b(),
+    );
+
+    let pool_post = post_states[0].clone();
+
+    assert!(
+        AccountWithMetadataForTests::pool_definition_add_with_surplus_successful().account
+            == *pool_post.account()
+    );
+
+    let chained_call_lp = chained_calls[0].clone();
+    let chained_call_b = chained_calls[1].clone();
+    let chained_call_a = chained_calls[2].clone();
+
+    assert_eq!(
+        chained_call_a,
+        ChainedCallForTests::cc_add_token_a_with_surplus()
+    );
+    assert_eq!(
+        chained_call_b,
+        ChainedCallForTests::cc_add_token_b_with_surplus()
+    );
+    assert_eq!(
+        chained_call_lp,
+        ChainedCallForTests::cc_add_pool_lp_with_surplus()
+    );
 }
 
 #[should_panic(expected = "Vault A was not provided")]
@@ -2289,6 +2498,36 @@ fn test_call_swap_below_min_out() {
         AccountWithMetadataForTests::user_holding_b(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out_too_high(),
+        IdForTests::token_a_definition_id(),
+    );
+}
+
+#[should_panic(expected = "Effective swap amount should be nonzero")]
+#[test]
+fn test_call_swap_effective_amount_zero() {
+    let _post_states = swap_exact_input(
+        AccountWithMetadataForTests::pool_definition_init(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        1,
+        0,
+        IdForTests::token_a_definition_id(),
+    );
+}
+
+#[should_panic(expected = "Withdraw amount should be nonzero")]
+#[test]
+fn test_call_swap_output_rounds_to_zero() {
+    let _post_states = swap_exact_input(
+        AccountWithMetadataForTests::pool_definition_init_low_balances(),
+        AccountWithMetadataForTests::vault_a_init_low(),
+        AccountWithMetadataForTests::vault_b_init_low(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        2,
+        0,
         IdForTests::token_a_definition_id(),
     );
 }

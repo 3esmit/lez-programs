@@ -1,4 +1,4 @@
-use amm_core::assert_supported_fee_tier;
+use amm_core::{assert_supported_fee_tier, FEE_BPS_DENOMINATOR};
 pub use amm_core::{compute_liquidity_token_pda_seed, compute_vault_pda_seed, PoolDefinition};
 use nssa_core::{
     account::{AccountId, AccountWithMetadata, Data},
@@ -127,6 +127,7 @@ pub fn swap_exact_input(
                 user_holding_b.clone(),
                 swap_amount_in,
                 min_amount_out,
+                pool_def_data.fees,
                 pool_def_data.reserve_a,
                 pool_def_data.reserve_b,
                 pool.account_id,
@@ -141,6 +142,7 @@ pub fn swap_exact_input(
                 user_holding_a.clone(),
                 swap_amount_in,
                 min_amount_out,
+                pool_def_data.fees,
                 pool_def_data.reserve_b,
                 pool_def_data.reserve_a,
                 pool.account_id,
@@ -175,19 +177,31 @@ fn swap_logic(
     user_withdraw: AccountWithMetadata,
     swap_amount_in: u128,
     min_amount_out: u128,
+    fee_bps: u128,
     reserve_deposit_vault_amount: u128,
     reserve_withdraw_vault_amount: u128,
     pool_id: AccountId,
 ) -> (Vec<ChainedCall>, u128, u128) {
-    // Compute withdraw amount
-    // Maintains pool constant product
-    // k = pool_def_data.reserve_a * pool_def_data.reserve_b;
+    let fee_multiplier = FEE_BPS_DENOMINATOR
+        .checked_sub(fee_bps)
+        .expect("fee_bps exceeds fee denominator");
+    let effective_amount_in = swap_amount_in
+        .checked_mul(fee_multiplier)
+        .expect("swap_amount_in * fee_multiplier overflows u128")
+        / FEE_BPS_DENOMINATOR;
+    assert!(
+        effective_amount_in != 0,
+        "Effective swap amount should be nonzero"
+    );
+
+    // Compute withdraw amount from fee-adjusted reserves while leaving the fee
+    // portion behind as vault surplus for LPs.
     let withdraw_amount = reserve_withdraw_vault_amount
-        .checked_mul(swap_amount_in)
-        .expect("reserve * amount_in overflows u128")
+        .checked_mul(effective_amount_in)
+        .expect("reserve_withdraw_vault_amount * effective_amount_in overflows u128")
         / reserve_deposit_vault_amount
-            .checked_add(swap_amount_in)
-            .expect("reserve + swap_amount_in overflows u128");
+            .checked_add(effective_amount_in)
+            .expect("reserve_deposit_vault_amount + effective_amount_in overflows u128");
 
     // Slippage check
     assert!(
@@ -228,7 +242,7 @@ fn swap_logic(
         .with_pda_seeds(vec![pda_seed]),
     );
 
-    (chained_calls, swap_amount_in, withdraw_amount)
+    (chained_calls, effective_amount_in, withdraw_amount)
 }
 
 #[expect(clippy::too_many_arguments, reason = "TODO: Fix later")]
@@ -254,6 +268,7 @@ pub fn swap_exact_output(
                 user_holding_b.clone(),
                 exact_amount_out,
                 max_amount_in,
+                pool_def_data.fees,
                 pool_def_data.reserve_a,
                 pool_def_data.reserve_b,
                 pool.account_id,
@@ -268,6 +283,7 @@ pub fn swap_exact_output(
                 user_holding_a.clone(),
                 exact_amount_out,
                 max_amount_in,
+                pool_def_data.fees,
                 pool_def_data.reserve_b,
                 pool_def_data.reserve_a,
                 pool.account_id,
@@ -302,6 +318,7 @@ fn exact_output_swap_logic(
     user_withdraw: AccountWithMetadata,
     exact_amount_out: u128,
     max_amount_in: u128,
+    fee_bps: u128,
     reserve_deposit_vault_amount: u128,
     reserve_withdraw_vault_amount: u128,
     pool_id: AccountId,
@@ -317,10 +334,21 @@ fn exact_output_swap_logic(
 
     // Compute deposit amount using ceiling division
     // Formula: amount_in = ceil(reserve_in * exact_amount_out / (reserve_out - exact_amount_out))
-    let deposit_amount = reserve_deposit_vault_amount
+    let effective_deposit_amount = reserve_deposit_vault_amount
         .checked_mul(exact_amount_out)
         .expect("reserve * amount_out overflows u128")
-        .div_ceil(reserve_withdraw_vault_amount - exact_amount_out);
+        .div_ceil(
+            reserve_withdraw_vault_amount
+                .checked_sub(exact_amount_out)
+                .expect("reserve_withdraw_vault_amount - exact_amount_out underflows"),
+        );
+    let fee_multiplier = FEE_BPS_DENOMINATOR
+        .checked_sub(fee_bps)
+        .expect("fee_bps exceeds fee denominator");
+    let deposit_amount = effective_deposit_amount
+        .checked_mul(FEE_BPS_DENOMINATOR)
+        .expect("effective_deposit_amount * fee denominator overflows u128")
+        .div_ceil(fee_multiplier);
 
     // Slippage check
     assert!(
@@ -360,5 +388,5 @@ fn exact_output_swap_logic(
         .with_pda_seeds(vec![pda_seed]),
     );
 
-    (chained_calls, deposit_amount, exact_amount_out)
+    (chained_calls, effective_deposit_amount, exact_amount_out)
 }

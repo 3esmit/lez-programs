@@ -80,17 +80,16 @@ pub fn add_liquidity(
         "Vaults' balances must be at least the reserve amounts"
     );
 
-    // Calculate actual_amounts
-    let ideal_a: u128 = pool_def_data
-        .reserve_a
+    // Quote deposits against live vault balances so newly added LPs do not
+    // receive a share of previously accrued fee surplus.
+    let ideal_a = vault_a_balance
         .checked_mul(max_amount_to_add_token_b)
-        .expect("reserve_a * max_amount_b overflows u128")
-        / pool_def_data.reserve_b;
-    let ideal_b: u128 = pool_def_data
-        .reserve_b
+        .expect("vault_a_balance * max_amount_to_add_token_b overflows u128")
+        / vault_b_balance;
+    let ideal_b = vault_b_balance
         .checked_mul(max_amount_to_add_token_a)
-        .expect("reserve_b * max_amount_a overflows u128")
-        / pool_def_data.reserve_a;
+        .expect("vault_b_balance * max_amount_to_add_token_a overflows u128")
+        / vault_a_balance;
 
     let actual_amount_a = if ideal_a > max_amount_to_add_token_a {
         max_amount_to_add_token_a
@@ -122,12 +121,12 @@ pub fn add_liquidity(
             .liquidity_pool_supply
             .checked_mul(actual_amount_a)
             .expect("liquidity_pool_supply * actual_amount_a overflows u128")
-            / pool_def_data.reserve_a,
+            / vault_a_balance,
         pool_def_data
             .liquidity_pool_supply
             .checked_mul(actual_amount_b)
             .expect("liquidity_pool_supply * actual_amount_b overflows u128")
-            / pool_def_data.reserve_b,
+            / vault_b_balance,
     );
 
     assert!(delta_lp != 0, "Payable LP must be nonzero");
