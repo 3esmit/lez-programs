@@ -1678,6 +1678,26 @@ fn test_call_swap_ianctive() {
     );
 }
 
+#[should_panic(expected = "Fee tier must be one of 1, 5, 30, or 100 basis points")]
+#[test]
+fn test_call_swap_rejects_unsupported_fee_tier() {
+    let mut pool = AccountWithMetadataForTests::pool_definition_init();
+    let mut pool_def = PoolDefinition::try_from(&pool.account.data).unwrap();
+    pool_def.fees = 2;
+    pool.account.data = Data::from(&pool_def);
+
+    let _post_states = swap(
+        pool,
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        BalanceForTests::add_max_amount_a(),
+        BalanceForTests::add_max_amount_a_low(),
+        IdForTests::token_a_definition_id(),
+    );
+}
+
 #[should_panic(expected = "Withdraw amount is less than minimal amount out")]
 #[test]
 fn test_call_swap_below_min_out() {
