@@ -1,5 +1,6 @@
 use amm_core::{PoolDefinition, FEE_TIER_BPS_1, FEE_TIER_BPS_100, FEE_TIER_BPS_30, FEE_TIER_BPS_5};
 use nssa::{
+    error::NssaError,
     program_deployment_transaction::{self, ProgramDeploymentTransaction},
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
 };
@@ -889,7 +890,7 @@ fn state_for_amm_tests_with_new_def() -> V03State {
     state
 }
 
-fn execute_new_definition(state: &mut V03State, fees: u128) {
+fn try_execute_new_definition(state: &mut V03State, fees: u128) -> Result<(), NssaError> {
     let instruction = amm_core::Instruction::NewDefinition {
         token_a_amount: Balances::vault_a_init(),
         token_b_amount: Balances::vault_b_init(),
@@ -917,7 +918,11 @@ fn execute_new_definition(state: &mut V03State, fees: u128) {
         public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a(), &Keys::user_b()]);
 
     let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0).unwrap();
+    state.transition_from_public_transaction(&tx, 0)
+}
+
+fn execute_new_definition(state: &mut V03State, fees: u128) {
+    try_execute_new_definition(state, fees).unwrap();
 }
 
 #[test]
@@ -1124,6 +1129,51 @@ fn amm_new_definition_supports_all_fee_tiers() {
                 .expect("new definition should create a valid pool");
         assert_eq!(pool_definition.fees, fees);
     }
+}
+
+#[test]
+fn amm_new_definition_rejects_unsupported_fee_tier_transaction() {
+    let mut state = state_for_amm_tests_with_new_def();
+    state.force_insert_account(Ids::vault_a(), Accounts::vault_a_init_inactive());
+    state.force_insert_account(Ids::vault_b(), Accounts::vault_b_init_inactive());
+    state.force_insert_account(Ids::pool_definition(), Accounts::pool_definition_inactive());
+    state.force_insert_account(
+        Ids::token_lp_definition(),
+        Accounts::token_lp_definition_init_inactive(),
+    );
+    state.force_insert_account(Ids::user_lp(), Accounts::user_lp_holding_init_zero());
+
+    let result = try_execute_new_definition(&mut state, 2);
+
+    assert!(matches!(result, Err(NssaError::ProgramExecutionFailed(_))));
+    assert_eq!(
+        state.get_account_by_id(Ids::pool_definition()),
+        Accounts::pool_definition_inactive()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::vault_a()),
+        Accounts::vault_a_init_inactive()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::vault_b()),
+        Accounts::vault_b_init_inactive()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::token_lp_definition()),
+        Accounts::token_lp_definition_init_inactive()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::user_a()),
+        Accounts::user_a_holding()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::user_b()),
+        Accounts::user_b_holding()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::user_lp()),
+        Accounts::user_lp_holding_init_zero()
+    );
 }
 
 #[test]
