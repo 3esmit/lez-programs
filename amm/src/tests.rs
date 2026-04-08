@@ -4,7 +4,7 @@ use std::num::NonZero;
 
 use amm_core::{
     compute_liquidity_token_pda, compute_liquidity_token_pda_seed, compute_pool_pda,
-    compute_vault_pda, compute_vault_pda_seed, PoolDefinition,
+    compute_vault_pda, compute_vault_pda_seed, PoolDefinition, RecoverSurplusMode,
 };
 use nssa_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
@@ -13,7 +13,8 @@ use nssa_core::{
 use token_core::{TokenDefinition, TokenHolding};
 
 use crate::{
-    add::add_liquidity, new_definition::new_definition, remove::remove_liquidity, swap::swap,
+    add::add_liquidity, new_definition::new_definition, recover::recover_surplus,
+    remove::remove_liquidity, swap::swap,
 };
 
 const TOKEN_PROGRAM_ID: ProgramId = [15; 8];
@@ -1811,4 +1812,106 @@ fn test_new_definition_lp_symmetric_amounts() {
     )]);
 
     assert_eq!(chained_call_lp, expected_lp_call);
+}
+
+#[test]
+fn test_recover_surplus_inactive_pool_transfers_only_surplus() {
+    let donation_a = 25u128;
+
+    let mut donated_vault_a = AccountWithMetadataForTests::vault_a_init();
+    donated_vault_a.account.data = Data::from(&TokenHolding::Fungible {
+        definition_id: IdForTests::token_a_definition_id(),
+        balance: BalanceForTests::vault_a_reserve_init() + donation_a,
+    });
+
+    let (post_states, chained_calls) = recover_surplus(
+        AccountWithMetadataForTests::pool_definition_inactive(),
+        donated_vault_a.clone(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        RecoverSurplusMode::InactiveOrZeroSupplyOnly,
+    );
+
+    let pool_post = PoolDefinition::try_from(&post_states[0].account().data).unwrap();
+    assert_eq!(pool_post.reserve_a, BalanceForTests::vault_a_reserve_init());
+    assert_eq!(pool_post.reserve_b, BalanceForTests::vault_b_reserve_init());
+
+    assert_eq!(chained_calls.len(), 1);
+
+    let mut donated_vault_a_auth = donated_vault_a;
+    donated_vault_a_auth.is_authorized = true;
+    let expected_call = ChainedCall::new(
+        TOKEN_PROGRAM_ID,
+        vec![
+            donated_vault_a_auth,
+            AccountWithMetadataForTests::user_holding_a(),
+        ],
+        &token_core::Instruction::Transfer {
+            amount_to_transfer: donation_a,
+        },
+    )
+    .with_pda_seeds(vec![compute_vault_pda_seed(
+        IdForTests::pool_definition_id(),
+        IdForTests::token_a_definition_id(),
+    )]);
+
+    assert_eq!(chained_calls[0], expected_call);
+}
+
+#[should_panic(expected = "Recover surplus is only allowed for inactive or zero-supply pools")]
+#[test]
+fn test_recover_surplus_forbidden_for_active_pool() {
+    let mut donated_vault_a = AccountWithMetadataForTests::vault_a_init();
+    donated_vault_a.account.data = Data::from(&TokenHolding::Fungible {
+        definition_id: IdForTests::token_a_definition_id(),
+        balance: BalanceForTests::vault_a_reserve_init() + 1,
+    });
+
+    let _ = recover_surplus(
+        AccountWithMetadataForTests::pool_definition_init(),
+        donated_vault_a,
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        RecoverSurplusMode::InactiveOrZeroSupplyOnly,
+    );
+}
+
+#[should_panic(expected = "Vault A token definition mismatch")]
+#[test]
+fn test_recover_surplus_panics_when_vault_a_definition_mismatches_pool() {
+    let mut wrong_vault_a = AccountWithMetadataForTests::vault_a_init();
+    wrong_vault_a.account.data = Data::from(&TokenHolding::Fungible {
+        definition_id: IdForTests::token_b_definition_id(),
+        balance: BalanceForTests::vault_a_reserve_init(),
+    });
+
+    let _ = recover_surplus(
+        AccountWithMetadataForTests::pool_definition_inactive(),
+        wrong_vault_a,
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        RecoverSurplusMode::InactiveOrZeroSupplyOnly,
+    );
+}
+
+#[should_panic(expected = "Recover surplus: vault A balance is less than its reserve")]
+#[test]
+fn test_recover_surplus_panics_when_vault_a_under_collateralized() {
+    let mut undercollateralized_vault_a = AccountWithMetadataForTests::vault_a_init();
+    undercollateralized_vault_a.account.data = Data::from(&TokenHolding::Fungible {
+        definition_id: IdForTests::token_a_definition_id(),
+        balance: BalanceForTests::vault_a_reserve_init() - 1,
+    });
+
+    let _ = recover_surplus(
+        AccountWithMetadataForTests::pool_definition_inactive(),
+        undercollateralized_vault_a,
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        RecoverSurplusMode::InactiveOrZeroSupplyOnly,
+    );
 }

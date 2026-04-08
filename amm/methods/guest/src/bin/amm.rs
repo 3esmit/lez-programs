@@ -127,4 +127,25 @@ mod amm {
         );
         Ok(SpelOutput::with_chained_calls(post_states, chained_calls))
     }
+
+    /// Recover vault surplus balances that are not reserve-backed.
+    #[instruction]
+    pub fn recover_surplus(
+        pool: AccountWithMetadata,
+        vault_a: AccountWithMetadata,
+        vault_b: AccountWithMetadata,
+        to_holding_a: AccountWithMetadata,
+        to_holding_b: AccountWithMetadata,
+        mode: amm_core::RecoverSurplusMode,
+    ) -> SpelResult {
+        let (post_states, chained_calls) = amm_program::recover::recover_surplus(
+            pool,
+            vault_a,
+            vault_b,
+            to_holding_a,
+            to_holding_b,
+            mode,
+        );
+        Ok(SpelOutput::with_chained_calls(post_states, chained_calls))
+    }
 }

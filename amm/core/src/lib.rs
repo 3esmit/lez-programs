@@ -73,6 +73,21 @@ pub enum Instruction {
         min_amount_out: u128,
         token_definition_id_in: AccountId,
     },
+
+    /// Recover vault surplus balances that are not reserve-backed.
+    ///
+    /// Required accounts:
+    /// - AMM Pool (initialized)
+    /// - Vault Holding Account for Token A (initialized)
+    /// - Vault Holding Account for Token B (initialized)
+    /// - Recipient Holding Account for Token A (initialized)
+    /// - Recipient Holding Account for Token B (initialized)
+    RecoverSurplus { mode: RecoverSurplusMode },
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+pub enum RecoverSurplusMode {
+    InactiveOrZeroSupplyOnly,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
