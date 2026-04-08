@@ -1,4 +1,4 @@
-use amm_core::PoolDefinition;
+use amm_core::{PoolDefinition, MINIMUM_LIQUIDITY};
 use nssa::{
     program_deployment_transaction::{self, ProgramDeploymentTransaction},
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
@@ -242,6 +242,10 @@ impl Balances {
 
     fn lp_supply_init() -> u128 {
         (Self::vault_a_init() * Self::vault_b_init()).isqrt()
+    }
+
+    fn lp_user_init() -> u128 {
+        Self::lp_supply_init() - MINIMUM_LIQUIDITY
     }
 }
 
@@ -776,7 +780,7 @@ impl Accounts {
             balance: 0_u128,
             data: Data::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_lp_definition(),
-                balance: Balances::lp_supply_init(),
+                balance: Balances::lp_user_init(),
             }),
             nonce: Nonce(0),
         }
