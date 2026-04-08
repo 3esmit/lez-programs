@@ -73,6 +73,14 @@ pub enum Instruction {
         min_amount_out: u128,
         token_definition_id_in: AccountId,
     },
+
+    /// Sync pool reserves with current vault balances.
+    ///
+    /// Required accounts:
+    /// - AMM Pool (initialized, active)
+    /// - Vault Holding Account for Token A (initialized)
+    /// - Vault Holding Account for Token B (initialized)
+    SyncReserves,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
