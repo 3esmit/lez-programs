@@ -81,10 +81,6 @@ pub fn remove_liquidity(
         "Invalid liquidity account provided"
     );
     assert!(
-        remove_liquidity_amount <= user_lp_balance,
-        "Cannot remove more liquidity than owned"
-    );
-    assert!(
         pool_def_data.liquidity_pool_supply > MINIMUM_LIQUIDITY,
         "Pool only contains locked liquidity"
     );

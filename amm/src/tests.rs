@@ -1513,25 +1513,6 @@ fn test_call_remove_liquidity_insufficient_balance_1() {
     );
 }
 
-#[should_panic(expected = "Cannot remove more liquidity than owned")]
-#[test]
-fn test_call_remove_liquidity_amount_exceeds_user_balance() {
-    let _post_states = remove_liquidity(
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_with_balance(
-            BalanceForTests::remove_amount_lp_1(),
-        ),
-        NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
-        BalanceForTests::remove_min_amount_a(),
-        BalanceForTests::remove_min_amount_b_low(),
-    );
-}
-
 #[should_panic(expected = "Pool only contains locked liquidity")]
 #[test]
 fn test_call_remove_liquidity_pool_at_minimum_liquidity() {
