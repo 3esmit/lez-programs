@@ -77,6 +77,12 @@ pub fn new_definition(
         !pool_account_data.active,
         "Cannot initialize an active Pool Definition"
     );
+    if !is_new_pool {
+        assert_eq!(
+            pool_account_data.liquidity_pool_supply, 0,
+            "New definition: inactive Pool Definition must have zero LP supply before reinitialization"
+        );
+    }
 
     // LP Token minting calculation
     let initial_lp = (token_a_amount.get() * token_b_amount.get()).isqrt();
@@ -173,6 +179,10 @@ pub fn new_definition(
         else {
             panic!("New definition: LP Token Definition Account must be fungible");
         };
+        assert_eq!(
+            total_supply, 0,
+            "New definition: existing LP Token Definition Account must have zero supply before reinitialization"
+        );
 
         pool_lp_after_lock.account.data = Data::from(&TokenDefinition::Fungible {
             name,

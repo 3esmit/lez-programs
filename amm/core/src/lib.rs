@@ -96,11 +96,13 @@ pub struct PoolDefinition {
     pub reserve_b: u128,
     /// Fees are currently not used
     pub fees: u128,
-    /// A pool becomes inactive (active = false) once all user-removable liquidity
-    /// has been withdrawn. Note: `MINIMUM_LIQUIDITY` LP tokens are permanently
-    /// locked at initialization and cannot be removed, so `liquidity_pool_supply`
-    /// will never drop below `MINIMUM_LIQUIDITY` for pools created after the
-    /// minimum-liquidity lock was introduced.
+    /// Indicates whether the pool is initialized for use.
+    /// `MINIMUM_LIQUIDITY` LP tokens are permanently locked at initialization
+    /// and cannot be removed, so `liquidity_pool_supply` will never drop below
+    /// `MINIMUM_LIQUIDITY` for pools created after the minimum-liquidity lock
+    /// was introduced. Reaching that floor does not by itself imply
+    /// `active = false`; pools may remain active with only the permanently
+    /// locked minimum liquidity remaining.
     pub active: bool,
 }
 
