@@ -16,6 +16,7 @@ pub fn new_definition(
     vault_a: AccountWithMetadata,
     vault_b: AccountWithMetadata,
     pool_definition_lp: AccountWithMetadata,
+    lp_lock_holding: AccountWithMetadata,
     user_holding_a: AccountWithMetadata,
     user_holding_b: AccountWithMetadata,
     user_holding_lp: AccountWithMetadata,
@@ -61,6 +62,11 @@ pub fn new_definition(
         pool_definition_lp.account_id,
         compute_liquidity_token_pda(amm_program_id, pool.account_id),
         "Liquidity pool Token Definition Account ID does not match PDA"
+    );
+    assert_eq!(
+        lp_lock_holding.account_id,
+        compute_lp_lock_holding_pda(amm_program_id, pool.account_id),
+        "LP lock holding Account ID does not match PDA"
     );
 
     // TODO: return here
@@ -134,11 +140,6 @@ pub fn new_definition(
     );
 
     // Chain call for liquidity token lock holding
-    let lp_lock_holding = AccountWithMetadata {
-        account: Account::default(),
-        is_authorized: false,
-        account_id: compute_lp_lock_holding_pda(amm_program_id, pool.account_id),
-    };
     let lock_instruction = if is_new_pool {
         token_core::Instruction::NewFungibleDefinition {
             name: String::from("LP Token"),
@@ -155,7 +156,7 @@ pub fn new_definition(
 
     let call_token_lp_lock = ChainedCall::new(
         token_program_id,
-        vec![pool_lp_auth.clone(), lp_lock_holding],
+        vec![pool_lp_auth.clone(), lp_lock_holding.clone()],
         &lock_instruction,
     )
     .with_pda_seeds(vec![compute_liquidity_token_pda_seed(pool.account_id)]);
@@ -214,10 +215,11 @@ pub fn new_definition(
         AccountPostState::new(vault_a.account.clone()),
         AccountPostState::new(vault_b.account.clone()),
         AccountPostState::new(pool_definition_lp.account.clone()),
+        AccountPostState::new(lp_lock_holding.account.clone()),
         AccountPostState::new(user_holding_a.account.clone()),
         AccountPostState::new(user_holding_b.account.clone()),
         AccountPostState::new(user_holding_lp.account.clone()),
     ];
 
-    (post_states.clone(), chained_calls)
+    (post_states, chained_calls)
 }

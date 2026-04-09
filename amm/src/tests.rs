@@ -734,6 +734,14 @@ impl AccountWithMetadataForTests {
         }
     }
 
+    fn lp_lock_holding_with_wrong_id() -> AccountWithMetadata {
+        AccountWithMetadata {
+            account: Account::default(),
+            is_authorized: false,
+            account_id: IdForTests::vault_a_id(),
+        }
+    }
+
     fn pool_definition_init() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
@@ -1615,6 +1623,7 @@ fn test_call_new_definition_with_zero_balance_1() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::lp_lock_holding_uninit(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_uninit(),
@@ -1632,6 +1641,7 @@ fn test_call_new_definition_with_zero_balance_2() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::lp_lock_holding_uninit(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_uninit(),
@@ -1649,6 +1659,7 @@ fn test_call_new_definition_same_token_definition() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::lp_lock_holding_uninit(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_lp_uninit(),
@@ -1666,6 +1677,25 @@ fn test_call_new_definition_wrong_liquidity_id() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_with_wrong_id(),
+        AccountWithMetadataForTests::lp_lock_holding_uninit(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::user_holding_lp_uninit(),
+        NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
+        NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
+        AMM_PROGRAM_ID,
+    );
+}
+
+#[should_panic(expected = "LP lock holding Account ID does not match PDA")]
+#[test]
+fn test_call_new_definition_wrong_lp_lock_holding_id() {
+    let _post_states = new_definition(
+        AccountWithMetadataForTests::pool_definition_init(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::lp_lock_holding_with_wrong_id(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_uninit(),
@@ -1683,6 +1713,7 @@ fn test_call_new_definition_wrong_pool_id() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::lp_lock_holding_uninit(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_uninit(),
@@ -1700,6 +1731,7 @@ fn test_call_new_definition_wrong_vault_id_1() {
         AccountWithMetadataForTests::vault_a_with_wrong_id(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::lp_lock_holding_uninit(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_uninit(),
@@ -1717,6 +1749,7 @@ fn test_call_new_definition_wrong_vault_id_2() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_with_wrong_id(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::lp_lock_holding_uninit(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_uninit(),
@@ -1734,6 +1767,7 @@ fn test_call_new_definition_cannot_initialize_active_pool() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::lp_lock_holding_uninit(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_uninit(),
@@ -1752,6 +1786,7 @@ fn test_call_new_definition_initial_lp_too_small() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_reinitializable(),
+        AccountWithMetadataForTests::lp_lock_holding_uninit(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_uninit(),
@@ -1768,6 +1803,7 @@ fn test_call_new_definition_chained_call_successful() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_reinitializable(),
+        AccountWithMetadataForTests::lp_lock_holding_uninit(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_uninit(),
@@ -1967,6 +2003,7 @@ fn test_new_definition_lp_asymmetric_amounts() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_reinitializable(),
+        AccountWithMetadataForTests::lp_lock_holding_uninit(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_uninit(),
@@ -2002,6 +2039,7 @@ fn test_new_definition_lp_symmetric_amounts() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_reinitializable(),
+        AccountWithMetadataForTests::lp_lock_holding_uninit(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_uninit(),
@@ -2061,6 +2099,7 @@ fn test_call_new_definition_reinitialization_requires_zero_pool_supply() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_reinitializable(),
+        AccountWithMetadataForTests::lp_lock_holding_uninit(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_uninit(),
@@ -2080,6 +2119,7 @@ fn test_call_new_definition_reinitialization_requires_zero_lp_definition_supply(
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::lp_lock_holding_uninit(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_uninit(),
@@ -2106,6 +2146,7 @@ fn test_minimum_liquidity_lock_and_remove_all_user_lp() {
         AccountForTests::vault_a_init(),
         AccountForTests::vault_b_init(),
         AccountForTests::pool_lp_uninit(),
+        AccountForTests::lp_lock_holding_uninit(),
         AccountForTests::user_holding_a(),
         AccountForTests::user_holding_b(),
         AccountForTests::user_holding_lp_uninit(),
