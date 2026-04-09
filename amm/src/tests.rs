@@ -903,6 +903,30 @@ impl AccountWithMetadataForTests {
         }
     }
 
+    fn pool_definition_active_zero_supply() -> AccountWithMetadata {
+        AccountWithMetadata {
+            account: Account {
+                program_owner: ProgramId::default(),
+                balance: 0u128,
+                data: Data::from(&PoolDefinition {
+                    definition_token_a_id: IdForTests::token_a_definition_id(),
+                    definition_token_b_id: IdForTests::token_b_definition_id(),
+                    vault_a_id: IdForTests::vault_a_id(),
+                    vault_b_id: IdForTests::vault_b_id(),
+                    liquidity_pool_id: IdForTests::token_lp_definition_id(),
+                    liquidity_pool_supply: 0,
+                    reserve_a: BalanceForTests::vault_a_reserve_init(),
+                    reserve_b: BalanceForTests::vault_b_reserve_init(),
+                    fees: 0u128,
+                    active: true,
+                }),
+                nonce: Nonce(0),
+            },
+            is_authorized: true,
+            account_id: IdForTests::pool_definition_id(),
+        }
+    }
+
     fn pool_definition_with_wrong_id() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
@@ -1859,7 +1883,7 @@ fn test_recover_surplus_inactive_pool_transfers_only_surplus() {
     assert_eq!(chained_calls[0], expected_call);
 }
 
-#[should_panic(expected = "Recover surplus is only allowed for inactive or zero-supply pools")]
+#[should_panic(expected = "Recover surplus is only allowed for inactive pools")]
 #[test]
 fn test_recover_surplus_forbidden_for_active_pool() {
     let mut donated_vault_a = AccountWithMetadataForTests::vault_a_init();
@@ -1870,6 +1894,25 @@ fn test_recover_surplus_forbidden_for_active_pool() {
 
     let _ = recover_surplus(
         AccountWithMetadataForTests::pool_definition_init(),
+        donated_vault_a,
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        RecoverSurplusMode::InactiveOrZeroSupplyOnly,
+    );
+}
+
+#[should_panic(expected = "Recover surplus is only allowed for inactive pools")]
+#[test]
+fn test_recover_surplus_forbidden_for_active_zero_supply_pool() {
+    let mut donated_vault_a = AccountWithMetadataForTests::vault_a_init();
+    donated_vault_a.account.data = Data::from(&TokenHolding::Fungible {
+        definition_id: IdForTests::token_a_definition_id(),
+        balance: BalanceForTests::vault_a_reserve_init() + 1,
+    });
+
+    let _ = recover_surplus(
+        AccountWithMetadataForTests::pool_definition_active_zero_supply(),
         donated_vault_a,
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::user_holding_a(),

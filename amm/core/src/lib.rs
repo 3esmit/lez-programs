@@ -80,8 +80,8 @@ pub enum Instruction {
     /// reserves unchanged.
     ///
     /// Recovery availability is gated by `mode`. The initial
-    /// [`RecoverSurplusMode::InactiveOrZeroSupplyOnly`] mode only permits recovery for pools that
-    /// are inactive or have zero LP supply.
+    /// [`RecoverSurplusMode::InactiveOrZeroSupplyOnly`] mode currently permits recovery only for
+    /// pools that are inactive.
     ///
     /// Required accounts:
     /// - AMM Pool (initialized)
@@ -94,7 +94,9 @@ pub enum Instruction {
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub enum RecoverSurplusMode {
-    /// Permit recovery only for pools that are inactive or whose LP supply is zero.
+    /// Currently permit recovery only for pools that are inactive.
+    ///
+    /// The broader name is retained for compatibility with the existing public instruction shape.
     InactiveOrZeroSupplyOnly,
 }
 

@@ -131,7 +131,7 @@ mod amm {
     /// Recover vault surplus balances that are not reserve-backed.
     ///
     /// This transfers only balances above the tracked reserves. The current recovery mode permits
-    /// this only for pools that are inactive or have zero LP supply.
+    /// this only for pools that are inactive.
     #[instruction]
     pub fn recover_surplus(
         pool: AccountWithMetadata,

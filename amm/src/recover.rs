@@ -69,8 +69,8 @@ pub fn recover_surplus(
     match mode {
         RecoverSurplusMode::InactiveOrZeroSupplyOnly => {
             assert!(
-                !pool_def_data.active || pool_def_data.liquidity_pool_supply == 0,
-                "Recover surplus is only allowed for inactive or zero-supply pools"
+                !pool_def_data.active,
+                "Recover surplus is only allowed for inactive pools"
             );
         }
     }
