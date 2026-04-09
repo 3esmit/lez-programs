@@ -84,7 +84,7 @@ pub enum Instruction {
     },
 }
 
-pub const MINIMUM_LIQUIDITY: u128 = 1;
+pub const MINIMUM_LIQUIDITY: u128 = 1_000;
 
 #[derive(Clone, Default, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct PoolDefinition {
