@@ -1,6 +1,6 @@
 use nssa_core::account::{AccountId, AccountWithMetadata};
 
-pub fn read_fungible_holding(account: &AccountWithMetadata, context: &str) -> (AccountId, u128) {
+fn read_fungible_holding(account: &AccountWithMetadata, context: &str) -> (AccountId, u128) {
     let token_holding = token_core::TokenHolding::try_from(&account.account.data)
         .unwrap_or_else(|_| panic!("{context}: AMM Program expects a valid Token Holding Account"));
 
@@ -15,7 +15,7 @@ pub fn read_fungible_holding(account: &AccountWithMetadata, context: &str) -> (A
     (definition_id, balance)
 }
 
-pub fn read_vault_fungible_balances(
+pub(crate) fn read_vault_fungible_balances(
     context: &str,
     vault_a: &AccountWithMetadata,
     vault_b: &AccountWithMetadata,
