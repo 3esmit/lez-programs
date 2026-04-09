@@ -1147,8 +1147,8 @@ impl AccountWithMetadataForTests {
         }
     }
 
-    /// Pool whose entire supply has been drained down to the permanent lock
-    /// (liquidity_pool_supply == MINIMUM_LIQUIDITY).
+    /// Legacy/corrupted pool state whose reported supply has already been drained down to the
+    /// permanent lock (liquidity_pool_supply == MINIMUM_LIQUIDITY).
     fn pool_definition_at_minimum_liquidity() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
@@ -1516,7 +1516,7 @@ fn test_call_remove_liquidity_insufficient_balance_1() {
 #[should_panic(expected = "Pool only contains locked liquidity")]
 #[test]
 fn test_call_remove_liquidity_pool_at_minimum_liquidity() {
-    // Pool supply == MINIMUM_LIQUIDITY; any removal must be rejected.
+    // Removing from a legacy/corrupted pool that is already at the locked floor must be rejected.
     let _post_states = remove_liquidity(
         AccountWithMetadataForTests::pool_definition_at_minimum_liquidity(),
         AccountWithMetadataForTests::vault_a_init(),

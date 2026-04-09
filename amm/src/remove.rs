@@ -80,6 +80,8 @@ pub fn remove_liquidity(
         pool_def_data.liquidity_pool_id,
         "Invalid liquidity account provided"
     );
+    // Honest flows should never reach the permanent lock through a valid remove instruction, but
+    // we still reject legacy or corrupted states that are already at the locked floor.
     assert!(
         pool_def_data.liquidity_pool_supply > MINIMUM_LIQUIDITY,
         "Pool only contains locked liquidity"
