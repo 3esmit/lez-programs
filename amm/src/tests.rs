@@ -1534,7 +1534,9 @@ fn test_call_remove_liquidity_pool_at_minimum_liquidity() {
 #[should_panic(expected = "Cannot remove locked minimum liquidity")]
 #[test]
 fn test_call_remove_liquidity_exceeds_unlocked_supply() {
-    // Pool supply = lp_supply_init (3535), user tries to remove all 3535 including the locked 1000.
+    // Model corrupted ownership by giving the caller the full LP supply even though the lock
+    // account should permanently hold MINIMUM_LIQUIDITY. The guard must still refuse to burn
+    // through the permanent floor.
     let _post_states = remove_liquidity(
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_init(),
