@@ -1045,7 +1045,6 @@ fn state_for_amm_tests_with_new_def() -> V03State {
     state
 }
 
-fn try_execute_new_definition(state: &mut V03State, fees: u128) -> Result<(), NssaError> {
 fn current_nonce(state: &V03State, account_id: AccountId) -> Nonce {
     state.get_account_by_id(account_id).nonce
 }

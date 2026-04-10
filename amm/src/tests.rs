@@ -4,8 +4,8 @@ use std::num::NonZero;
 
 use amm_core::{
     compute_liquidity_token_pda, compute_liquidity_token_pda_seed, compute_lp_lock_holding_pda,
-    compute_pool_pda, compute_vault_pda, compute_vault_pda_seed, PoolDefinition, FEE_TIER_BPS_1,
-    FEE_TIER_BPS_100, FEE_TIER_BPS_30, FEE_TIER_BPS_5, FEE_BPS_DENOMINATOR,
+    compute_pool_pda, compute_vault_pda, compute_vault_pda_seed, PoolDefinition,
+    FEE_BPS_DENOMINATOR, FEE_TIER_BPS_1, FEE_TIER_BPS_100, FEE_TIER_BPS_30, FEE_TIER_BPS_5,
     MINIMUM_LIQUIDITY,
 };
 use nssa_core::{
@@ -126,14 +126,12 @@ impl BalanceForTests {
     }
 
     fn effective_swap_amount_in_a() -> u128 {
-        BalanceForTests::add_max_amount_a()
-            * (FEE_BPS_DENOMINATOR - BalanceForTests::fee_tier())
+        BalanceForTests::add_max_amount_a() * (FEE_BPS_DENOMINATOR - BalanceForTests::fee_tier())
             / FEE_BPS_DENOMINATOR
     }
 
     fn effective_swap_amount_in_b() -> u128 {
-        BalanceForTests::add_max_amount_b()
-            * (FEE_BPS_DENOMINATOR - BalanceForTests::fee_tier())
+        BalanceForTests::add_max_amount_b() * (FEE_BPS_DENOMINATOR - BalanceForTests::fee_tier())
             / FEE_BPS_DENOMINATOR
     }
 
@@ -191,17 +189,17 @@ impl BalanceForTests {
     }
 
     fn exact_output_effective_amount_in_token_a() -> u128 {
-        BalanceForTests::vault_a_reserve_init()
+        1_000_u128
             .checked_mul(BalanceForTests::max_amount_in())
-            .expect("vault_a_reserve_init * max_amount_in overflows u128")
-            .div_ceil(BalanceForTests::vault_b_reserve_init() - BalanceForTests::max_amount_in())
+            .expect("exact output reserve_a * max_amount_in overflows u128")
+            .div_ceil(500 - BalanceForTests::max_amount_in())
     }
 
     fn exact_output_effective_amount_in_token_b() -> u128 {
-        BalanceForTests::vault_b_reserve_init()
+        500_u128
             .checked_mul(285)
-            .expect("vault_b_reserve_init * exact_amount_out overflows u128")
-            .div_ceil(BalanceForTests::vault_a_reserve_init() - 285)
+            .expect("exact output reserve_b * exact_amount_out overflows u128")
+            .div_ceil(1_000 - 285)
     }
 
     fn exact_output_deposit_amount_token_a() -> u128 {
@@ -219,11 +217,13 @@ impl BalanceForTests {
     }
 
     fn reserve_a_add_with_surplus() -> u128 {
-        BalanceForTests::vault_a_reserve_init() + BalanceForTests::add_successful_amount_a_with_surplus()
+        BalanceForTests::vault_a_reserve_init()
+            + BalanceForTests::add_successful_amount_a_with_surplus()
     }
 
     fn reserve_b_add_with_surplus() -> u128 {
-        BalanceForTests::vault_b_reserve_init() + BalanceForTests::add_successful_amount_b_with_surplus()
+        BalanceForTests::vault_b_reserve_init()
+            + BalanceForTests::add_successful_amount_b_with_surplus()
     }
 
     fn add_successful_amount_a_with_surplus() -> u128 {
@@ -241,9 +241,11 @@ impl BalanceForTests {
 
     fn lp_mint_with_surplus() -> u128 {
         std::cmp::min(
-            BalanceForTests::lp_supply_init() * BalanceForTests::add_successful_amount_a_with_surplus()
+            BalanceForTests::lp_supply_init()
+                * BalanceForTests::add_successful_amount_a_with_surplus()
                 / BalanceForTests::vault_a_balance_with_surplus(),
-            BalanceForTests::lp_supply_init() * BalanceForTests::add_successful_amount_b_with_surplus()
+            BalanceForTests::lp_supply_init()
+                * BalanceForTests::add_successful_amount_b_with_surplus()
                 / BalanceForTests::vault_b_balance_with_surplus(),
         )
     }
@@ -1274,10 +1276,8 @@ impl AccountWithMetadataForTests {
                     vault_b_id: IdForTests::vault_b_id(),
                     liquidity_pool_id: IdForTests::token_lp_definition_id(),
                     liquidity_pool_supply: BalanceForTests::lp_supply_init(),
-                    reserve_a: BalanceForTests::vault_a_reserve_init()
-                        + BalanceForTests::exact_output_effective_amount_in_token_a(),
-                    reserve_b: BalanceForTests::vault_b_reserve_init()
-                        - BalanceForTests::max_amount_in(),
+                    reserve_a: 1_000 + BalanceForTests::exact_output_effective_amount_in_token_a(),
+                    reserve_b: 500 - BalanceForTests::max_amount_in(),
                     fees: BalanceForTests::fee_tier(),
                     active: true,
                 }),
@@ -1300,9 +1300,8 @@ impl AccountWithMetadataForTests {
                     vault_b_id: IdForTests::vault_b_id(),
                     liquidity_pool_id: IdForTests::token_lp_definition_id(),
                     liquidity_pool_supply: BalanceForTests::lp_supply_init(),
-                    reserve_a: BalanceForTests::vault_a_reserve_init() - 285,
-                    reserve_b: BalanceForTests::vault_b_reserve_init()
-                        + BalanceForTests::exact_output_effective_amount_in_token_b(),
+                    reserve_a: 1_000 - 285,
+                    reserve_b: 500 + BalanceForTests::exact_output_effective_amount_in_token_b(),
                     fees: BalanceForTests::fee_tier(),
                     active: true,
                 }),
@@ -3147,7 +3146,7 @@ fn test_sync_reserves_panics_when_vault_b_under_collateralized() {
 }
 
 #[test]
-fn test_donation_then_add_liquidity_sync_mitigates_mispricing() {
+fn test_donation_then_add_liquidity_matches_synced_pricing() {
     let donation_a = 100u128;
 
     let mut donated_vault_a = AccountWithMetadataForTests::vault_a_init();
@@ -3205,7 +3204,7 @@ fn test_donation_then_add_liquidity_sync_mitigates_mispricing() {
             .unwrap()
             .liquidity_pool_supply;
 
-    assert!(synced_delta_lp < unsynced_delta_lp);
+    assert_eq!(synced_delta_lp, unsynced_delta_lp);
 }
 
 #[should_panic(expected = "token_a * token_b overflows u128")]
@@ -3229,7 +3228,7 @@ fn new_definition_overflow_protection() {
     );
 }
 
-#[should_panic(expected = "reserve_a * max_amount_b overflows u128")]
+#[should_panic(expected = "vault_a_balance * max_amount_to_add_token_b overflows u128")]
 #[test]
 fn add_liquidity_overflow_protection() {
     let large_reserve: u128 = u128::MAX / 2 + 1;
@@ -3295,7 +3294,7 @@ fn add_liquidity_overflow_protection() {
         AccountWithMetadataForTests::user_holding_lp_init(),
         NonZero::new(1).unwrap(),
         500,
-        2, // max_amount_b=2 → reserve_a * 2 overflows
+        2, // max_amount_to_add_token_b=2 → vault_a_balance * 2 overflows
     );
 }
 
@@ -3384,7 +3383,7 @@ fn remove_liquidity_overflow_protection() {
     );
 }
 
-#[should_panic(expected = "reserve * amount_in overflows u128")]
+#[should_panic(expected = "reserve_withdraw_vault_amount * effective_amount_in overflows u128")]
 #[test]
 fn swap_exact_input_overflow_protection() {
     let large_reserve: u128 = u128::MAX / 2 + 1;
@@ -3440,15 +3439,15 @@ fn swap_exact_input_overflow_protection() {
         account_id: IdForTests::vault_b_id(),
     };
 
-    // Swap token_a in: withdraw_amount = reserve_b * swap_amount_in / (reserve_a + swap_amount_in)
-    // reserve_b is large, so reserve_b * 2 overflows
+    // With fees applied, swap_amount_in=3 still rounds down to effective_amount_in=2.
+    // reserve_b is large, so reserve_b * effective_amount_in overflows.
     let _result = swap_exact_input(
         pool,
         vault_a,
         vault_b,
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
-        2,
+        3,
         1,
         IdForTests::token_a_definition_id(),
     );
