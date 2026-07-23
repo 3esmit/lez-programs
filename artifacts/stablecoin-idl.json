@@ -41,7 +41,8 @@
           "name": "collateral_amount",
           "type": "u128"
         }
-      ]
+      ],
+      "variant_index": 0
     },
     {
       "name": "withdraw_collateral",
@@ -76,7 +77,8 @@
           "name": "amount",
           "type": "u128"
         }
-      ]
+      ],
+      "variant_index": 1
     },
     {
       "name": "repay_debt",
@@ -111,7 +113,8 @@
           "name": "amount",
           "type": "u128"
         }
-      ]
+      ],
+      "variant_index": 2
     }
   ],
   "accounts": [

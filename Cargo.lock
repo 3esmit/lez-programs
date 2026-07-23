@@ -1955,6 +1955,7 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "spel-framework-core",
+ "syn 2.0.118",
  "toml",
 ]
 

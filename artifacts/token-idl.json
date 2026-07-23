@@ -23,7 +23,8 @@
           "name": "amount_to_transfer",
           "type": "u128"
         }
-      ]
+      ],
+      "variant_index": 0
     },
     {
       "name": "new_fungible_definition",
@@ -56,7 +57,8 @@
             "option": "account_id"
           }
         }
-      ]
+      ],
+      "variant_index": 1
     },
     {
       "name": "new_definition_with_metadata",
@@ -93,7 +95,8 @@
             "defined": "Box"
           }
         }
-      ]
+      ],
+      "variant_index": 2
     },
     {
       "name": "initialize_account",
@@ -111,7 +114,8 @@
           "init": true
         }
       ],
-      "args": []
+      "args": [],
+      "variant_index": 3
     },
     {
       "name": "burn",
@@ -134,7 +138,8 @@
           "name": "amount_to_burn",
           "type": "u128"
         }
-      ]
+      ],
+      "variant_index": 4
     },
     {
       "name": "mint",
@@ -157,7 +162,8 @@
           "name": "amount_to_mint",
           "type": "u128"
         }
-      ]
+      ],
+      "variant_index": 5
     },
     {
       "name": "mint_with_authority",
@@ -186,7 +192,8 @@
           "name": "amount_to_mint",
           "type": "u128"
         }
-      ]
+      ],
+      "variant_index": 6
     },
     {
       "name": "set_authority",
@@ -205,7 +212,8 @@
             "option": "account_id"
           }
         }
-      ]
+      ],
+      "variant_index": 8
     },
     {
       "name": "set_authority_with_authority",
@@ -230,7 +238,8 @@
             "option": "account_id"
           }
         }
-      ]
+      ],
+      "variant_index": 9
     },
     {
       "name": "print_nft",
@@ -248,7 +257,8 @@
           "init": true
         }
       ],
-      "args": []
+      "args": [],
+      "variant_index": 7
     }
   ],
   "accounts": [

@@ -29,7 +29,8 @@
           "name": "token_program_id",
           "type": "program_id"
         }
-      ]
+      ],
+      "variant_index": 0
     },
     {
       "name": "transfer",
@@ -62,7 +63,8 @@
           "name": "amount",
           "type": "u128"
         }
-      ]
+      ],
+      "variant_index": 1
     },
     {
       "name": "burn",
@@ -95,7 +97,8 @@
           "name": "amount",
           "type": "u128"
         }
-      ]
+      ],
+      "variant_index": 2
     }
   ],
   "accounts": [
