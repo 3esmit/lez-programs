@@ -16,4 +16,5 @@ spel-framework-core = { git = "https://github.com/logos-co/spel.git", tag = "v0.
 # round-tripping through serde_json::Value (see main.rs), so the only
 # reordering we apply is sorting the `types` array.
 serde_json = { version = "1.0", features = ["preserve_order"] }
+syn = { version = "2.0", features = ["full"] }
 toml = "0.8"

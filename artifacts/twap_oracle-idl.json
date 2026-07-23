@@ -33,7 +33,8 @@
           "name": "window_duration",
           "type": "u64"
         }
-      ]
+      ],
+      "variant_index": 0
     },
     {
       "name": "create_oracle_price_account",
@@ -74,7 +75,8 @@
           "name": "window_duration",
           "type": "u64"
         }
-      ]
+      ],
+      "variant_index": 1
     },
     {
       "name": "create_current_tick_account",
@@ -103,7 +105,8 @@
           "name": "initial_price",
           "type": "u128"
         }
-      ]
+      ],
+      "variant_index": 2
     },
     {
       "name": "update_current_tick",
@@ -132,7 +135,8 @@
           "name": "price",
           "type": "u128"
         }
-      ]
+      ],
+      "variant_index": 3
     },
     {
       "name": "publish_price",
@@ -171,7 +175,8 @@
           "name": "window_duration",
           "type": "u64"
         }
-      ]
+      ],
+      "variant_index": 4
     },
     {
       "name": "record_tick",
@@ -204,7 +209,8 @@
           "name": "window_duration",
           "type": "u64"
         }
-      ]
+      ],
+      "variant_index": 5
     }
   ],
   "accounts": [
