@@ -1,5 +1,6 @@
 import QtQuick 2.15
 import QtQuick.Layouts 1.15
+import "TokenVisuals.js" as TokenVisuals
 
 Rectangle {
     id: root
@@ -10,6 +11,11 @@ Rectangle {
     property string usdValue: ""
     property var token: null
     property bool active: true
+    // When true, restrict input to digits only — used for the sell-amount
+    // field, whose value is sent to the backend as a raw base-units integer
+    // string (see decimalToU128Le in AmmUiBackend.cpp); fractional/decimal
+    // input there fails opaquely rather than being scaled.
+    property bool digitsOnly: false
 
     signal tokenClicked()
     signal inputEdited(string newValue)
@@ -56,9 +62,21 @@ Rectangle {
                     font.weight: Font.Bold
                     selectionColor: theme.colors.selection
                     clip: true
-                    onTextEdited: root.inputEdited(text)
+                    onTextEdited: {
+                        if (root.digitsOnly) {
+                            // Amounts are base units (integers) — strip any
+                            // character that slips past the validator (e.g.
+                            // via paste) before it reaches the backend.
+                            var filtered = text.replace(/[^0-9]/g, "")
+                            if (filtered !== text)
+                                text = filtered // does not re-trigger onTextEdited
+                            root.inputEdited(filtered)
+                        } else {
+                            root.inputEdited(text)
+                        }
+                    }
                     validator: RegularExpressionValidator {
-                        regularExpression: /^[0-9]*\.?[0-9]*$/
+                        regularExpression: root.digitsOnly ? /^[0-9]*$/ : /^[0-9]*\.?[0-9]*$/
                     }
                 }
 
@@ -94,11 +112,11 @@ Rectangle {
 
                 Rectangle {
                     width: 24; height: 24; radius: 12
-                    color: root.token ? root.token.color : theme.colors.noTokenCircle
+                    color: root.token ? TokenVisuals.colorFor(root.token.symbol) : theme.colors.noTokenCircle
                     visible: root.token !== null
                     Text {
                         anchors.centerIn: parent
-                        text: root.token ? root.token.letter : ""
+                        text: root.token ? TokenVisuals.letterFor(root.token.symbol) : ""
                         color: "#ffffff"
                         font.pixelSize: 10
                         font.weight: Font.Bold
