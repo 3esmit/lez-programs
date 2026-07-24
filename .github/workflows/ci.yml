@@ -9,7 +9,19 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+
 jobs:
+  ci-contract:
+    name: CI Contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Verify authenticated RISC Zero installation
+        run: python3 scripts/test-ci-risc0-auth.py
+
   fmt-rs:
     name: Rust Format
     runs-on: ubuntu-latest
