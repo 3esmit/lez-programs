@@ -3,10 +3,16 @@
 
 #include <QObject>
 #include <QString>
+#include <QVariantList>
+#include <QVariantMap>
 
 #include "rep_AmmUiBackend_source.h"
 
 #include "AccountModel.h"
+
+extern "C" {
+#include "amm_client_ffi.h"
+}
 
 class LogosAPI;
 struct LogosModules;
@@ -43,6 +49,15 @@ public slots:
     bool changeSequencerAddr(QString url) override;
     void copyToClipboard(QString text) override;
 
+    // AMM
+    QVariantMap resolvePool(QString defAHex, QString defBHex) override;
+    QString swapExactInput(QString defAHex, QString defBHex, QString userInputHoldingHex,
+                            QString userOutputHoldingHex, QString amountInDecimal,
+                            QString minOutDecimal, QString deadlineDecimal) override;
+    // Reads the token list from TOKENS_CONFIG (see AmmUiBackend.cpp) so the
+    // Swap UI's token picker is config-driven instead of hardcoded.
+    QVariantList tokenList() override;
+
 private:
     // Per-app wallet home (kept distinct from the wallet's canonical
     // ~/.lee/wallet so standalone instances stay isolated; Basecamp sharing
@@ -53,6 +68,10 @@ private:
 
     void persistConfigPath(const QString& path);
     void persistStoragePath(const QString& path);
+    // Normalizes an account id given as either 64-char lowercase/uppercase hex
+    // or base58 to lowercase hex. Returns an empty QString if `id` is neither
+    // (or the base58 decode fails), so callers can detect and skip it.
+    QString normalizeAccountId(const QString& id);
     void openOrAdoptWallet();
     // True when the shared core already has a wallet open — including a freshly
     // created one with zero accounts. See the definition for why list_accounts()
@@ -61,6 +80,11 @@ private:
     void refreshBlockHeights();
     void refreshSequencerAddr();
     void saveWallet();
+
+    // Returns the deployed AMM program-binary bytes (a RISC Zero ProgramBinary
+    // .bin, not a raw ELF) from $AMM_PROGRAM_BIN, or an empty QByteArray (with a
+    // qWarning) if the env var is unset/unreadable/empty.
+    QByteArray loadAmmElf();
 
     // Probe the configured sequencer over HTTP and update sequencerReachable.
     void checkReachability();

@@ -11,6 +11,17 @@
     logos_execution_zone.url = "github:logos-blockchain/logos-execution-zone-module?rev=d2e9400ac06c3cdbfc2405b4f153fff9841a453c";
   };
 
+  # NOTE: this flake is no longer built standalone. The amm_client_ffi crate
+  # (the Rust C FFI library the AmmUiBackend C++ code links against) lives in
+  # the repo-root flake, and referencing it from here would require either a
+  # hardcoded absolute `git+file://` path or a `path:../..` input — the latter
+  # fails flake evaluation because the app directory is copied into the Nix
+  # store as its own flake root, so `../..` can't escape it there. Instead,
+  # the repo-root flake.nix builds this module directly (src = ./apps/amm)
+  # and resolves amm_client_ffi via `self`. The repo-root flake exposes the UI
+  # as a named attribute (there is no bare `default`): run it from the repo root
+  # with `nix run .#amm-ui`, and build just the FFI crate with
+  # `nix build .#amm_client_ffi`.
   outputs = inputs@{ logos-module-builder, ... }:
     logos-module-builder.lib.mkLogosQmlModule {
       src = ./.;
