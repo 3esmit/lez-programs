@@ -27,8 +27,10 @@ class ProgramReleaseTests(unittest.TestCase):
         self.root = Path(self.temporary_directory.name)
         self.guest_dir = self.root / "guest"
         self.idl_dir = self.root / "idls"
+        self.license_file = self.root / "LICENSE"
         self.guest_dir.mkdir()
         self.idl_dir.mkdir()
+        self.license_file.write_text("Test license\n", encoding="utf-8")
         for program in PROGRAM_RELEASE.PROGRAMS:
             (self.guest_dir / f"{program}.bin").write_bytes(
                 PROGRAM_RELEASE.PROGRAM_BINARY_MAGIC + program.encode("ascii")
@@ -57,6 +59,7 @@ class ProgramReleaseTests(unittest.TestCase):
                     "repository": "example/lez-programs",
                     "guest_dir": self.guest_dir,
                     "idl_dir": self.idl_dir,
+                    "license_file": self.license_file,
                     "output_dir": output,
                 },
             )()
@@ -86,6 +89,7 @@ class ProgramReleaseTests(unittest.TestCase):
         )
         self.assertEqual(manifest["release_tag"], "v1.2.3-alpha.1")
         self.assertEqual(manifest["source_commit"], "a" * 40)
+        self.assertEqual(manifest["license"], "LICENSE")
         self.assertEqual(
             {entry["name"] for entry in manifest["programs"]},
             set(PROGRAM_RELEASE.PROGRAMS),

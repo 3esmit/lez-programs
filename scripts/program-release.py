@@ -49,6 +49,7 @@ def validate_identity(tag: str, source_commit: str, repository: str) -> None:
 def expected_file_names() -> set[str]:
     names = {f"{program}.bin" for program in PROGRAMS}
     names.update(f"{program}-idl.json" for program in PROGRAMS)
+    names.add("LICENSE")
     return names
 
 
@@ -127,11 +128,14 @@ def package_release(args: argparse.Namespace) -> None:
     validate_identity(args.tag, args.source_commit, args.repository)
     guest_dir = args.guest_dir.resolve()
     idl_dir = args.idl_dir.resolve()
+    license_source = args.license_file.resolve()
     output_dir = args.output_dir.resolve()
 
     if output_dir.exists():
         raise ReleaseError(f"output directory already exists: {output_dir}")
     validate_input_set(guest_dir, idl_dir)
+    if not license_source.is_file() or license_source.stat().st_size == 0:
+        raise ReleaseError(f"license file is missing or empty: {license_source}")
 
     output_dir.mkdir(parents=True)
     programs = []
@@ -159,6 +163,10 @@ def package_release(args: argparse.Namespace) -> None:
             }
         )
 
+    license_path = output_dir / "LICENSE"
+    shutil.copyfile(license_source, license_path)
+    payload_paths.append(license_path)
+
     manifest = output_dir / "release-manifest.json"
     manifest.write_text(
         json.dumps(
@@ -168,6 +176,9 @@ def package_release(args: argparse.Namespace) -> None:
                 "source_repository": args.repository,
                 "source_commit": args.source_commit,
                 "runtime_target": "riscv32im-risc0-zkvm-elf",
+                "license": license_path.name,
+                "license_sha256": sha256(license_path),
+                "license_size": license_path.stat().st_size,
                 "programs": programs,
             },
             indent=2,
@@ -324,6 +335,13 @@ def verify_release(args: argparse.Namespace) -> None:
         raise ReleaseError("release manifest repository mismatch")
     if manifest.get("runtime_target") != "riscv32im-risc0-zkvm-elf":
         raise ReleaseError("release manifest runtime target mismatch")
+    verify_manifest_file(
+        assets_dir,
+        manifest,
+        "license",
+        "license_sha256",
+        "license_size",
+    )
 
     programs = manifest_programs(manifest)
     for program, entry in programs.items():
@@ -351,6 +369,7 @@ def parser() -> argparse.ArgumentParser:
     package.add_argument("--repository", required=True)
     package.add_argument("--guest-dir", type=Path, default=Path("target/guest"))
     package.add_argument("--idl-dir", type=Path, default=Path("artifacts"))
+    package.add_argument("--license-file", type=Path, default=Path("LICENSE"))
     package.add_argument("--output-dir", type=Path, default=Path("dist/release"))
     package.set_defaults(action=package_release)
 

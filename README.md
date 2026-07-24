@@ -115,6 +115,7 @@ release contains:
 
 - one deployable `.bin` and matching `-idl.json` file for each program;
 - a portable archive containing the same files;
+- the MIT `LICENSE` covering the distributed files;
 - `release-manifest.json`, which binds file digests to the source commit and
   runtime target;
 - `SHA256SUMS`, which covers every direct-download file, manifest, and archive.
