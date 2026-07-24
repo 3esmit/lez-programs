@@ -3,6 +3,13 @@
 All notable changes to the LEZ programs in this repository are documented here.
 This file is generated from Conventional Commit messages by [git-cliff](https://git-cliff.org).
 
+## [Unreleased]
+
+### CI
+
+- Publish deployable program binaries and matching IDLs from version tags with
+  a source manifest, SHA-256 checksums, and verification before publication.
+
 ## [1.0.0] - 2026-07-16
 
 ### ⚠️ Breaking Changes
@@ -178,4 +185,3 @@ This file is generated from Conventional Commit messages by [git-cliff](https://
 ### Chores
 
 - Initial repository setup for programs ([45ed284](https://github.com/logos-blockchain/lez-programs/commit/45ed284825cb403ce3dd53328060cd7a3e5ee6ba))
-
