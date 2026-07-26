@@ -9,6 +9,7 @@ import hashlib
 import json
 import re
 import shutil
+import subprocess
 import sys
 import tarfile
 from pathlib import Path
@@ -22,7 +23,6 @@ TAG_PATTERN = re.compile(
 )
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
-PROGRAM_BINARY_MAGIC = b"R0BF"
 
 
 class ReleaseError(RuntimeError):
@@ -76,12 +76,25 @@ def describe_set_difference(label: str, expected: set[str], actual: set[str]) ->
     raise ReleaseError(f"{label} do not match release contract: {' '.join(details)}")
 
 
-def validate_binary(path: Path) -> None:
-    if path.stat().st_size <= len(PROGRAM_BINARY_MAGIC):
-        raise ReleaseError(f"program binary is empty or truncated: {path}")
-    with path.open("rb") as handle:
-        if handle.read(len(PROGRAM_BINARY_MAGIC)) != PROGRAM_BINARY_MAGIC:
-            raise ReleaseError(f"program binary has invalid RISC Zero header: {path}")
+def validate_binary(path: Path, validator: Path) -> None:
+    if not validator.is_file():
+        raise ReleaseError(f"program validator is missing: {validator}")
+
+    try:
+        result = subprocess.run(
+            [str(validator), "validate", str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as error:
+        raise ReleaseError(
+            f"cannot run program validator: {validator}: {error}"
+        ) from error
+
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "validator failed"
+        raise ReleaseError(f"program binary is invalid: {path}: {detail}")
 
 
 def load_idl(path: Path, program: str) -> dict[str, Any]:
@@ -129,6 +142,7 @@ def package_release(args: argparse.Namespace) -> None:
     guest_dir = args.guest_dir.resolve()
     idl_dir = args.idl_dir.resolve()
     license_source = args.license_file.resolve()
+    validator = args.validator.resolve()
     output_dir = args.output_dir.resolve()
 
     if output_dir.exists():
@@ -143,7 +157,7 @@ def package_release(args: argparse.Namespace) -> None:
     for program in PROGRAMS:
         binary_source = guest_dir / f"{program}.bin"
         idl_source = idl_dir / f"{program}-idl.json"
-        validate_binary(binary_source)
+        validate_binary(binary_source, validator)
         load_idl(idl_source, program)
 
         binary = output_dir / binary_source.name
@@ -207,6 +221,7 @@ def package_release(args: argparse.Namespace) -> None:
             tag=args.tag,
             source_commit=args.source_commit,
             repository=args.repository,
+            validator=validator,
         )
     )
 
@@ -305,6 +320,7 @@ def verify_bundle(
 def verify_release(args: argparse.Namespace) -> None:
     validate_identity(args.tag, args.source_commit, args.repository)
     assets_dir = args.assets_dir.resolve()
+    validator = args.validator.resolve()
     manifest_path = assets_dir / "release-manifest.json"
     checksum_path = assets_dir / "SHA256SUMS"
     bundle_name = f"lez-programs-{args.tag}.tar.gz"
@@ -352,7 +368,7 @@ def verify_release(args: argparse.Namespace) -> None:
         verify_manifest_file(
             assets_dir, entry, "binary", "binary_sha256", "binary_size"
         )
-        validate_binary(assets_dir / entry["binary"])
+        validate_binary(assets_dir / entry["binary"], validator)
         verify_manifest_file(assets_dir, entry, "idl", "idl_sha256", "idl_size")
         load_idl(assets_dir / entry["idl"], program)
 
@@ -370,6 +386,12 @@ def parser() -> argparse.ArgumentParser:
     package.add_argument("--guest-dir", type=Path, default=Path("target/guest"))
     package.add_argument("--idl-dir", type=Path, default=Path("artifacts"))
     package.add_argument("--license-file", type=Path, default=Path("LICENSE"))
+    package.add_argument(
+        "--validator",
+        type=Path,
+        required=True,
+        help="risc0-packager executable used to validate ProgramBinary and ELF structure",
+    )
     package.add_argument("--output-dir", type=Path, default=Path("dist/release"))
     package.set_defaults(action=package_release)
 
@@ -377,6 +399,12 @@ def parser() -> argparse.ArgumentParser:
     verify.add_argument("--tag", required=True)
     verify.add_argument("--source-commit", required=True)
     verify.add_argument("--repository", required=True)
+    verify.add_argument(
+        "--validator",
+        type=Path,
+        required=True,
+        help="risc0-packager executable used to validate ProgramBinary and ELF structure",
+    )
     verify.add_argument("--assets-dir", type=Path, required=True)
     verify.set_defaults(action=verify_release)
     return value

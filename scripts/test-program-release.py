@@ -28,12 +28,13 @@ class ProgramReleaseTests(unittest.TestCase):
         self.guest_dir = self.root / "guest"
         self.idl_dir = self.root / "idls"
         self.license_file = self.root / "LICENSE"
+        self.validator = self.root / "validator"
         self.guest_dir.mkdir()
         self.idl_dir.mkdir()
         self.license_file.write_text("Test license\n", encoding="utf-8")
         for program in PROGRAM_RELEASE.PROGRAMS:
             (self.guest_dir / f"{program}.bin").write_bytes(
-                PROGRAM_RELEASE.PROGRAM_BINARY_MAGIC + program.encode("ascii")
+                b"R0BF" + program.encode("ascii")
             )
             (self.idl_dir / f"{program}-idl.json").write_text(
                 json.dumps(
@@ -46,6 +47,16 @@ class ProgramReleaseTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+        self.validator.write_text(
+            "#!/usr/bin/env python3\n"
+            "import pathlib\n"
+            "import sys\n"
+            "path = pathlib.Path(sys.argv[2])\n"
+            "expected = b'R0BF' + path.stem.encode('ascii')\n"
+            "sys.exit(0 if sys.argv[1:] == ['validate', str(path)] and path.read_bytes() == expected else 1)\n",
+            encoding="utf-8",
+        )
+        self.validator.chmod(0o700)
 
     def package(self) -> Path:
         output = self.root / "release"
@@ -60,6 +71,7 @@ class ProgramReleaseTests(unittest.TestCase):
                     "guest_dir": self.guest_dir,
                     "idl_dir": self.idl_dir,
                     "license_file": self.license_file,
+                    "validator": self.validator,
                     "output_dir": output,
                 },
             )()
@@ -75,6 +87,7 @@ class ProgramReleaseTests(unittest.TestCase):
                     "tag": "v1.2.3-alpha.1",
                     "source_commit": "a" * 40,
                     "repository": "example/lez-programs",
+                    "validator": self.validator,
                     "assets_dir": output,
                 },
             )()
@@ -121,6 +134,45 @@ class ProgramReleaseTests(unittest.TestCase):
             PROGRAM_RELEASE.ReleaseError, "IDL name does not match binary"
         ):
             self.package()
+
+    def test_package_rejects_binary_rejected_by_structural_validator(self) -> None:
+        (self.guest_dir / "amm.bin").write_bytes(b"R0BFgarbage")
+
+        with self.assertRaisesRegex(
+            PROGRAM_RELEASE.ReleaseError, "program binary is invalid:.*amm.bin"
+        ):
+            self.package()
+
+    def test_verify_rejects_magic_valid_binary_with_updated_digests(self) -> None:
+        output = self.package()
+        binary_path = output / "amm.bin"
+        binary_path.write_bytes(b"R0BFgarbage")
+
+        manifest_path = output / "release-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for entry in manifest["programs"]:
+            if entry["name"] == "amm":
+                entry["binary_sha256"] = PROGRAM_RELEASE.sha256(binary_path)
+                entry["binary_size"] = binary_path.stat().st_size
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        checksum_path = output / "SHA256SUMS"
+        updated = []
+        for line in checksum_path.read_text(encoding="utf-8").splitlines():
+            if line.endswith("  amm.bin"):
+                updated.append(f"{PROGRAM_RELEASE.sha256(binary_path)}  amm.bin")
+            elif line.endswith("  release-manifest.json"):
+                updated.append(
+                    f"{PROGRAM_RELEASE.sha256(manifest_path)}  release-manifest.json"
+                )
+            else:
+                updated.append(line)
+        checksum_path.write_text("\n".join(updated) + "\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(
+            PROGRAM_RELEASE.ReleaseError, "program binary is invalid:.*amm.bin"
+        ):
+            self.verify(output)
 
     def test_verify_rejects_duplicate_manifest_program(self) -> None:
         output = self.package()

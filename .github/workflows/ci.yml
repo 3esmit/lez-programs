@@ -155,12 +155,16 @@ jobs:
             test -s "target/guest/${program}.bin"
           done
 
+      - name: Build ProgramBinary validator
+        run: cargo build -p risc0-packager --release
+
       - name: Package and verify release contract
         run: |
           python3 scripts/program-release.py package \
             --tag v0.0.0-ci \
             --source-commit "${GITHUB_SHA}" \
             --repository "${GITHUB_REPOSITORY}" \
+            --validator target/release/risc0-packager \
             --output-dir "${RUNNER_TEMP}/program-release"
 
   check-idl:
