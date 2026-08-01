@@ -27,10 +27,12 @@ Account/keystore sharing follows the runtime:
   startup the backend **adopts** the already-open wallet (see
   `openOrAdoptWallet()`), surfacing **shared** accounts across apps.
 
-> Follow-up: the wallet FFI requires explicit `config_path`/`storage_path` even
-> though the wallet crate already defines defaults (`~/.lee/wallet`,
-> `from_path_or_initialize_default`). A `wallet_ffi_create_new_default()` /
-> `_open_default()` upstream would let the app drop its path handling entirely.
+> Follow-up: the app reconstructs the wallet paths itself because the
+> `logos_execution_zone` module only exposes path-taking `create_new`/`open`.
+> LEZ's wallet FFI now provides path-free variants (`wallet_ffi_create_new_default`,
+> `wallet_ffi_open_default`, plus `wallet_ffi_default_config_path` /
+> `_storage_path` / `wallet_ffi_wallet_exists_default`). Once the module surfaces
+> those over QtRO, the app can drop its `defaultWalletHome/Config/Storage` logic.
 
 ## Setup
 
@@ -80,9 +82,11 @@ nix build '.#lgx' --out-link result-lgx
 # Portable variant (self-contained, works without nix)
 nix build '.#lgx-portable' --out-link result-lgx-portable
 
-# The core wallet module it depends on. Use the same rev this app pins as the
-# `logos_execution_zone` input in flake.nix so the ImageID/ABI match.
-nix build 'github:logos-blockchain/logos-execution-zone-module?rev=d2e9400ac06c3cdbfc2405b4f153fff9841a453c#lgx' \
+# The core wallet module it depends on. These are the same immutable upstream
+# revisions used by this app's flake, including the merged macOS Metal fix.
+nix build 'github:logos-blockchain/logos-execution-zone-module?rev=d70225ced646934d2294fd9e8f8b03615c104b80#lgx' \
+  --override-input logos-execution-zone \
+  'github:logos-blockchain/logos-execution-zone?rev=a7e06a660940a00093b1760560d37ff84aff5a05' \
   --out-link result-core
 ```
 
@@ -131,10 +135,12 @@ core module from `result-core/` and the UI plugin from `result-lgx/`:
 4. Choose the core module `.lgx` from `result-core/`, then the UI plugin `.lgx`
    from `result-lgx/`
 
-To actually use the Swap view you must also set `AMM_PROGRAM_BIN` and
-`TOKENS_CONFIG` (both explained below). Run this **from the repo root** — use
-absolute paths (`$(pwd)/…`), because `nix run` may not preserve the working
-directory, so relative paths won't resolve:
+To actually use the on-chain views (**Swap** and **Liquidity**) you must also
+set `AMM_PROGRAM_BIN` and `TOKENS_CONFIG` (both explained below). Both views read
+the same two — the AMM program id is derived from `AMM_PROGRAM_BIN`, the token
+set from `TOKENS_CONFIG`, and the sequencer from the wallet config. Run this
+**from the repo root** — use absolute paths (`$(pwd)/…`), because `nix run` may
+not preserve the working directory, so relative paths won't resolve:
 
 ```bash
 AMM_PROGRAM_BIN=$(pwd)/programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
@@ -142,10 +148,10 @@ TOKENS_CONFIG=$(pwd)/amm-tokens.json \
 nix run .#amm-ui
 ```
 
-Without `AMM_PROGRAM_BIN` the Swap view stays disabled; without `TOKENS_CONFIG`
-the token picker is empty. Each is detailed below.
+Without `AMM_PROGRAM_BIN` the Swap and Liquidity views stay disabled; without
+`TOKENS_CONFIG` the token picker is empty. Each is detailed below.
 
-### AMM program binary (required for swaps)
+### AMM program binary (required for swaps and liquidity)
 
 To execute a swap, the app must submit a transaction against the **exact AMM
 program you deployed** (its ELF determines the program id, and therefore every
@@ -203,6 +209,11 @@ AMM_PROGRAM_BIN=$(pwd)/programs/amm/methods/guest/target/riscv32im-risc0-zkvm-el
 TOKENS_CONFIG=$(pwd)/amm-tokens.json \
 nix run .#amm-ui
 ```
+
+## Validation
+
+New Position validation commands and acceptance criteria live in
+[VALIDATION.md](VALIDATION.md).
 
 ## Updating Dependencies
 

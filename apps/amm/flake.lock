@@ -2,6 +2,22 @@
   "nodes": {
     "crane": {
       "locked": {
+        "lastModified": 1779041105,
+        "narHash": "sha256-nnGD2f8OlAZT2i5OfwikJsw+ifWfiA4d6A8BWlgOXV0=",
+        "owner": "ipetkov",
+        "repo": "crane",
+        "rev": "10e6e3cb966f7cfcc789fe5eee7a85f3188ce08b",
+        "type": "github"
+      },
+      "original": {
+        "owner": "ipetkov",
+        "ref": "v0.23.4",
+        "repo": "crane",
+        "type": "github"
+      }
+    },
+    "crane_2": {
+      "locked": {
         "lastModified": 1780532242,
         "narHash": "sha256-D+BsdpxmtUwtqGoY0IXPhHgTlmqgcZKCEo1oMyn7ep0=",
         "owner": "ipetkov",
@@ -2225,7 +2241,7 @@
     },
     "logos-execution-zone": {
       "inputs": {
-        "crane": "crane",
+        "crane": "crane_2",
         "logos-blockchain-circuits": "logos-blockchain-circuits",
         "logos-liblogos": "logos-liblogos_4",
         "nixpkgs": [
@@ -2238,17 +2254,17 @@
         "rust-rapidsnark": "rust-rapidsnark"
       },
       "locked": {
-        "lastModified": 1782310268,
-        "narHash": "sha256-tIIIO+V+w/C/KLtKnLIv8O8/GoJ4PzgJSWrlQCXJ2P4=",
+        "lastModified": 1784202021,
+        "narHash": "sha256-BG94Ob5tbJyw7GclNBdnOWqcBLRld8sc+xeOU8LI5RQ=",
         "owner": "logos-blockchain",
-        "repo": "lssa",
-        "rev": "fb8cbac40e0bda4f152415ff4f181cdc6bca6d4a",
+        "repo": "logos-execution-zone",
+        "rev": "a7e06a660940a00093b1760560d37ff84aff5a05",
         "type": "github"
       },
       "original": {
         "owner": "logos-blockchain",
-        "repo": "lssa",
-        "rev": "fb8cbac40e0bda4f152415ff4f181cdc6bca6d4a",
+        "repo": "logos-execution-zone",
+        "rev": "a7e06a660940a00093b1760560d37ff84aff5a05",
         "type": "github"
       }
     },
@@ -14438,11 +14454,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1782082589,
-        "narHash": "sha256-Qeqxp0HYb3oTpmfD5YlFPJzpAJa7Ilb9o4sMeVvmHRI=",
+        "lastModified": 1782920676,
+        "narHash": "sha256-Vb81kiYbi8yYDZbUSW6v7QhV6uO/pj7F+lCAW1coAsY=",
         "owner": "logos-co",
         "repo": "logos-protocol",
-        "rev": "315a3a2e0af61bc47aad5601ee44cd7689975820",
+        "rev": "d7ad26d369c4e464a99f2a357f10c5947c7174e1",
         "type": "github"
       },
       "original": {
@@ -16410,17 +16426,17 @@
         "nix-bundle-lgx": "nix-bundle-lgx_28"
       },
       "locked": {
-        "lastModified": 1782313954,
-        "narHash": "sha256-psh5EtcIZh6kzFD4pQDT8bae9JS9eVtk5nPWxR2aGSA=",
+        "lastModified": 1782741385,
+        "narHash": "sha256-kN6xb1b/Jvu9Ninaqtmi/C4fx8poisGYbThIBIXwvHw=",
         "owner": "logos-blockchain",
         "repo": "logos-execution-zone-module",
-        "rev": "d2e9400ac06c3cdbfc2405b4f153fff9841a453c",
+        "rev": "d70225ced646934d2294fd9e8f8b03615c104b80",
         "type": "github"
       },
       "original": {
         "owner": "logos-blockchain",
         "repo": "logos-execution-zone-module",
-        "rev": "d2e9400ac06c3cdbfc2405b4f153fff9841a453c",
+        "rev": "d70225ced646934d2294fd9e8f8b03615c104b80",
         "type": "github"
       }
     },
@@ -25408,6 +25424,22 @@
         "type": "github"
       }
     },
+    "nixpkgs_399": {
+      "locked": {
+        "lastModified": 1782841183,
+        "narHash": "sha256-Ndt/5R7UN4rBdhFR1lxHZZZ42cD6vGlnuxC2VvvsKE4=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "c9bfd86ed684d27e63b0ff9ebb18699f84f27a3b",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-25.11-small",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
     "nixpkgs_4": {
       "locked": {
         "lastModified": 1759036355,
@@ -26762,8 +26794,10 @@
     },
     "root": {
       "inputs": {
+        "crane": "crane",
         "logos-module-builder": "logos-module-builder",
-        "logos_execution_zone": "logos_execution_zone"
+        "logos_execution_zone": "logos_execution_zone",
+        "nixpkgs": "nixpkgs_399"
       }
     },
     "rust-overlay": {

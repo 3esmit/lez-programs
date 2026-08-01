@@ -98,10 +98,36 @@
               '';
           }
         );
+
+        # Second AMM client crate (apps/amm/client) — the new-position/pool
+        # flow's protocol lib. Built alongside amm_client_ffi (they coexist:
+        # symbols are prefixed amm_* vs amm_client_*). TODO: consolidate the two
+        # into a single AMM client FFI.
+        ammClientArgs = commonArgs // {
+          pname = "amm_client";
+          cargoExtraArgs = "-p amm_client";
+        };
+        ammClient = craneLib.buildPackage (
+          ammClientArgs
+          // {
+            cargoArtifacts = craneLib.buildDepsOnly ammClientArgs;
+            postInstall =
+              ''
+                mkdir -p $out/include
+                cp apps/amm/client/include/amm_client.h $out/include/
+              ''
+              + pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
+                if [ -f $out/lib/libamm_client.dylib ]; then
+                  install_name_tool -id "$out/lib/libamm_client.dylib" $out/lib/libamm_client.dylib
+                fi
+              '';
+          }
+        );
       in
       {
         packages.default = ammClientFfi;
         packages.amm_client_ffi = ammClientFfi;
+        packages.amm_client = ammClient;
       }
     );
 
@@ -117,7 +143,29 @@
         flakeInputs = inputs;
         externalLibInputs = {
           amm_client_ffi = { input = self; packages.default = "amm_client_ffi"; };
+          amm_client = { input = self; packages.default = "amm_client"; };
         };
+        # The AMM UI links the shared C++ wallet access lib and bundles the
+        # Logos.Wallet QML module (apps/shared/wallet). apps/amm/flake.nix wires
+        # these via its `shared_wallet` input; when built from this root flake
+        # the source lives in-tree, so point CMake straight at it and stage the
+        # built QML module the same way. Keep in sync with apps/amm/flake.nix.
+        preConfigure = ''
+          cmakeFlagsArray+=("-DLOGOS_WALLET_SOURCE_DIR=${./apps/shared/wallet}")
+        '';
+        postInstall = ''
+          test -f ${./apps/amm/qml}/Logos/Wallet/qmldir
+
+          walletQmlDir="shared-wallet/qml/Logos/Wallet"
+          if [ ! -d "$walletQmlDir" ]; then
+            echo "Built Logos.Wallet QML module not found"
+            exit 1
+          fi
+          walletQmlInstallDir="$out/lib/Logos/Wallet"
+          mkdir -p "$walletQmlInstallDir"
+          cp -r "$walletQmlDir/." "$walletQmlInstallDir/"
+          test -f "$walletQmlInstallDir/qmldir"
+        '';
       };
 
       # Expose the AMM QML UI as a NAMED app/package (`amm-ui`) rather than
@@ -139,10 +187,11 @@
         let
           pkgs = import nixpkgs { inherit system; overlays = [ rust-overlay.overlays.default ]; };
           ammFfi = crateOutputs.packages.${system}.amm_client_ffi;
+          ammClient = crateOutputs.packages.${system}.amm_client;
         in
         app // {
           program = "${pkgs.writeShellScript "run-amm-ui" ''
-            export DYLD_FALLBACK_LIBRARY_PATH="${ammFfi}/lib''${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
+            export DYLD_FALLBACK_LIBRARY_PATH="${ammFfi}/lib:${ammClient}/lib''${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
             exec ${app.program} "$@"
           ''}";
         };
