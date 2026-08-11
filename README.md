@@ -98,14 +98,49 @@ Integration tests live in `programs/integration_tests/tests/` and cover `token`,
 The guest binaries are compiled to the `riscv32im-risc0-zkvm-elf` target. This requires the RISC Zero toolchain.
 
 ```bash
-cargo risczero build --manifest-path <PROGRAM>/methods/guest/Cargo.toml
+make build-programs
 ```
 
 Binaries are output to:
 
 ```
-<PROGRAM>/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/<PROGRAM>.bin
+target/guest/<PROGRAM>.bin
 ```
+
+## Published Program Artifacts
+
+Version tags publish source-owned program artifacts from the
+[GitHub Releases](https://github.com/3esmit/lez-programs/releases) page. Each
+release contains:
+
+- one deployable `.bin` and matching `-idl.json` file for each program;
+- a portable archive containing the same files;
+- the MIT `LICENSE` covering the distributed files;
+- `release-manifest.json`, which binds file digests to the source commit and
+  runtime target;
+- `SHA256SUMS`, which covers every direct-download file, manifest, and archive.
+
+These `.bin` files target the RISC Zero guest runtime. They are not host
+executables, so the same released bytes are used by deployment tools on Linux
+and macOS.
+
+Verify downloaded assets before deployment:
+
+```bash
+sha256sum --check SHA256SUMS
+```
+
+On macOS:
+
+```bash
+shasum -a 256 --check SHA256SUMS
+```
+
+Deploy the exact downloaded binary, then register its matching IDL and derived
+Program ID in clients such as Logos Inspector. Do not combine a binary from one
+release with an IDL from another release. Rebuilding a program may change its
+Program ID, so deployment records and PDA inputs must continue to use the ID
+derived from the binary that was actually deployed.
 
 ## Deployment
 
@@ -114,11 +149,11 @@ Binaries are output to:
 wallet deploy-program <path-to-binary>
 
 # Example
-wallet deploy-program programs/token/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token.bin
-wallet deploy-program programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin
-wallet deploy-program programs/ata/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/ata.bin
-wallet deploy-program programs/stablecoin/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/stablecoin.bin
-wallet deploy-program programs/twap_oracle/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/twap_oracle.bin
+wallet deploy-program target/guest/token.bin
+wallet deploy-program target/guest/amm.bin
+wallet deploy-program target/guest/ata.bin
+wallet deploy-program target/guest/stablecoin.bin
+wallet deploy-program target/guest/twap_oracle.bin
 ```
 
 To inspect the `ProgramId` of a built binary:

@@ -1,0 +1,133 @@
+name: Release Program Artifacts
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and verify release assets
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Record release source commit
+        run: echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> "${GITHUB_ENV}"
+
+      - name: Build guest program binaries
+        run: make build-programs
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: "1.94.0"
+
+      - name: Verify generated IDLs
+        run: |
+          set -euo pipefail
+          cargo build -p idl-gen --release
+          for source in programs/*/methods/guest/src/bin/*.rs; do
+            program="$(basename "${source}" .rs)"
+            target/release/idl-gen "${source}" > "${RUNNER_TEMP}/${program}-idl.json"
+            diff -u "artifacts/${program}-idl.json" "${RUNNER_TEMP}/${program}-idl.json"
+          done
+
+      - name: Build ProgramBinary validator
+        run: cargo build -p risc0-packager --release
+
+      - name: Package release assets
+        run: |
+          python3 scripts/program-release.py package \
+            --tag "${GITHUB_REF_NAME}" \
+            --source-commit "${SOURCE_COMMIT}" \
+            --repository "${GITHUB_REPOSITORY}" \
+            --validator target/release/risc0-packager \
+            --output-dir dist/release
+
+      - name: Upload verified release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: program-release-assets
+          path: dist/release
+          if-no-files-found: error
+
+      - name: Upload ProgramBinary validator
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: program-release-validator
+          path: target/release/risc0-packager
+          if-no-files-found: error
+
+  publish:
+    name: Publish verified release assets
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: program-release-assets
+          path: dist/release
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: program-release-validator
+          path: "${{ runner.temp }}/release-validator"
+
+      - name: Make ProgramBinary validator executable
+        run: chmod +x "${RUNNER_TEMP}/release-validator/risc0-packager"
+
+      - name: Record release source commit
+        run: echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> "${GITHUB_ENV}"
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" \
+            --draft \
+            --generate-notes \
+            --title "LEZ programs ${GITHUB_REF_NAME}" \
+            --verify-tag \
+            dist/release/*
+
+      - name: Download and verify draft assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/release-download"
+          gh release download "${GITHUB_REF_NAME}" \
+            --dir "${RUNNER_TEMP}/release-download"
+          python3 scripts/program-release.py verify \
+            --tag "${GITHUB_REF_NAME}" \
+            --source-commit "${SOURCE_COMMIT}" \
+            --repository "${GITHUB_REPOSITORY}" \
+            --validator "${RUNNER_TEMP}/release-validator/risc0-packager" \
+            --assets-dir "${RUNNER_TEMP}/release-download"
+
+      - name: Publish verified release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          prerelease=()
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            prerelease=(--prerelease)
+          fi
+          gh release edit "${GITHUB_REF_NAME}" \
+            --draft=false \
+            "${prerelease[@]}"
