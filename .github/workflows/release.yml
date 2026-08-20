@@ -131,7 +131,13 @@ jobs:
               printf '%s\n' "${output}"
               return
             fi
-            mapfile -t matches < <(find "${output}" -maxdepth 1 -type f -name '*.lgx' -print)
+            local matches=()
+            local candidate
+            for candidate in "${output}"/*.lgx; do
+              if [[ -f "${candidate}" ]]; then
+                matches+=("${candidate}")
+              fi
+            done
             if [[ "${#matches[@]}" -ne 1 ]]; then
               echo "Expected one LGX file in ${output}; found ${#matches[@]}" >&2
               exit 1
