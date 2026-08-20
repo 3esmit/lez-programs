@@ -1,13 +1,13 @@
 [workspace]
 members = [
-    "apps/amm/client",
+    "modules/amm/ffi",
+    "modules/token/ffi",
     "programs/token/core",
     "programs/token",
     "programs/token/methods",
     "programs/amm/core",
     "programs/amm",
     "programs/amm/methods",
-    "programs/amm/client-ffi",
     "programs/ata/core",
     "programs/ata",
     "programs/ata/methods",

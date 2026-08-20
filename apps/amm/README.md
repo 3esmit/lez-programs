@@ -52,9 +52,9 @@ This makes `lgpm` available as a global command.
 
 ## Running the UI standalone
 
-The app is built from the **repository-root** flake (which also provides the
-`amm_client_ffi` library it links). From the repo root, launch it with its named
-attribute:
+The app is built from the **repository-root** flake (which also builds the
+`amm_module` core module the UI delegates its AMM logic to). From the repo root,
+launch it with its named attribute:
 
 ```bash
 nix run .#amm-ui
@@ -62,9 +62,10 @@ nix run .#amm-ui
 
 This builds and runs the application in development mode. The Logos bridge is unavailable in standalone mode, but the UI layout and mock data are fully functional.
 
-Build just the FFI crate with `nix build .#amm_client_ffi`. (Each UI is exposed
-under its own name, so future apps are `nix run .#<name>` — there is no bare
-`nix run .` default.)
+Build just the AMM core module with `nix build .#amm-module`, or its underlying
+logic crate with `nix build .#amm_ffi`. (Each UI is exposed under its own
+name, so future apps are `nix run .#<name>` — there is no bare `nix run .`
+default.)
 
 ## Running inside Logos Basecamp
 
@@ -144,7 +145,7 @@ not preserve the working directory, so relative paths won't resolve:
 
 ```bash
 AMM_PROGRAM_BIN=$(pwd)/programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
-TOKENS_CONFIG=$(pwd)/amm-tokens.json \
+TOKENS_CONFIG=$(pwd)/apps/amm/amm-tokens.json \
 nix run .#amm-ui
 ```
 
@@ -168,9 +169,9 @@ AMM_PROGRAM_BIN=/abs/path/to/amm.bin nix run .#amm-ui
 
 This is the same `amm.bin` you deployed via the testnet runbook
 (`programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin`).
-The app reads it, derives the AMM program id (`amm_client_program_id_from_elf`),
-and reads the on-chain AMM config account to discover the TWAP oracle program id
-for the pool's current-tick PDA. If `AMM_PROGRAM_BIN` is unset or unreadable, the
+The app reads it, derives the AMM program id (the binary's RISC Zero Image ID,
+via `amm_ffi`'s `program_id` op), and reads the on-chain AMM config account to
+discover the TWAP oracle program id for the pool's current-tick PDA. If `AMM_PROGRAM_BIN` is unset or unreadable, the
 Swap view stays disabled (no pool can be resolved).
 
 > **Golden rule (from the runbook):** recompiling the AMM changes its program id
@@ -197,16 +198,68 @@ account the wallet will sign transfers from/to for that token):
 ]
 ```
 
+The quickest start is to copy the checked-in template and edit it:
+
+```bash
+cp apps/amm/amm-tokens.json.example apps/amm/amm-tokens.json   # then replace the REPLACE_… placeholders
+```
+
+`amm-tokens.json` is git-ignored so your own accounts never get committed.
+
 If `TOKENS_CONFIG` is unset, unreadable, or not a valid JSON array, the token
 picker stays empty (a `qWarning` naming the exact cause is logged to stderr; no
 swap can be started). `definitionId`/`holding` may be given as base58 (as the
 wallet/runbook display them) or hex — the app normalizes both to hex.
 
-Full command with both variables set (absolute paths, from the repo root):
+### Known-pools config (optional, for the Pools list)
+
+The Pools view is config-driven the same way: it reads a flat JSON list from the
+`AMM_POOLS_CONFIG` environment variable (absolute path) and renders one row per
+entry. `tokenA`/`tokenB` are the display symbols and `feeBps` the fee tier;
+`poolId`/`tokenADefinitionId`/`tokenBDefinitionId` identify the pool on-chain.
+Adding more pairs is purely a config edit — no app change:
+
+```json
+[
+  {
+    "tokenA": "TKA",
+    "tokenB": "TKB",
+    "feeBps": 1,
+    "poolId": "9qbX…",
+    "tokenADefinitionId": "4T69…",
+    "tokenBDefinitionId": "7Zc2…"
+  }
+]
+```
+
+Copy the checked-in template to start (`amm-pools.json` is git-ignored):
+
+```bash
+cp apps/amm/amm-pools.json.example apps/amm/amm-pools.json   # then replace the REPLACE_… placeholders
+```
+
+If `AMM_POOLS_CONFIG` is unset, unreadable, or not a valid JSON array, the Pools
+list shows its empty state. Entries missing `tokenA`, `tokenB`, or a numeric
+`feeBps` are skipped individually. The AMM testnet setup script writes this file
+for the pool(s) it seeds (see below).
+
+Clicking a row opens the pool detail view, which reads the live pool through
+`resolvePoolAccount` and shows the reserve split, spot price, fee tier, LP
+supply, an estimate of the fees accrued into the reserves, and the pool's
+account ids. Its **Swap** and **Add liquidity** buttons switch tabs with the
+pair preselected. Both the detail view and the preselection need
+`tokenADefinitionId`/`tokenBDefinitionId` on the entry, and the ids must match
+the ones in `TOKENS_CONFIG` (Swap) and in the token selector's resolved list
+(Add liquidity); an entry without them still lists, but its detail view can only
+report that the ids are missing. Volume and transaction history are not shown —
+the AMM program stores no history to read them from.
+
+Full command with the variables set (absolute paths, from the repo root):
 
 ```bash
 AMM_PROGRAM_BIN=$(pwd)/programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
-TOKENS_CONFIG=$(pwd)/amm-tokens.json \
+TOKENS_CONFIG=$(pwd)/apps/amm/amm-tokens.json \
+AMM_POOLS_CONFIG=$(pwd)/apps/amm/amm-pools.json \
 nix run .#amm-ui
 ```
 
@@ -214,6 +267,67 @@ nix run .#amm-ui
 
 New Position validation commands and acceptance criteria live in
 [VALIDATION.md](VALIDATION.md).
+
+## Running the UI tests
+
+The UI tests live in `apps/amm/tests/` (e.g. `swap.mjs`). They drive the running
+app through a QML inspector: each test connects to the inspector's TCP server,
+finds elements, clicks them, and asserts on the resulting state. `swap.mjs`
+selects two tokens, enters a sell amount, submits a swap end-to-end, and then
+verifies the pool reserves actually changed on-chain (read back from the
+sequencer via the app's `resolvePool`).
+
+> **For the fully isolated, script-driven test flow** (a dedicated wallet from a
+> fixed mnemonic + auto-created pool + isolated token config, touching nothing in
+> your local setup), see **[`apps/amm/tests/README.md`](tests/README.md)**. The
+> steps below run the test against *your own* local wallet/config instead.
+
+The test framework itself — the `test()` / `run()` / `app.*` API that the tests
+import from `test-framework/framework.mjs` — comes from the
+[**`logos-co/logos-qt-mcp`**](https://github.com/logos-co/logos-qt-mcp) repo.
+It isn't vendored here; the `nix build .#test-framework` step below materializes
+it (Nix resolves it via this app's flake inputs, pinned in `flake.lock`).
+
+Run everything **from the repository root** (the `apps/amm` flake can't resolve
+`amm_client_ffi` on its own).
+
+**Prerequisites** for the swap test to complete:
+
+- a token list with ≥2 tokens — copy `apps/amm/amm-tokens.json.example` to
+  `apps/amm/amm-tokens.json` and fill it in (see [Token list config](#token-list-config-required-for-the-swap-token-picker)),
+- the AMM program binary (see [AMM program binary](#amm-program-binary-required-for-swaps)),
+- a running sequencer with a pool + liquidity for that token pair, and an open
+  wallet — otherwise the swap resolves to "No pool / no liquidity" and can't submit.
+
+**From scratch:**
+
+```bash
+# 1. Build the JS test framework once. The -o path is where the tests expect it
+#    (apps/amm/tests/swap.mjs imports ../result-mcp); or set LOGOS_QT_MCP instead.
+nix build .#test-framework -o apps/amm/result-mcp
+
+# 2. Terminal 1 — launch the AMM UI with a real, visible window. The inspector
+#    listens on localhost:3768. Absolute paths ($(pwd)/…) because nix run may
+#    not preserve the working directory.
+AMM_DEBUG=1 \
+  AMM_PROGRAM_BIN=$(pwd)/programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
+  TOKENS_CONFIG=$(pwd)/apps/amm/amm-tokens.json \
+  nix run .#amm-ui
+
+# 3. Terminal 2 — run a test against the running app; watch it drive the UI.
+node apps/amm/tests/swap.mjs
+```
+
+On failure the test prints the relevant `SwapCard` state and saves screenshot
+PNGs next to the test (`apps/amm/tests/swap-*.png`, git-ignored) for inspection.
+
+**Headless CI variant** (no window, launches the app itself, pass/fail only):
+
+```bash
+nix build .#integration-test -L
+```
+
+It runs every `*.mjs` under `apps/amm/tests/` with `QT_QPA_PLATFORM=offscreen`.
 
 ## Updating Dependencies
 

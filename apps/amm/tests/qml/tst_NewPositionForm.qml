@@ -197,7 +197,7 @@ TestCase {
         verify(built.ok)
         compare(built.request.amountARaw, "100")
         compare(built.request.amountBRaw, "150")
-        compare(built.request.initialPriceRealRaw, "27670116110564327424")
+        compare(built.request.priceRaw, "27670116110564327424")
         verify(!built.request.hasOwnProperty("depositScaleBps"))
 
         form.finishMissingAmount("B", "200")
@@ -266,8 +266,14 @@ TestCase {
         verify(amountBInput)
         compare(amountAInput.selectedTokenId, tokenLow)
         compare(amountBInput.selectedTokenId, tokenHigh)
-        verify(amountAInput.height <= 114)
-        verify(amountBInput.height <= 114)
+        // missing_pool now renders the holding-selector footer, so the input card grows by the
+        // footer's own height plus its extra bottom spacing (the surface adds footerHeight + 30
+        // when a footer is active vs + 24 without one, i.e. footerHeight + 6 over the pre-footer
+        // bound). Keep the compactness guard, but make it footer-aware.
+        verify(amountAInput.footerActive) // the holding-selector footer is present in missing_pool
+        verify(amountBInput.footerActive)
+        verify(amountAInput.height <= 114 + amountAInput.footerHeight + 6)
+        verify(amountBInput.height <= 114 + amountBInput.footerHeight + 6)
         verify(findChild(form, "priceAmountAField"))
         verify(findChild(form, "priceAmountBField"))
 
@@ -345,40 +351,8 @@ TestCase {
         compare(form.amountA, "2")
     }
 
-    function test_poolActivationClearsCreationDraftWithoutPublishingProbeAmounts() {
-        var form = createForm()
-        form.confirmedPoolStatus = "missing_pool"
-        form.amountA = "3"
-        form.amountB = "2"
-        form.minimumAmountARaw = "3"
-        form.minimumAmountBRaw = "2000000"
-
-        verify(form.acceptPoolActivation({
-            "schema": "new-position.v1",
-            "status": "ok",
-            "tokenAId": tokenHigh,
-            "tokenBId": tokenLow,
-            "poolStatus": "active_pool",
-            "reserveARaw": "3000000",
-            "reserveBRaw": "2"
-        }))
-
-        verify(form.activePool)
-        compare(form.activePoolQuote.poolStatus, "active_pool")
-        compare(form.amountA, "")
-        compare(form.amountB, "")
-        compare(form.minimumAmountARaw, "")
-        compare(form.minimumAmountBRaw, "")
-        quoteRequestedSpy.target = form
-        quoteRequestedSpy.clear()
-        form.requestQuote(true)
-        compare(quoteRequestedSpy.count, 0)
-        compare(form.localErrors.length, 0)
-    }
-
     function test_staleQuoteErrorsDoNotMarkCurrentDraft() {
         var quote = {
-            "schema": "new-position.v1",
             "status": "ok",
             "tokenAId": tokenHigh,
             "tokenBId": tokenLow,

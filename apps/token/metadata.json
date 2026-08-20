@@ -1,0 +1,26 @@
+{
+  "name": "token_ui",
+  "version": "0.1.0",
+  "type": "ui_qml",
+  "category": "token",
+  "display_name": "Token",
+  "description": "Logos UI module for creating and inspecting Token Program assets",
+  "main": "token_ui_plugin",
+  "view": "qml/Main.qml",
+  "icon": "icons/token.png",
+  "dependencies": ["logos_execution_zone", "token_module"],
+
+  "nix": {
+    "packages": {
+      "build": [],
+      "runtime": ["qt6.qtdeclarative", "zstd", "krb5", "abseil-cpp"]
+    },
+    "external_libraries": [],
+    "cmake": {
+      "find_packages": [],
+      "extra_sources": [],
+      "extra_include_dirs": [],
+      "extra_link_libraries": []
+    }
+  }
+}

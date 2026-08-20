@@ -1,0 +1,65 @@
+// QtRO view contract for the Token UI backend. PROPs auto-sync to every QML
+// replica; SLOTs are the async surface QML calls via logos.watch(...).
+// The account list is exposed separately as a Q_PROPERTY model on the backend
+// (reached from QML via logos.model("token_ui", "accountModel")).
+class TokenUiBackend
+{
+    PROP(bool isWalletOpen READONLY)
+    PROP(bool walletExists READONLY)
+    PROP(QString configPath READONLY)
+    PROP(QString storagePath READONLY)
+    PROP(QString walletHome READONLY)
+    PROP(int lastSyncedBlock READONLY)
+    PROP(int currentBlockHeight READONLY)
+    PROP(QString sequencerAddr READONLY)
+    // Whether the configured sequencer answered the last reachability probe.
+    // Defaults true so the UI doesn't flash a warning before the first check.
+    PROP(bool sequencerReachable READONLY)
+
+    // Account management
+    SLOT(QString createAccountPublic())
+    SLOT(QString createAccountPrivate())
+    SLOT(void refreshAccounts())
+    SLOT(void refreshBalances())
+    SLOT(QString getBalance(QString accountIdHex, bool isPublic))
+
+    // Wallet lifecycle. createNewDefault() is the happy path: it creates a
+    // fresh per-app wallet at walletHome with no path picking. createNew()
+    // keeps explicit paths for an "advanced" flow. Both return the new wallet's
+    // BIP39 mnemonic (empty on failure) so the UI can force a seed-phrase backup
+    // before the wallet is usable — this is the only chance to record it.
+    SLOT(QString createNewDefault(QString password))
+    SLOT(QString createNew(QString configPath, QString storagePath, QString password))
+
+    // Re-open the existing on-disk wallet after a disconnect.
+    SLOT(bool openExisting())
+    // Close this app's wallet view (lock); does not delete the wallet and, in
+    // Basecamp, does not close the wallet other apps share.
+    SLOT(void disconnectWallet())
+
+    // Token Program reads. walletDefinitions() joins the module's account
+    // discovery and inspect calls into the record shape consumed by QML.
+    SLOT(QVariantMap tokenProgramInfo())
+    SLOT(QVariantMap inspectDefinition(QString definitionId))
+    SLOT(QVariantMap inspectHolding(QString holdingId))
+    SLOT(QVariantMap inspectMetadata(QString metadataId))
+    SLOT(QVariantMap walletTokenAccounts())
+    SLOT(QVariantList walletDefinitions())
+
+    // Token Program creation surface. Raw amounts remain decimal strings so
+    // QML never narrows u128 values through a JavaScript number.
+    SLOT(QVariantMap createFungible(QString definitionTargetId, QString holdingTargetId, QString name, QString totalSupplyRaw, QString mintAuthority))
+    SLOT(QVariantMap createFungibleWithMetadata(QString definitionTargetId, QString holdingTargetId, QString metadataTargetId, QString name, QString totalSupplyRaw, QString mintAuthority, QString metadataStandard, QString uri, QString creators))
+    SLOT(QVariantMap createNonFungible(QString definitionTargetId, QString masterHoldingTargetId, QString metadataTargetId, QString name, QString printableSupplyRaw, QString metadataStandard, QString uri, QString creators))
+
+    // Token Program holding and authority operations are exposed through the
+    // same adapter for future Manage actions and Basecamp consumers.
+    SLOT(QVariantMap initializeHolding(QString definitionId, QString holdingTargetId))
+    SLOT(QVariantMap transfer(QString senderHoldingId, QString recipientHoldingId, QString amountRaw))
+    SLOT(QVariantMap burn(QString definitionId, QString holdingId, QString amountRaw))
+    SLOT(QVariantMap mint(QString definitionId, QString holdingId, QString amountRaw))
+    SLOT(QVariantMap mintWithAuthority(QString definitionId, QString holdingId, QString authorityId, QString amountRaw))
+    SLOT(QVariantMap setAuthority(QString definitionId, QString newAuthority))
+    SLOT(QVariantMap setAuthorityWithAuthority(QString definitionId, QString authorityId, QString newAuthority))
+    SLOT(QVariantMap printNft(QString masterHoldingId, QString printedHoldingTargetId))
+}

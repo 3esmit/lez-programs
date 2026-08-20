@@ -21,7 +21,7 @@ pub enum Instruction {
     /// The configuration account is a PDA derived from the constant `"CONFIG"` seed
     /// (`compute_config_pda(self_program_id)`). It stores the program IDs the AMM issues chained
     /// calls to (the Token Program and the TWAP oracle program), plus the admin `authority`
-    /// allowed to change configuration later via `UpdateConfig`. The Program must be initialized
+    /// allowed to transfer admin control later via `UpdateConfig`. The Program must be initialized
     /// via this instruction before any pool can be created or interacted with — the other
     /// instructions read these program IDs from this account and reject calls when it does not
     /// yet exist.
@@ -33,26 +33,26 @@ pub enum Instruction {
         token_program_id: ProgramId,
         /// Program ID of the TWAP oracle program the AMM will issue chained calls to.
         twap_oracle_program_id: ProgramId,
-        /// Admin authority allowed to change configuration via `UpdateConfig`.
+        /// Admin authority allowed to transfer admin control via `UpdateConfig`.
         authority: AccountId,
     },
 
-    /// Updates the AMM Program's configuration. Only the configured admin `authority` may call
-    /// this; the authority account must be passed authorized (signed).
+    /// Transfers the AMM Program's admin authority to a new account. Only the configured admin
+    /// `authority` may call this; the authority account must be passed authorized (signed).
     ///
-    /// Each field is optional — `None` leaves the corresponding value unchanged. Setting
-    /// `new_authority` transfers admin control to a different account.
+    /// The Token Program and TWAP oracle program IDs are **immutable deployment parameters** set
+    /// once at `Initialize`: they are baked into every derived PDA (vaults, current-tick,
+    /// price-observation / price accounts) and into the AMM's chained calls, so changing them
+    /// after any pool exists would orphan every derived account and vault. They therefore cannot
+    /// be reconfigured in place — a genuine change requires redeploying the AMM. This instruction
+    /// only moves the admin authority.
     ///
     /// Required accounts:
     /// - AMM Config Account (initialized)
     /// - Authority Account — must equal the config's current `authority`, passed authorized.
     UpdateConfig {
-        /// New Token Program ID for chained calls, or `None` to keep the current one.
-        token_program_id: Option<ProgramId>,
-        /// New TWAP oracle program ID for chained calls, or `None` to keep the current one.
-        twap_oracle_program_id: Option<ProgramId>,
-        /// New admin authority (transfers control), or `None` to keep the current admin.
-        new_authority: Option<AccountId>,
+        /// New admin authority (transfers admin control to this account).
+        new_authority: AccountId,
     },
 
     /// Creates a TWAP price-observations account for a pool over a time window, on behalf of the
@@ -257,6 +257,17 @@ pub const FEE_TIER_BPS_5: u128 = 5;
 pub const FEE_TIER_BPS_30: u128 = 30;
 pub const FEE_TIER_BPS_100: u128 = 100;
 
+/// The supported fee tiers (raw bps), ascending — the canonical list for off-chain callers
+/// (the module/UI) to enumerate without hardcoding. The guest's check stays `is_supported_fee_tier`
+/// below (its `match` is unchanged, so this addition does not affect the program ImageID — the
+/// const is unused on-chain); `fee_tiers_list_matches_the_check` locks the two together.
+pub const SUPPORTED_FEE_TIERS: [u128; 4] = [
+    FEE_TIER_BPS_1,
+    FEE_TIER_BPS_5,
+    FEE_TIER_BPS_30,
+    FEE_TIER_BPS_100,
+];
+
 pub fn is_supported_fee_tier(fees: u128) -> bool {
     matches!(
         fees,
@@ -334,6 +345,117 @@ pub fn mul_div_ceil(a: u128, b: u128, c: u128) -> u128 {
     u128::try_from(result).expect("mul_div_ceil result exceeds u128")
 }
 
+/// Adverse price impact of a swap in basis points: how far `amount_out` falls
+/// below the naive spot-price valuation of `amount_in`
+/// (`reserve_out * amount_in / reserve_in`). Display-only — it never panics.
+///
+/// The naive valuation can exceed u128 for extreme reserve ratios (e.g.
+/// `reserve_out` near `u128::MAX` with a tiny `reserve_in`), which is why it is
+/// not materialized as u128: this multiplies the *bounded*
+/// `FEE_BPS_DENOMINATOR * amount_out` (≤ ~2^142) first and divides by the wide
+/// naive value, so every intermediate stays inside U256 and the result is
+/// clamped to `[0, FEE_BPS_DENOMINATOR]`. Returns `0` when the naive valuation
+/// rounds to zero (or `reserve_in` is zero).
+#[must_use]
+pub fn price_impact_bps(
+    amount_in: u128,
+    amount_out: u128,
+    reserve_in: u128,
+    reserve_out: u128,
+) -> u32 {
+    use alloy_primitives::U256;
+    if reserve_in == 0 {
+        return 0;
+    }
+    let spot = U256::from(reserve_out)
+        .checked_mul(U256::from(amount_in))
+        .expect("u128 * u128 always fits in U256")
+        .checked_div(U256::from(reserve_in))
+        .expect("reserve_in is non-zero after the guard above");
+    if spot.is_zero() {
+        return 0;
+    }
+    // Fraction of the spot value the trader keeps, in bps (≤ FEE_BPS_DENOMINATOR
+    // since amount_out ≤ spot). The numerator is bounded, so no overflow even when
+    // `spot` is enormous.
+    let kept = U256::from(FEE_BPS_DENOMINATOR)
+        .checked_mul(U256::from(amount_out))
+        .expect("FEE_BPS_DENOMINATOR * u128 always fits in U256")
+        .checked_div(spot)
+        .expect("spot is non-zero after the is_zero check above");
+    let kept = u128::try_from(kept)
+        .unwrap_or(FEE_BPS_DENOMINATOR)
+        .min(FEE_BPS_DENOMINATOR);
+    u32::try_from(FEE_BPS_DENOMINATOR.saturating_sub(kept)).unwrap_or(u32::MAX)
+}
+
+/// The constant-product output for a `SwapExactInput`, matching the AMM's on-chain
+/// pricing exactly — used by both `amm_program::swap` and the off-chain swap quote,
+/// so the preview and the executed trade agree. Fee-adjusts the input, then applies
+/// `reserve_out * effective / (reserve_in + effective)`.
+///
+/// Returns `(effective_amount_in, amount_out)`; both are `0` when the fee-adjusted
+/// input rounds to zero. Saturating: an out-of-range fee, or the impossible
+/// `reserve_in + effective` overflow (would need a reserve near `u128::MAX`),
+/// degrades to `0` output rather than panicking. Callers validate the fee tier and
+/// enforce their own nonzero / min-out checks.
+#[must_use]
+pub fn swap_exact_in_amounts(
+    amount_in: u128,
+    reserve_in: u128,
+    reserve_out: u128,
+    fee_bps: u128,
+) -> (u128, u128) {
+    let fee_multiplier = FEE_BPS_DENOMINATOR.saturating_sub(fee_bps);
+    let effective_amount_in = mul_div_floor(amount_in, fee_multiplier, FEE_BPS_DENOMINATOR);
+    let reserve_plus_effective = match reserve_in.checked_add(effective_amount_in) {
+        Some(v) => v,
+        None => return (effective_amount_in, 0),
+    };
+    let amount_out = if reserve_plus_effective == 0 {
+        0
+    } else {
+        mul_div_floor(reserve_out, effective_amount_in, reserve_plus_effective)
+    };
+    (effective_amount_in, amount_out)
+}
+
+/// The input amounts for a `SwapExactOutput`: the fee-adjusted (effective) input
+/// and the gross input required to receive exactly `amount_out`, matching the AMM's
+/// on-chain pricing — used by both `amm_program::swap` and the off-chain
+/// exact-output quote. Solves the constant product for the input, then lifts it
+/// back through the fee (both steps round up, so the pool never comes up short):
+/// `required_in = ceil(ceil(reserve_in * amount_out / (reserve_out - amount_out))
+/// * FEE_DENOM / (FEE_DENOM - fee_bps))`.
+///
+/// Returns `None` when the trade is unfulfillable: `amount_out >= reserve_out` (you
+/// can't withdraw the whole pool), `reserve_in == 0` (an empty input reserve has no
+/// solution for a positive output — without this it would round to a free
+/// `(0, 0)`), or a degenerate `fee_bps >= FEE_DENOM`. Callers enforce their own
+/// nonzero / max-in checks.
+#[must_use]
+pub fn swap_exact_out_amounts(
+    amount_out: u128,
+    reserve_in: u128,
+    reserve_out: u128,
+    fee_bps: u128,
+) -> Option<(u128, u128)> {
+    let denominator = reserve_out.checked_sub(amount_out)?;
+    if denominator == 0 {
+        return None; // amount_out == reserve_out: draining the pool is impossible
+    }
+    if reserve_in == 0 {
+        return None; // no input reserve: the inverse curve has no solution for a positive output
+    }
+    let effective_in_min = mul_div_ceil(reserve_in, amount_out, denominator);
+    let fee_multiplier = FEE_BPS_DENOMINATOR.checked_sub(fee_bps)?;
+    if fee_multiplier == 0 {
+        return None; // fee_bps == FEE_DENOM (impossible for a supported tier)
+    }
+    let required_in = mul_div_ceil(effective_in_min, FEE_BPS_DENOMINATOR, fee_multiplier);
+    Some((effective_in_min, required_in))
+}
+
 /// `floor(sqrt(a * b))` computed in U256 so the `a * b` product can't overflow u128.
 ///
 /// # Panics
@@ -382,7 +504,7 @@ pub struct AmmConfig {
     pub token_program_id: ProgramId,
     /// Program ID of the TWAP oracle program the AMM issues chained calls to.
     pub twap_oracle_program_id: ProgramId,
-    /// Admin authority allowed to change this configuration via `UpdateConfig`.
+    /// Admin authority allowed to transfer admin control via `UpdateConfig`.
     pub authority: AccountId,
 }
 
@@ -567,6 +689,26 @@ mod tests {
     const ONE_Q64_64: u128 = 1u128 << 64;
 
     #[test]
+    fn fee_tiers_list_matches_the_check() {
+        // The enumerated list must agree with the guest's `is_supported_fee_tier` match: every
+        // listed tier is accepted, and nothing adjacent to them is (guards a drifted list).
+        for tier in SUPPORTED_FEE_TIERS {
+            assert!(
+                is_supported_fee_tier(tier),
+                "{tier} listed but not accepted"
+            );
+        }
+        for probe in [0u128, 2, 4, 6, 29, 31, 99, 101, 10_000] {
+            assert!(
+                !is_supported_fee_tier(probe),
+                "{probe} accepted but not listed"
+            );
+        }
+        // Ascending and de-duplicated.
+        assert!(SUPPORTED_FEE_TIERS.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    #[test]
     fn equal_reserves_map_to_unit_price() {
         assert_eq!(spot_price_q64_64(1_000, 1_000), ONE_Q64_64);
     }
@@ -631,6 +773,68 @@ mod tests {
     #[should_panic(expected = "mul_div_floor: divisor must be non-zero")]
     fn mul_div_floor_zero_divisor_panics() {
         let _ = mul_div_floor(1, 2, 0);
+    }
+
+    #[test]
+    fn swap_exact_in_amounts_matches_constant_product() {
+        // 0.30% fee, reserves 1_000_000 in / 2_000_000 out, amount_in 10_000.
+        let (eff, out) = swap_exact_in_amounts(10_000, 1_000_000, 2_000_000, 30);
+        let expected_eff = 10_000 * (10_000 - 30) / 10_000;
+        let expected_out = 2_000_000 * expected_eff / (1_000_000 + expected_eff);
+        assert_eq!((eff, out), (expected_eff, expected_out));
+
+        // A tiny input can fee-round the effective input to zero → zero output.
+        assert_eq!(swap_exact_in_amounts(1, 1_000_000, 2_000_000, 30), (0, 0));
+
+        // Degenerate reserves saturate rather than dividing by zero.
+        assert_eq!(swap_exact_in_amounts(1, 0, 0, 30), (0, 0));
+    }
+
+    #[test]
+    fn price_impact_bps_is_bounded_and_never_panics() {
+        let max_bps = u32::try_from(FEE_BPS_DENOMINATOR).unwrap();
+
+        // Normal pool: a small trade has a bounded impact.
+        let (_, out) = swap_exact_in_amounts(10_000, 1_000_000, 2_000_000, 30);
+        assert!(price_impact_bps(10_000, out, 1_000_000, 2_000_000) <= max_bps);
+
+        // Extreme reserve ratio: the naive spot valuation
+        // (reserve_out * amount_in / reserve_in) exceeds u128 — a u128 mul_div here
+        // would panic. This must stay bounded and not panic.
+        let reserve_out = u128::MAX;
+        let (_, out) = swap_exact_in_amounts(2, 1, reserve_out, 30);
+        assert!(price_impact_bps(2, out, 1, reserve_out) <= max_bps);
+
+        // Zero naive value / zero reserve → zero impact, no division by zero.
+        assert_eq!(price_impact_bps(1, 0, 0, 0), 0);
+        assert_eq!(price_impact_bps(1, 0, 1_000_000, 0), 0);
+    }
+
+    #[test]
+    fn swap_exact_out_amounts_inverts_the_constant_product() {
+        // 0.30% fee, reserves 1_000_000 in / 2_000_000 out, want 10_000 out.
+        let (eff_min, required_in) =
+            swap_exact_out_amounts(10_000, 1_000_000, 2_000_000, 30).unwrap();
+        // effective_in >= ceil(reserve_in * out / (reserve_out - out)); then lift through fee.
+        let expected_eff = (1_000_000u128 * 10_000).div_ceil(2_000_000 - 10_000);
+        let expected_in = (expected_eff * 10_000).div_ceil(10_000 - 30);
+        assert_eq!((eff_min, required_in), (expected_eff, expected_in));
+
+        // Round-trips with the forward quote: paying required_in yields at least the ask.
+        let (_, out) = swap_exact_in_amounts(required_in, 1_000_000, 2_000_000, 30);
+        assert!(out >= 10_000);
+
+        // Unfulfillable: can't withdraw the whole pool (or more).
+        assert_eq!(
+            swap_exact_out_amounts(2_000_000, 1_000_000, 2_000_000, 30),
+            None
+        );
+        assert_eq!(
+            swap_exact_out_amounts(2_000_001, 1_000_000, 2_000_000, 30),
+            None
+        );
+        // No input reserve → no valid input for a positive output (not a free (0, 0)).
+        assert_eq!(swap_exact_out_amounts(10_000, 0, 2_000_000, 30), None);
     }
 
     #[test]

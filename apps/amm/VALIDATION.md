@@ -8,8 +8,8 @@ syntax, and the complete module build.
 Run from the repository root:
 
 ```bash
-cargo +1.94.0 test -p amm_client
-cargo +1.94.0 clippy -p amm_client --all-targets -- -D warnings
+cargo +1.94.0 test -p amm_ffi
+cargo +1.94.0 clippy -p amm_ffi --all-targets -- -D warnings
 logos_qml=$(nix build github:logos-co/logos-design-system/6176f0d7a5dfeb64a7f0f98e7ca2bf71a4804772 --no-link --print-out-paths)
 amm_qml=$(nix build ./apps/amm#packages.x86_64-linux.default --no-link --print-out-paths)
 qt_qml=$(nix-store --query --requisites "$amm_qml" | rg -m1 -- '-qtdeclarative-[0-9]')
@@ -19,7 +19,7 @@ amm_import="$amm_qml/lib/qml"
 test -f "$amm_import/Logos/Wallet/qmldir"
 "$qt_qml/bin/qmltestrunner" -import "$qt_qml/lib/qt-6/qml" -import "$logos_qml/lib" -import "$amm_import" -input apps/shared/wallet/tests/qml
 "$qt_qml/bin/qmltestrunner" -import "$qt_qml/lib/qt-6/qml" -import "$logos_qml/lib" -import "$amm_import" -input apps/amm/tests/qml
-"$qt_qml/bin/qmllint" -I "$qt_qml/lib/qt-6/qml" -I "$logos_qml/lib" -I "$amm_qml/lib" -I "$amm_import" apps/amm/qml/pages/LiquidityPage.qml apps/amm/qml/components/liquidity/NewPositionForm.qml apps/amm/qml/components/liquidity/LiquidityConfirmationSummary.qml
+"$qt_qml/bin/qmllint" -I "$qt_qml/lib/qt-6/qml" -I "$logos_qml/lib" -I "$amm_qml/lib" -I "$amm_import" apps/amm/qml/pages/LiquidityPage.qml apps/amm/qml/pages/PoolsPage.qml apps/amm/qml/components/liquidity/NewPositionForm.qml apps/amm/qml/components/liquidity/LiquidityConfirmationSummary.qml
 ```
 
 When shared AMM program types or instruction signatures change, also run the

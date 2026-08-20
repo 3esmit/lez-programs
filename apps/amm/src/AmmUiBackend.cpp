@@ -1,145 +1,125 @@
 #include "AmmUiBackend.h"
 
-#include <cctype>
-#include <cstring>
-
-#include <QClipboard>
-#include <QCoreApplication>
+#include <QByteArray>
 #include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
-#include <QSettings>
+#include <QJsonValue>
+#include <QStandardPaths>
 #include <QTimer>
-#include <QUrl>
 
-#include "AmmClient.h"
 #include "LogosWalletProvider.h"
-#include "NewPositionRuntime.h"
 #include "WalletController.h"
 #include "logos_api.h"
 #include "logos_sdk.h"
 
-extern "C" {
-#include "amm_client_ffi.h"
-}
-
-// Debug tracing for the swap path (resolvePool / swapExactInput), gated behind
-// the AMM_DEBUG env var so normal runs stay quiet. When disabled, the streamed
-// arguments — including the account_id_to_base58 round-trips used to render
-// accounts — are NOT evaluated, so there's no per-call overhead.
-//
-// NOTE: `send_generic_public_transaction(account_ids, signing_requirements,
-// instruction, program_id_hex)`. `instruction` is a byte string (`bstr`):
-// declaring it as Vec<u32> makes the module's Qt/QtRO glue downgrade it to an
-// opaque `any` the separate module process can't deserialize, silently dropping
-// every argument. We send `instruction` as the little-endian bytes of the u32
-// words, and the deployed program by its id hex (not the raw ELF). Requires the
-// wallet module built with the byte-string param; see
-// docs/amm-swap-qtro-serialization-bug.md.
-static bool ammDebugEnabled()
-{
-    static const bool on = qEnvironmentVariableIsSet("AMM_DEBUG");
-    return on;
-}
-// AMM_DBG() << ... behaves like qWarning().noquote() but only when AMM_DEBUG is
-// set; otherwise the whole statement (and its arguments) is skipped.
-#define AMM_DBG() \
-    if (ammDebugEnabled()) qWarning().noquote()
-
 namespace {
-    // Absolute path to the deployed AMM program's RISC Zero program binary
-    // (amm.bin — the `ProgramBinary` `.bin` from the docker guest build, decoded
-    // on the Rust side via `ProgramBinary::decode`; NOT a raw ELF — pointing at
-    // the raw guest ELF yields a different/failed program id). The app can't
-    // safely embed/derive this itself: the wallet module's bundled AMM program
-    // may differ from whatever is actually deployed on the target sequencer, and
-    // the binary's bytes are what determine its program id (and therefore every
-    // PDA derived from it). See apps/amm/README.md.
-    const char AMM_PROGRAM_BIN_ENV[] = "AMM_PROGRAM_BIN";
+    // Absolute path to the JSON known-pools config consumed by poolList().
+    // Mirrors TOKENS_CONFIG for the token list; produced by the AMM testnet
+    // setup script (apps/amm/tests/testnet/setup-amm-testnet.sh).
+    constexpr char POOLS_CONFIG_ENV[] = "AMM_POOLS_CONFIG";
 
-    // Absolute path to the JSON token-list config consumed by tokenList()
-    // (see apps/amm/README.md). Config-driven so the Swap view's token picker
-    // doesn't need a hardcoded/dummy token list.
-    const char TOKENS_CONFIG_ENV[] = "TOKENS_CONFIG";
+    // Parses the AMM_POOLS_CONFIG JSON file into the QVariantList the Pools UI
+    // renders. Fails soft (empty list) when the env var is unset, the file is
+    // unreadable, or the payload is not a JSON array — one malformed entry is
+    // skipped rather than dropping the whole list. tokenA/tokenB (display
+    // symbols) and a numeric feeBps are required; the id fields pass through
+    // when present so the entry can later be resolved on-chain.
+    QVariantList readPoolsConfig()
+    {
+        QVariantList out;
 
-    QString bytes32ToHex(const uint8_t (&b)[32]) {
-        return QString::fromLatin1(QByteArray(reinterpret_cast<const char*>(b), 32).toHex());
-    }
+        const QString path = qEnvironmentVariable(POOLS_CONFIG_ENV);
+        if (path.isEmpty())
+            return out;
 
-    bool hexToBytes32(const QString& hex, uint8_t (&out)[32]) {
-        const QByteArray bytes = QByteArray::fromHex(hex.toUtf8());
-        if (bytes.size() != 32)
-            return false;
-        for (int i = 0; i < 32; ++i)
-            out[i] = static_cast<uint8_t>(bytes[i]);
-        return true;
-    }
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+            return out;
 
-    // Little-endian 16-byte u128 -> decimal string. QString has no direct u128
-    // constructor, so accumulate into unsigned __int128 and extract digits.
-    QString u128leToDecimal(const uint8_t (&le)[16]) {
-        unsigned __int128 value = 0;
-        for (int i = 15; i >= 0; --i)
-            value = (value << 8) | static_cast<unsigned __int128>(le[i]);
+        const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+        if (!doc.isArray())
+            return out;
 
-        if (value == 0)
-            return QStringLiteral("0");
+        for (const QJsonValue& entry : doc.array()) {
+            if (!entry.isObject())
+                continue;
+            const QJsonObject obj = entry.toObject();
 
-        QString digits;
-        while (value > 0) {
-            const unsigned int digit = static_cast<unsigned int>(value % 10);
-            digits.prepend(QChar(static_cast<char16_t>('0' + digit)));
-            value /= 10;
+            const QString tokenA = obj.value(QStringLiteral("tokenA")).toString();
+            const QString tokenB = obj.value(QStringLiteral("tokenB")).toString();
+            const QJsonValue feeBps = obj.value(QStringLiteral("feeBps"));
+            if (tokenA.isEmpty() || tokenB.isEmpty() || !feeBps.isDouble())
+                continue;
+
+            QVariantMap pool;
+            pool.insert(QStringLiteral("tokenA"), tokenA);
+            pool.insert(QStringLiteral("tokenB"), tokenB);
+            pool.insert(QStringLiteral("feeBps"), feeBps.toInt());
+            pool.insert(QStringLiteral("poolId"),
+                        obj.value(QStringLiteral("poolId")).toString());
+            pool.insert(QStringLiteral("tokenADefinitionId"),
+                        obj.value(QStringLiteral("tokenADefinitionId")).toString());
+            pool.insert(QStringLiteral("tokenBDefinitionId"),
+                        obj.value(QStringLiteral("tokenBDefinitionId")).toString());
+            out.append(pool);
         }
-        return digits;
+        return out;
     }
 
-    // Decimal string -> little-endian 16-byte u128. Inverse of u128leToDecimal.
-    // Returns false (leaving `out` unwritten) on an empty string or a
-    // non-digit character.
-    bool decimalToU128Le(const QString& decimal, uint8_t (&out)[16]) {
-        const QString trimmed = decimal.trimmed();
-        if (trimmed.isEmpty())
-            return false;
+    // Absolute path to the JSON token-list config consumed by tokenList().
+    constexpr char TOKENS_CONFIG_ENV[] = "TOKENS_CONFIG";
 
-        const unsigned __int128 kMax = ~static_cast<unsigned __int128>(0);
-        unsigned __int128 value = 0;
-        for (const QChar ch : trimmed) {
-            if (!ch.isDigit())
-                return false;
-            const unsigned int d = static_cast<unsigned int>(ch.digitValue());
-            if (value > (kMax - d) / 10)
-                return false; // would overflow u128
-            value = value * 10 + d;
+    // Parses the TOKENS_CONFIG JSON file into the QVariantList the Swap token
+    // picker renders. Same fail-soft, skip-malformed-entry behavior as
+    // readPoolsConfig(). symbol/name are display; definitionId/holding are the
+    // token's account ids and pass through as configured (base58 or hex) — the
+    // module methods normalize to hex at their boundary. decimals must be a
+    // non-negative integer (a wrong value would misrender amounts).
+    QVariantList readTokensConfig()
+    {
+        QVariantList out;
+
+        const QString path = qEnvironmentVariable(TOKENS_CONFIG_ENV);
+        if (path.isEmpty())
+            return out;
+
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+            return out;
+
+        const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+        if (!doc.isArray())
+            return out;
+
+        for (const QJsonValue& entry : doc.array()) {
+            if (!entry.isObject())
+                continue;
+            const QJsonObject obj = entry.toObject();
+
+            const QString definitionId = obj.value(QStringLiteral("definitionId")).toString();
+            const QString holding = obj.value(QStringLiteral("holding")).toString();
+            const QJsonValue decimals = obj.value(QStringLiteral("decimals"));
+            if (definitionId.isEmpty() || holding.isEmpty() || !decimals.isDouble())
+                continue;
+
+            QVariantMap token;
+            token.insert(QStringLiteral("symbol"), obj.value(QStringLiteral("symbol")).toString());
+            token.insert(QStringLiteral("name"), obj.value(QStringLiteral("name")).toString());
+            token.insert(QStringLiteral("definitionId"), definitionId);
+            token.insert(QStringLiteral("holding"), holding);
+            token.insert(QStringLiteral("decimals"), decimals.toInt());
+            out.append(token);
         }
-
-        for (int i = 0; i < 16; ++i) {
-            out[i] = static_cast<uint8_t>(value & 0xFF);
-            value >>= 8;
-        }
-        return true;
-    }
-
-    // Base58 address of the fixed clock account consumed by SwapExactInput's
-    // deadline check. Resolved to hex via the wallet module rather than
-    // hardcoding a guessed hex encoding.
-    const char CLOCK_ACCOUNT_BASE58[] = "4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4eM9ZyRWNU";
-
-    // Extracts the hex-encoded raw account bytes from a get_account_public()
-    // JSON reply. Returns an empty string if the account has no data (i.e. is
-    // uninitialized/nonexistent) — note the module always includes the "data"
-    // key, set to "" rather than omitted, when there's nothing to read.
-    QString accountDataHex(const QString& accountJson) {
-        const QJsonObject obj = QJsonDocument::fromJson(accountJson.toUtf8()).object();
-        return obj.value(QStringLiteral("data")).toString();
+        return out;
     }
 }
+
 
 AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
     : AmmUiBackendSimpleSource(parent),
@@ -147,16 +127,14 @@ AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
       m_logos(std::make_unique<LogosModules>(m_logosAPI)),
       m_wallet(std::make_unique<LogosWalletProvider>(m_logosAPI)),
       m_walletController(std::make_unique<WalletController>(
-          *m_wallet, QStringLiteral("AmmUI"))),
-      m_ammClient(std::make_unique<BundledAmmClient>()),
-      m_newPosition(std::make_unique<NewPositionRuntime>(m_wallet.get(), m_ammClient.get()))
+          *m_wallet, QStringLiteral("AmmUI")))
 {
     setWalletStateReady(false);
-    setNewPositionContext(m_newPosition->context(
-        QVariantMap(), networkSnapshot(), false, false));
 
     connect(m_walletController.get(), &WalletController::stateChanged,
             this, &AmmUiBackend::syncWalletState);
+    // Publishes an initial "loading" context (walletStateReady is still false,
+    // so it does not yet reach the module).
     syncWalletState();
     m_walletController->start();
     QTimer::singleShot(0, this, [this]() {
@@ -204,8 +182,6 @@ void AmmUiBackend::disconnectWallet()
 {
     m_walletController->disconnect();
     setWalletStateReady(true);
-    m_newPosition->clearWalletAccounts();
-    refreshNewPositionContext(QVariantMap());
 }
 
 QString AmmUiBackend::createAccountPublic()
@@ -233,36 +209,9 @@ QString AmmUiBackend::getBalance(QString accountIdHex, bool isPublic)
     return m_walletController->balance(accountIdHex, isPublic);
 }
 
-void AmmUiBackend::refreshNewPositionContext(QVariantMap request)
-{
-    const bool refreshWalletAccounts =
-        request.take(QStringLiteral("refreshWalletAccounts")).toBool();
-    if (request.contains(QStringLiteral("recentTokenIds"))
-        || request.contains(QStringLiteral("resolvedTokenIds"))) {
-        m_newPositionHints = request;
-    }
-    else {
-        request = m_newPositionHints;
-    }
-    setNewPositionContext(m_newPosition->context(
-        request, networkSnapshot(), isWalletOpen(), refreshWalletAccounts));
-}
-
-QVariantMap AmmUiBackend::quoteNewPosition(QVariantMap request)
-{
-    return m_newPosition->quote(request, networkSnapshot(), isWalletOpen());
-}
-
-QVariantMap AmmUiBackend::submitNewPosition(QVariantMap request, QString quoteHash)
-{
-    return m_newPosition->submit(
-        request, quoteHash, networkSnapshot(), isWalletOpen());
-}
-
 void AmmUiBackend::syncWalletState()
 {
     const WalletUiState& state = m_walletController->state();
-    const bool walletWasOpen = isWalletOpen();
 
     setIsWalletOpen(state.isWalletOpen);
     setWalletExists(state.walletExists);
@@ -273,457 +222,336 @@ void AmmUiBackend::syncWalletState()
     setCurrentBlockHeight(state.currentBlockHeight);
     setSequencerAddr(state.sequencerAddress);
     setSequencerReachable(state.sequencerReachable);
-
-    if (walletWasOpen && !state.isWalletOpen)
-        m_newPosition->clearWalletAccounts();
-
-    publishNetworkContext();
 }
 
-void AmmUiBackend::publishNetworkContext()
+QVariantMap AmmUiBackend::resolvePoolAccount(QString defAHex, QString defBHex)
 {
-    setNewPositionContext(m_newPosition->context(
-        m_newPositionHints, networkSnapshot(), isWalletOpen(), false));
+    return m_logos->amm_module.resolvePoolAccount(defAHex, defBHex);
 }
 
-QString AmmUiBackend::ammProgramIdHex()
+QVariantMap AmmUiBackend::configAccount()
 {
-    const QByteArray elf = loadAmmElf();
-    if (elf.isEmpty())
-        return QString();
-    ProgramId ammId{};
-    if (!amm_client_program_id_from_elf(reinterpret_cast<const uint8_t*>(elf.constData()),
-                                        static_cast<uintptr_t>(elf.size()), &ammId)) {
-        qWarning() << "AmmUiBackend::ammProgramIdHex: amm_client_program_id_from_elf failed";
-        return QString();
-    }
-    // 32 bytes, little-endian per u32 word, lowercase hex — same encoding as
-    // swapExactInput's program-id and `spel program-id`.
-    QByteArray bytes;
-    bytes.reserve(32);
-    for (int i = 0; i < 8; ++i) {
-        const uint32_t word = ammId[i];
-        bytes.append(static_cast<char>(word & 0xff));
-        bytes.append(static_cast<char>((word >> 8) & 0xff));
-        bytes.append(static_cast<char>((word >> 16) & 0xff));
-        bytes.append(static_cast<char>((word >> 24) & 0xff));
-    }
-    return QString::fromLatin1(bytes.toHex());
+    return m_logos->amm_module.configAccount();
 }
 
-ActiveNetworkSnapshot AmmUiBackend::networkSnapshot()
+QVariantMap AmmUiBackend::transferOwnership(QVariantMap request)
 {
-    ActiveNetworkSnapshot snapshot;
-    snapshot.id = QStringLiteral("lez");
-    // Defer program/token resolution (which reaches the module) until wallet
-    // state is resolved; the constructor publishes an initial context before
-    // the module is up, and syncWalletState() republishes once it is.
-    if (!walletStateReady()) {
-        snapshot.status = QStringLiteral("loading");
-        return snapshot;
-    }
-    // Resolve the AMM deployment id ($AMM_PROGRAM_BIN) and configured token set
-    // ($TOKENS_CONFIG) ONCE and cache — they're fixed for the process lifetime.
-    // networkSnapshot() runs on the quote hot path and from inside runtime reply
-    // callbacks, and tokenList() makes remote base58 conversions; recomputing each
-    // call reenters the module connection and hangs the reply.
-    if (!m_networkResolved) {
-        m_ammProgramIdCache = ammProgramIdHex();
-        m_tokenIdsCache.clear();
-        // Configured token set = the TOKENS_CONFIG definition ids, the same source
-        // the Swap view's token picker uses (tokenList normalizes them to hex).
-        const QVariantList tokens = tokenList();
-        for (const QVariant& entry : tokens) {
-            const QString id = entry.toMap().value(QStringLiteral("definitionId")).toString();
-            if (!id.isEmpty())
-                m_tokenIdsCache.append(id);
-        }
-        m_networkResolved = true;
-    }
-    snapshot.ammProgramId = m_ammProgramIdCache;
-    // Bind a quote to this AMM deployment: the program id changes per deployment,
-    // so it doubles as the network fingerprint (a quote can't be replayed against
-    // a different program). Empty when AMM_PROGRAM_BIN is unset — status gates it.
-    snapshot.fingerprint = m_ammProgramIdCache;
-    snapshot.tokenIds = m_tokenIdsCache;
-    snapshot.status = m_ammProgramIdCache.isEmpty()
-        ? QStringLiteral("config_missing")
-        : QStringLiteral("ready");
-    return snapshot;
+    // Submit guard — this app's wallet-open state is authoritative even though the shared
+    // wallet may remain open elsewhere (same guard as createPool / the swaps).
+    if (!isWalletOpen())
+        return QVariantMap {
+            { QStringLiteral("status"), QStringLiteral("error") },
+            { QStringLiteral("error"), QStringLiteral("wallet_unavailable") },
+        };
+
+    // No balance refresh — transferring admin authority doesn't touch token balances.
+    return m_logos->amm_module.transferOwnership(request);
 }
 
-QString AmmUiBackend::normalizeAccountId(const QString& id)
+QVariantMap AmmUiBackend::createPriceObservations(QVariantMap request)
 {
-    const QString t = id.trimmed();
-    // Already 64 hex chars?
-    if (t.size() == 64) {
-        bool allHex = true;
-        for (const QChar c : t) {
-            if (!std::isxdigit(static_cast<unsigned char>(c.toLatin1()))) {
-                allHex = false;
-                break;
-            }
-        }
-        if (allHex)
-            return t.toLower();
-    }
-    // Try base58 -> hex via the wallet module.
-    const QString hex = m_logos->logos_execution_zone.account_id_from_base58(t);
-    return hex.toLower(); // account_id_from_base58 returns "" on failure
+    if (!isWalletOpen())
+        return QVariantMap {
+            { QStringLiteral("status"), QStringLiteral("error") },
+            { QStringLiteral("error"), QStringLiteral("wallet_unavailable") },
+        };
+    // Oracle setup doesn't touch token balances — no refresh.
+    return m_logos->amm_module.createPriceObservations(request);
 }
 
-QByteArray AmmUiBackend::loadAmmElf()
+QVariantMap AmmUiBackend::createOraclePriceAccount(QVariantMap request)
 {
-    const QByteArray binPath = qgetenv(AMM_PROGRAM_BIN_ENV);
-    if (binPath.isEmpty()) {
-        qWarning() << "AmmUiBackend::loadAmmElf: AMM_PROGRAM_BIN not set";
-        return QByteArray();
-    }
-    QFile elfFile(QString::fromLocal8Bit(binPath));
-    if (!elfFile.open(QIODevice::ReadOnly)) {
-        qWarning() << "AmmUiBackend::loadAmmElf: cannot read AMM_PROGRAM_BIN at" << elfFile.fileName();
-        return QByteArray();
-    }
-    const QByteArray elf = elfFile.readAll();
-    elfFile.close();
-    if (elf.isEmpty()) {
-        qWarning() << "AmmUiBackend::loadAmmElf: AMM_PROGRAM_BIN is empty";
-        return QByteArray();
-    }
-    return elf;
-}
-
-QVariantMap AmmUiBackend::resolvePool(QString defAHex, QString defBHex)
-{
-    QVariantMap out;
-    out[QStringLiteral("exists")] = false;
-
-    // 1. Load the deployed AMM program's ELF. We can't derive this ourselves —
-    // it must match whatever is actually deployed on the target sequencer.
-    const QByteArray elf = loadAmmElf();
-    if (elf.isEmpty()) {
-        out[QStringLiteral("error")] = QStringLiteral("no_program_bin");
-        return out;
-    }
-
-    // 2. Derive the AMM program id from the ELF bytes.
-    ProgramId ammId{};
-    if (!amm_client_program_id_from_elf(reinterpret_cast<const uint8_t*>(elf.constData()),
-                                        static_cast<uintptr_t>(elf.size()), &ammId)) {
-        qWarning() << "AmmUiBackend::resolvePool: amm_client_program_id_from_elf failed";
-        out[QStringLiteral("error")] = QStringLiteral("bad_program_bin");
-        return out;
-    }
-
-    // 3. Read + decode the AMM config account to discover the TWAP oracle
-    // program id (needed for the current-tick PDA below). No data means the
-    // AMM hasn't been initialized on this sequencer yet.
-    uint8_t configPda[32];
-    amm_client_config_pda(&ammId, &configPda);
-    const QString configHex = bytes32ToHex(configPda);
-
-    // Debug: log every derived account (base58 + hex) and every on-chain read so
-    // a failed resolve can be traced directly against `spel inspect`.
-    // account_id_to_base58 is a LOCAL encode (safe even when on-chain reads
-    // time out).
-    auto b58 = [this](const QString& hex) {
-        const QString s = m_logos->logos_execution_zone.account_id_to_base58(hex);
-        return s.isEmpty() ? hex : QStringLiteral("%1 (hex %2)").arg(s, hex);
-    };
-    AMM_DBG() << "[amm-debug] resolvePool: defA=" << b58(defAHex)
-                         << "defB=" << b58(defBHex);
-    AMM_DBG() << "[amm-debug] resolvePool: reading config account" << b58(configHex);
-
-    const QString configJson = m_logos->logos_execution_zone.get_account_public(configHex);
-    AMM_DBG() << "[amm-debug] resolvePool: config get_account_public ->"
-                         << configJson.size() << "chars; raw:" << configJson.left(400);
-    const QString configDataHex = accountDataHex(configJson);
-    if (configDataHex.isEmpty()) {
-        qWarning() << "AmmUiBackend::resolvePool: AMM config read returned no data"
-                   << "(a failed/timed-out RPC or an uninitialized account)";
-        out[QStringLiteral("error")] = QStringLiteral("amm_not_initialized");
-        return out;
-    }
-
-    const QByteArray configBytes = QByteArray::fromHex(configDataHex.toUtf8());
-    FfiConfigView configView{};
-    if (!amm_client_decode_config(reinterpret_cast<const uint8_t*>(configBytes.constData()),
-                                  static_cast<uintptr_t>(configBytes.size()), &configView)) {
-        qWarning() << "AmmUiBackend::resolvePool: amm_client_decode_config failed";
-        out[QStringLiteral("error")] = QStringLiteral("bad_config");
-        return out;
-    }
-
-    // 4. Derive the pool PDA and read + decode its account. No data means
-    // there's no pool (or no liquidity) for this token pair yet.
-    uint8_t defA[32];
-    uint8_t defB[32];
-    if (!hexToBytes32(defAHex, defA) || !hexToBytes32(defBHex, defB)) {
-        qWarning() << "AmmUiBackend::resolvePool: invalid defAHex/defBHex";
-        out[QStringLiteral("error")] = QStringLiteral("bad_config");
-        return out;
-    }
-
-    uint8_t poolPda[32];
-    amm_client_pool_pda(&ammId, &defA, &defB, &poolPda);
-    const QString poolHex = bytes32ToHex(poolPda);
-
-    AMM_DBG() << "[amm-debug] resolvePool: reading pool account" << b58(poolHex);
-    const QString poolJson = m_logos->logos_execution_zone.get_account_public(poolHex);
-    AMM_DBG() << "[amm-debug] resolvePool: pool get_account_public ->"
-                         << poolJson.size() << "chars; raw:" << poolJson.left(400);
-    const QString poolDataHex = accountDataHex(poolJson);
-    if (poolDataHex.isEmpty()) {
-        // Not a warning: this is the normal "no liquidity yet" state.
-        out[QStringLiteral("error")] = QStringLiteral("no_pool");
-        return out;
-    }
-
-    const QByteArray poolBytes = QByteArray::fromHex(poolDataHex.toUtf8());
-    FfiPoolView poolView{};
-    if (!amm_client_decode_pool(reinterpret_cast<const uint8_t*>(poolBytes.constData()),
-                                static_cast<uintptr_t>(poolBytes.size()), &poolView)) {
-        qWarning() << "AmmUiBackend::resolvePool: amm_client_decode_pool failed";
-        out[QStringLiteral("error")] = QStringLiteral("bad_config");
-        return out;
-    }
-
-    // 5. Derive the TWAP oracle's current-tick PDA for this pool.
-    uint8_t currentTickPda[32];
-    amm_client_current_tick_pda(&configView.twap_oracle_program_id, &poolPda, &currentTickPda);
-
-    // 6. Assemble the result.
-    out[QStringLiteral("exists")] = true;
-    out[QStringLiteral("configHex")] = configHex;
-    out[QStringLiteral("poolIdHex")] = poolHex;
-    out[QStringLiteral("defAHex")] = bytes32ToHex(poolView.def_a);
-    out[QStringLiteral("defBHex")] = bytes32ToHex(poolView.def_b);
-    out[QStringLiteral("vaultAHex")] = bytes32ToHex(poolView.vault_a);
-    out[QStringLiteral("vaultBHex")] = bytes32ToHex(poolView.vault_b);
-    out[QStringLiteral("currentTickHex")] = bytes32ToHex(currentTickPda);
-    out[QStringLiteral("reserveA")] = u128leToDecimal(poolView.reserve_a);
-    out[QStringLiteral("reserveB")] = u128leToDecimal(poolView.reserve_b);
-    out[QStringLiteral("feeBps")] = static_cast<int>(poolView.fees);
-
-    AMM_DBG() << "[amm-debug] resolvePool: RESOLVED"
-                         << "pool=" << b58(poolHex)
-                         << "poolDefA=" << b58(out[QStringLiteral("defAHex")].toString())
-                         << "poolDefB=" << b58(out[QStringLiteral("defBHex")].toString())
-                         << "vaultA=" << b58(out[QStringLiteral("vaultAHex")].toString())
-                         << "vaultB=" << b58(out[QStringLiteral("vaultBHex")].toString())
-                         << "currentTick=" << b58(out[QStringLiteral("currentTickHex")].toString())
-                         << "reserveA=" << out[QStringLiteral("reserveA")].toString()
-                         << "reserveB=" << out[QStringLiteral("reserveB")].toString()
-                         << "feeBps=" << out[QStringLiteral("feeBps")].toInt();
-    return out;
+    if (!isWalletOpen())
+        return QVariantMap {
+            { QStringLiteral("status"), QStringLiteral("error") },
+            { QStringLiteral("error"), QStringLiteral("wallet_unavailable") },
+        };
+    return m_logos->amm_module.createOraclePriceAccount(request);
 }
 
 QString AmmUiBackend::swapExactInput(QString defAHex, QString defBHex, QString userInputHoldingHex,
                                       QString userOutputHoldingHex, QString amountInDecimal,
                                       QString minOutDecimal, QString deadlineDecimal)
 {
-    AMM_DBG() << "[amm-debug] swapExactInput: ARGS"
-                         << "defA=" << defAHex << "defB=" << defBHex
-                         << "userInputHolding=" << userInputHoldingHex
-                         << "userOutputHolding=" << userOutputHoldingHex
-                         << "amountIn=" << amountInDecimal << "minOut=" << minOutDecimal
-                         << "deadline=" << deadlineDecimal;
+    // This app's connected state is the authoritative submit guard. disconnectWallet()
+    // only locks this UI and leaves the shared logos_execution_zone wallet open (another
+    // app may keep it open, or this app opened-then-disconnected), and the QML submit path
+    // doesn't check isWalletOpen — so without this a swap could sign/submit while the UI
+    // shows "Connect".
+    if (!isWalletOpen())
+        return {};
 
-    // 1. Resolve the pool's PDAs; refuse if there's no pool (or no liquidity)
-    // for this token pair.
-    const QVariantMap pool = resolvePool(defAHex, defBHex);
-    if (!pool.value(QStringLiteral("exists")).toBool()) {
-        qWarning() << "AmmUiBackend::swapExactInput: no pool for the given token pair";
-        return QString();
-    }
+    const QString txHash = m_logos->amm_module.swapExactInput(
+        defAHex, defBHex, userInputHoldingHex, userOutputHoldingHex,
+        amountInDecimal, minOutDecimal, deadlineDecimal);
+    if (!txHash.isEmpty())
+        refreshBalances();
+    return txHash;
+}
 
-    // 2. Load the deployed AMM program's ELF (must match resolvePool's — both
-    // read the same AMM_PROGRAM_BIN — since the instruction is proven against
-    // this exact binary's image id).
-    const QByteArray elf = loadAmmElf();
-    if (elf.isEmpty()) {
-        qWarning() << "AmmUiBackend::swapExactInput: failed to load AMM_PROGRAM_BIN";
-        return QString();
-    }
+QVariantMap AmmUiBackend::swapExactInQuote(QString tokenInHex, QString tokenOutHex,
+                                            QString amountInDecimal, int slippageBps)
+{
+    // Read-only preview — no wallet guard. The module reads the pool and prices
+    // the swap server-side; the returned envelope orients reserves and computes
+    // expectedOut/minReceived/priceImpact via the same formula the chain uses.
+    return m_logos->amm_module.swapExactInQuote(
+        tokenInHex, tokenOutHex, amountInDecimal, slippageBps);
+}
 
-    // 3. Convert amounts/deadline to the wire types amm_client_swap_words expects.
-    uint8_t amtIn[16];
-    uint8_t minOut[16];
-    if (!decimalToU128Le(amountInDecimal, amtIn) || !decimalToU128Le(minOutDecimal, minOut)) {
-        qWarning() << "AmmUiBackend::swapExactInput: invalid amountInDecimal/minOutDecimal";
-        return QString();
-    }
-    bool deadlineOk = false;
-    const quint64 deadline = deadlineDecimal.toULongLong(&deadlineOk);
-    if (!deadlineOk) {
-        qWarning() << "AmmUiBackend::swapExactInput: invalid deadlineDecimal";
-        return QString();
-    }
+QVariantMap AmmUiBackend::swapExactOutQuote(QString tokenInHex, QString tokenOutHex,
+                                             QString amountOutDecimal, int slippageBps)
+{
+    // Read-only preview — the exact-output counterpart of swapExactInQuote:
+    // prices the input required for a desired output and its slippage ceiling.
+    return m_logos->amm_module.swapExactOutQuote(
+        tokenInHex, tokenOutHex, amountOutDecimal, slippageBps);
+}
 
-    // 4. Build the RISC0 instruction words for SwapExactInput.
-    const AmmWords w = amm_client_swap_words(&amtIn, &minOut, deadline);
-    if (!w.ok) {
-        qWarning() << "AmmUiBackend::swapExactInput: amm_client_swap_words failed";
-        return QString();
-    }
-    const std::vector<uint32_t> instruction(w.ptr, w.ptr + w.len);
-    amm_client_free_words(w);
+QString AmmUiBackend::swapExactOutput(QString defAHex, QString defBHex, QString userInputHoldingHex,
+                                       QString userOutputHoldingHex, QString amountOutDecimal,
+                                       QString maxInDecimal, QString deadlineDecimal)
+{
+    // Same connected-state submit guard as swapExactInput — this app's lock is
+    // authoritative even though the shared wallet may remain open elsewhere.
+    if (!isWalletOpen())
+        return {};
 
-    // 5. Assemble the account id list (exact IDL order) and parallel signer
-    // flags. The swap's direction is derived from the input holding's own
-    // token, so the two user holdings occupy fixed role slots: user_input_holding
-    // (the token being sold) then user_output_holding (received). Only the input
-    // holding signs — the guest debits it via the downstream token transfer; the
-    // output holding only receives and needs no signature.
-    const QString clockHex =
-        m_logos->logos_execution_zone.account_id_from_base58(QString::fromLatin1(CLOCK_ACCOUNT_BASE58));
-    if (clockHex.isEmpty()) {
-        qWarning() << "AmmUiBackend::swapExactInput: failed to resolve clock account id";
-        return QString();
-    }
-
-    const QStringList accounts = {
-        pool.value(QStringLiteral("configHex")).toString(),
-        pool.value(QStringLiteral("poolIdHex")).toString(),
-        pool.value(QStringLiteral("vaultAHex")).toString(),
-        pool.value(QStringLiteral("vaultBHex")).toString(),
-        userInputHoldingHex,  // user_input_holding — the token being sold (signed)
-        userOutputHoldingHex, // user_output_holding — receives the token being bought
-        pool.value(QStringLiteral("currentTickHex")).toString(),
-        clockHex,
-    };
-    const QVariantList signers = { false, false, false, false, true, false, false, false };
-
-    // Debug: dump the exact accounts/signers we submit (base58 for `spel`
-    // comparison), plus the instruction/elf sizes.
-    auto b58s = [this](const QString& hex) {
-        const QString s = m_logos->logos_execution_zone.account_id_to_base58(hex);
-        return s.isEmpty() ? hex : QStringLiteral("%1 (hex %2)").arg(s, hex);
-    };
-    static const char* const kSlot[] = { "config",       "pool",
-                                         "vault_a",      "vault_b",
-                                         "user_input_holding", "user_output_holding",
-                                         "current_tick", "clock" };
-    AMM_DBG() << "[amm-debug] swapExactInput: SUBMIT"
-                         << "instruction_words=" << static_cast<int>(instruction.size())
-                         << "elf_bytes=" << elf.size();
-    for (int i = 0; i < accounts.size(); ++i) {
-        AMM_DBG() << "[amm-debug]   account[" << i << "]"
-                             << (i < 8 ? kSlot[i] : "?") << "=" << b58s(accounts[i])
-                             << "signer=" << (i < signers.size() && signers[i].toBool());
-    }
-
-    // 6. Submit through the wallet module's generic public-transaction entry
-    // point. The module API takes `instruction` (as bytes — see the note atop
-    // this file) plus the program's id as hex, not the raw ELF: the program is
-    // already deployed and referenced by id. There is no program_dependencies
-    // arg — the sequencer resolves the AMM's chained token/twap calls on-chain.
-    // Serialize the u32 instruction words to bytes explicitly as little-endian,
-    // matching the protocol's LE-u32 wire format. A reinterpret_cast of the
-    // in-memory vector would be host-endian-dependent and byte-swap on a
-    // big-endian host, making the guest decode a different instruction.
-    QByteArray instructionBytes;
-    instructionBytes.reserve(static_cast<int>(instruction.size() * sizeof(uint32_t)));
-    for (const uint32_t w : instruction) {
-        instructionBytes.append(static_cast<char>(w & 0xFF));
-        instructionBytes.append(static_cast<char>((w >> 8) & 0xFF));
-        instructionBytes.append(static_cast<char>((w >> 16) & 0xFF));
-        instructionBytes.append(static_cast<char>((w >> 24) & 0xFF));
-    }
-
-    // Derive the deployed AMM program id from the ELF and hex-encode it as the
-    // canonical 32-byte hex (little-endian per u32 word — matches `spel
-    // program-id` and the on-chain config's *_program_id fields).
-    ProgramId ammId;
-    if (!amm_client_program_id_from_elf(reinterpret_cast<const uint8_t*>(elf.constData()),
-                                        static_cast<uintptr_t>(elf.size()), &ammId)) {
-        qWarning() << "AmmUiBackend::swapExactInput: amm_client_program_id_from_elf failed";
-        return QString();
-    }
-    QByteArray programIdBytes;
-    programIdBytes.reserve(32);
-    for (int i = 0; i < 8; ++i) {
-        const uint32_t w = ammId[i];
-        programIdBytes.append(static_cast<char>(w & 0xff));
-        programIdBytes.append(static_cast<char>((w >> 8) & 0xff));
-        programIdBytes.append(static_cast<char>((w >> 16) & 0xff));
-        programIdBytes.append(static_cast<char>((w >> 24) & 0xff));
-    }
-    const QString programIdHex = QString::fromLatin1(programIdBytes.toHex());
-    AMM_DBG() << "[amm-debug] swapExactInput: program_id_hex=" << programIdHex;
-
-    // `instruction` is a QVariant (bstr); `program_id_hex` is a plain QString
-    // (tstr) in the generated proxy — pass it directly, not QVariant-wrapped.
-    const QString resultJson = m_logos->logos_execution_zone.send_generic_public_transaction(
-        accounts, signers, QVariant::fromValue(instructionBytes), programIdHex);
-    AMM_DBG() << "[amm-debug] swapExactInput: send_generic_public_transaction ->"
-                         << resultJson.size() << "chars; raw:" << resultJson.left(600);
-
-    const QJsonObject obj = QJsonDocument::fromJson(resultJson.toUtf8()).object();
-    if (!obj.value(QStringLiteral("success")).toBool()) {
-        qWarning() << "AmmUiBackend::swapExactInput: transaction failed:" << resultJson;
-        return QString();
-    }
-
-    refreshBalances();
-    return obj.value(QStringLiteral("tx_hash")).toString();
+    const QString txHash = m_logos->amm_module.swapExactOutput(
+        defAHex, defBHex, userInputHoldingHex, userOutputHoldingHex,
+        amountOutDecimal, maxInDecimal, deadlineDecimal);
+    if (!txHash.isEmpty())
+        refreshBalances();
+    return txHash;
 }
 
 QVariantList AmmUiBackend::tokenList()
 {
-    QVariantList out;
+    // Config-driven token list, read straight from TOKENS_CONFIG (like poolList
+    // reads AMM_POOLS_CONFIG). Token discovery is an app concern, so this stays
+    // in the backend rather than the amm_module; the swap/quote module methods
+    // normalize the ids (base58 or hex) at their boundary.
+    return readTokensConfig();
+}
 
-    const QByteArray path = qgetenv(TOKENS_CONFIG_ENV);
-    if (path.isEmpty()) {
-        qWarning() << "AmmUiBackend::tokenList: TOKENS_CONFIG not set";
-        return out;
-    }
+QVariantMap AmmUiBackend::createPoolQuote(QVariantMap request)
+{
+    // Read-only create-pool preview — no wallet guard. The module prices the opening
+    // LP and price server-side from the two deposit amounts.
+    return m_logos->amm_module.createPoolQuote(request);
+}
 
-    QFile file(QString::fromLocal8Bit(path));
-    if (!file.open(QIODevice::ReadOnly)) {
-        qWarning() << "AmmUiBackend::tokenList: cannot read TOKENS_CONFIG at" << file.fileName();
-        return out;
+QVariantMap AmmUiBackend::addLiquidityQuote(QVariantMap request)
+{
+    // Read-only add-liquidity preview — no wallet guard. The module reads the pool and
+    // ratio-matches the deposit server-side from the two max amounts.
+    return m_logos->amm_module.addLiquidityQuote(request);
+}
+
+QVariantList AmmUiBackend::tokenHoldings()
+{
+    // Read-only list of the wallet's token holdings for the account selector. Gated
+    // by this app's wallet-open state (a closed wallet has nothing to list).
+    return m_logos->amm_module.tokenHoldings(isWalletOpen());
+}
+
+QVariantList AmmUiBackend::poolList()
+{
+    // Config-driven known pools. Read straight from AMM_POOLS_CONFIG on every
+    // call (the UI fetches this once on load); adding more pairs is a config
+    // edit, no app change. Pool discovery is an app concern, so this stays in
+    // the backend rather than the amm_module.
+    return readPoolsConfig();
+}
+
+QVariantList AmmUiBackend::feeTiers()
+{
+    // Pure, input-free enumeration of the AMM's supported fee tiers (raw bps) —
+    // no wallet or module connection state involved.
+    return m_logos->amm_module.feeTiers();
+}
+
+QVariantList AmmUiBackend::resolveTokens()
+{
+    // The app owns the token set: the configured tokens (TOKENS_CONFIG) and the user's
+    // persisted custom ids — the same "known list" shape the swap side shows. Tokens the
+    // wallet merely holds are NOT auto-listed here; to provide liquidity with an unlisted
+    // token the user adds it by id (addCustomToken). The module still annotates
+    // holdingId/balance for whichever of these ids the wallet does hold.
+    const bool wallet_open = isWalletOpen();
+
+    QVariantList ids;
+    const QVariantList configured = readTokensConfig();
+    for (const QVariant& entry : configured) {
+        const QString id = entry.toMap().value(QStringLiteral("definitionId")).toString();
+        if (!id.isEmpty())
+            ids.append(id);
     }
-    const QByteArray json = file.readAll();
+    const QStringList custom = loadCustomTokenIds();
+    for (const QString& id : custom)
+        ids.append(id);
+
+    QVariantMap request;
+    request.insert(QStringLiteral("tokenIds"), ids);
+    QVariantList rows = m_logos->amm_module.resolveTokens(request, wallet_open);
+
+    // The module resolves on-chain fields (definitionId/name/holding/balance) but
+    // not the UI-only `symbol`, which lives in TOKENS_CONFIG. Re-attach it here so
+    // the liquidity token picker derives the same colored avatars as the swap side
+    // (TokenVisuals derives color/letter from the symbol). Custom ids not in the
+    // config keep no symbol; the picker falls back to the name for those.
+    for (QVariant& row : rows) {
+        QVariantMap token = row.toMap();
+        if (!token.value(QStringLiteral("symbol")).toString().isEmpty()) {
+            row = token;
+            continue;
+        }
+        const QString id = token.value(QStringLiteral("definitionId")).toString();
+        for (const QVariant& entry : configured) {
+            const QVariantMap cfg = entry.toMap();
+            if (cfg.value(QStringLiteral("definitionId")).toString() == id) {
+                token.insert(QStringLiteral("symbol"), cfg.value(QStringLiteral("symbol")));
+                if (token.value(QStringLiteral("name")).toString().isEmpty())
+                    token.insert(QStringLiteral("name"), cfg.value(QStringLiteral("name")));
+                break;
+            }
+        }
+        row = token;
+    }
+    return rows;
+}
+
+QVariantMap AmmUiBackend::addCustomToken(QString tokenId)
+{
+    const QString id = tokenId.trimmed();
+    if (id.isEmpty())
+        return QVariantMap{{QStringLiteral("ok"), false},
+                           {QStringLiteral("error"), QStringLiteral("unresolved")}};
+
+    // Validate before persisting: resolve just this id and keep it only if it is a
+    // real fungible token (a non-fungible / unreadable id yields no row).
+    QVariantMap probe;
+    probe.insert(QStringLiteral("tokenIds"), QVariantList{id});
+    const QVariantList rows = m_logos->amm_module.resolveTokens(probe, isWalletOpen());
+    if (rows.isEmpty())
+        return QVariantMap{{QStringLiteral("ok"), false},
+                           {QStringLiteral("error"), QStringLiteral("unresolved")}};
+
+    const QVariantMap token = rows.first().toMap();
+    const QString canonicalId = token.value(QStringLiteral("definitionId")).toString();
+    if (canonicalId.isEmpty())
+        return QVariantMap{{QStringLiteral("ok"), false},
+                           {QStringLiteral("error"), QStringLiteral("unresolved")}};
+
+    QStringList custom = loadCustomTokenIds();
+    if (!custom.contains(canonicalId)) {
+        custom.append(canonicalId);
+        if (!saveCustomTokenIds(custom))
+            return QVariantMap{{QStringLiteral("ok"), false},
+                               {QStringLiteral("error"), QStringLiteral("backend_error")}};
+    }
+    return QVariantMap{{QStringLiteral("ok"), true}, {QStringLiteral("token"), token}};
+}
+
+QString AmmUiBackend::customTokenStorePath() const
+{
+    // A dedicated store path via CUSTOM_TOKEN_CONFIG (akin to the module's env-configured
+    // TOKENS_CONFIG). Otherwise per-user app data — but in a QML plugin with no
+    // QCoreApplication application name that can come back empty, so fall back to a fixed
+    // dot-dir under HOME. Persistence must never silently no-op on an empty path.
+    const QByteArray env = qgetenv("CUSTOM_TOKEN_CONFIG");
+    if (!env.isEmpty())
+        return QString::fromLocal8Bit(env);
+    const QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    const QString dir = !appData.isEmpty()
+        ? appData
+        : QDir(QDir::homePath()).filePath(QStringLiteral(".logos-amm"));
+    return QDir(dir).filePath(QStringLiteral("amm-custom-tokens.json"));
+}
+
+QStringList AmmUiBackend::loadCustomTokenIds() const
+{
+    const QString path = customTokenStorePath();
+    if (path.isEmpty())
+        return {};
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    const QByteArray bytes = file.readAll();
     file.close();
 
-    QJsonParseError parseError{};
-    const QJsonDocument doc = QJsonDocument::fromJson(json, &parseError);
-    if (parseError.error != QJsonParseError::NoError || !doc.isArray()) {
-        qWarning() << "AmmUiBackend::tokenList: TOKENS_CONFIG at" << file.fileName()
-                   << "is not a valid JSON array:" << parseError.errorString();
-        return out;
+    QJsonParseError error{};
+    const QJsonDocument doc = QJsonDocument::fromJson(bytes, &error);
+    if (error.error != QJsonParseError::NoError || !doc.isArray())
+        return {};
+
+    QStringList ids;
+    for (const QJsonValue& value : doc.array()) {
+        const QString id = value.toString().trimmed();
+        if (!id.isEmpty() && !ids.contains(id))
+            ids.append(id);
     }
+    return ids;
+}
 
-    const QJsonArray arr = doc.array();
-    for (const QJsonValue& entry : arr) {
-        if (!entry.isObject()) {
-            qWarning() << "AmmUiBackend::tokenList: skipping non-object entry in TOKENS_CONFIG";
-            continue;
-        }
-        const QJsonObject obj = entry.toObject();
-        const QString symbol = obj.value(QStringLiteral("symbol")).toString();
-
-        // TOKENS_CONFIG entries may give definitionId/holding as hex or
-        // base58 (the wallet/runbook display base58) — normalize both to
-        // lowercase hex here so every downstream consumer (resolvePool,
-        // swapExactInput, and the QML's hex comparisons) can assume hex.
-        const QString definitionId =
-            normalizeAccountId(obj.value(QStringLiteral("definitionId")).toString());
-        const QString holding = normalizeAccountId(obj.value(QStringLiteral("holding")).toString());
-        if (definitionId.isEmpty() || holding.isEmpty()) {
-            qWarning() << "AmmUiBackend::tokenList: skipping token" << symbol
-                       << "— cannot normalize definitionId/holding to hex (not valid hex or base58)";
-            continue;
-        }
-
-        QVariantMap token;
-        token[QStringLiteral("symbol")] = symbol;
-        token[QStringLiteral("name")] = obj.value(QStringLiteral("name")).toString();
-        token[QStringLiteral("definitionId")] = definitionId;
-        token[QStringLiteral("holding")] = holding;
-        token[QStringLiteral("decimals")] = obj.value(QStringLiteral("decimals")).toInt();
-        out.append(token);
+bool AmmUiBackend::saveCustomTokenIds(const QStringList& ids) const
+{
+    const QString path = customTokenStorePath();
+    if (path.isEmpty()) {
+        qWarning() << "AmmUiBackend: no custom-token store path; not persisting custom tokens";
+        return false;
     }
-    return out;
+    QDir().mkpath(QFileInfo(path).absolutePath());
+
+    QJsonArray array;
+    for (const QString& id : ids)
+        array.append(id);
+
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        qWarning() << "AmmUiBackend: cannot write custom-token store" << path << file.errorString();
+        return false;
+    }
+    file.write(QJsonDocument(array).toJson(QJsonDocument::Compact));
+    file.close();
+    return true;
+}
+
+QVariantMap AmmUiBackend::createPool(QVariantMap request)
+{
+    // Same connected-state submit guard as the swaps — this app's lock is
+    // authoritative even though the shared wallet may remain open elsewhere.
+    if (!isWalletOpen())
+        return QVariantMap {
+            { QStringLiteral("status"), QStringLiteral("error") },
+            { QStringLiteral("error"), QStringLiteral("wallet_unavailable") },
+        };
+
+    // The caller supplies the fresh LP holding in the request; the backend forwards to
+    // the module (it creates no wallet accounts) and refreshes balances on a successful
+    // submit.
+    const QVariantMap result = m_logos->amm_module.createPool(request);
+    if (result.value(QStringLiteral("status")).toString() == QStringLiteral("ok")
+        && !result.value(QStringLiteral("transactionId")).toString().isEmpty())
+        refreshBalances();
+    return result;
+}
+
+QVariantMap AmmUiBackend::addLiquidity(QVariantMap request)
+{
+    // Same connected-state submit guard as createPool — this app's lock is authoritative
+    // even though the shared wallet may remain open elsewhere.
+    if (!isWalletOpen())
+        return QVariantMap {
+            { QStringLiteral("status"), QStringLiteral("error") },
+            { QStringLiteral("error"), QStringLiteral("wallet_unavailable") },
+        };
+
+    // The caller supplies the fresh LP holding in the request; the backend forwards to the
+    // module (it creates no wallet accounts) and refreshes balances on a successful submit.
+    const QVariantMap result = m_logos->amm_module.addLiquidity(request);
+    if (result.value(QStringLiteral("status")).toString() == QStringLiteral("ok")
+        && !result.value(QStringLiteral("transactionId")).toString().isEmpty())
+        refreshBalances();
+    return result;
 }

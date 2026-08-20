@@ -4,6 +4,7 @@ import QtQuick.Layouts 1.15
 
 import Logos.Theme
 
+import "chrome"
 import "pages"
 
 Item {
@@ -14,6 +15,24 @@ Item {
     readonly property var accountModel: logos.model("amm_ui", "accountModel")
 
     property bool ready: false
+
+    // The pool row opened from PoolsPage, or null for the list. There is no
+    // StackView here — the Pools tab renders either the list or the detail view.
+    property var selectedPool: null
+
+    // Hand a pool's pair to the Trade tab and leave the detail view.
+    function openSwapFor(pool) {
+        root.selectedPool = null
+        navbar.currentIndex = 0
+        swapPage.selectPair(pool)
+    }
+
+    // Hand a pool's pair to the Liquidity tab and leave the detail view.
+    function openLiquidityFor(pool) {
+        root.selectedPool = null
+        navbar.currentIndex = 1
+        liquidityPage.selectPair(pool)
+    }
 
     Connections {
         target: logos
@@ -81,16 +100,41 @@ Item {
         anchors.bottom: parent.bottom
 
         SwapPage {
+            id: swapPage
+
             anchors.fill: parent
             visible: navbar.currentIndex === 0
             backend: root.ready ? root.backend : null
         }
 
         LiquidityPage {
+            id: liquidityPage
+
             anchors.fill: parent
             backend: root.ready ? root.backend : null
             runtime: logos
             visible: navbar.currentIndex === 1
+        }
+
+        PoolsPage {
+            anchors.fill: parent
+            backend: root.ready ? root.backend : null
+            runtime: logos
+            visible: navbar.currentIndex === 2 && root.selectedPool === null
+
+            onPoolActivated: function(pool) { root.selectedPool = pool }
+        }
+
+        PoolDetailPage {
+            anchors.fill: parent
+            backend: root.ready ? root.backend : null
+            runtime: logos
+            visible: navbar.currentIndex === 2 && root.selectedPool !== null
+            pool: root.selectedPool
+
+            onBackRequested: root.selectedPool = null
+            onSwapRequested: function(pool) { root.openSwapFor(pool) }
+            onAddLiquidityRequested: function(pool) { root.openLiquidityFor(pool) }
         }
     }
 }

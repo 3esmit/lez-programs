@@ -13,9 +13,142 @@ import "../state"
 Item {
     id: root
 
+    objectName: "liquidityPage"
+
     property var backend: null
     property var runtime: null
     readonly property NewPositionFlow flow: newPositionFlow
+
+    // Wallet token holdings (backend.tokenHoldings()) feeding the create-pool
+    // account selectors; refetched when the wallet opens.
+    property var holdings: []
+
+    // The AMM's supported fee tiers (backend.feeTiers()) feeding the fee selector.
+    // Program-derived and wallet-independent, so it's fetched once when the backend
+    // becomes available.
+    property var feeTiers: []
+
+    // The liquidity token selector rows (backend.resolveTokens()): the app-owned union of
+    // configured tokens and persisted-custom tokens. Refetched when the wallet opens/closes
+    // (holdingId/balance change) and after a custom token is added.
+    property var resolvedTokens: []
+    property bool tokensLoading: false
+    property int tokensGeneration: 0
+
+    // A pair handed over from the pool detail view. Held until resolveTokens()
+    // has answered, since the handoff can arrive before the selector's rows do.
+    property var pendingPair: null
+
+    // Preselects a pool's pair on the new-position form. Called by Main.qml when
+    // the pool detail view's "Add liquidity" button is pressed.
+    function selectPair(pool) {
+        if (!pool)
+            return
+        root.pendingPair = pool
+        root.applyPendingPair()
+    }
+
+    // Only an id the selector actually offers can be preselected: the form drops
+    // any selection that isn't in resolveTokens(), and the pool config could
+    // carry a different id encoding than the resolved rows.
+    function selectableTokenId(definitionId) {
+        if (definitionId.length === 0)
+            return ""
+        for (var i = 0; i < root.resolvedTokens.length; ++i) {
+            if (String(root.resolvedTokens[i].definitionId) === definitionId)
+                return definitionId
+        }
+        return ""
+    }
+
+    function applyPendingPair() {
+        // Guard on the list itself, not on tokensLoading: refreshTokens() assigns
+        // resolvedTokens before it clears the flag, so this runs from
+        // onResolvedTokensChanged while the load is still nominally in progress.
+        if (!root.pendingPair || root.resolvedTokens.length === 0)
+            return
+        var pair = root.pendingPair
+        // One attempt per handoff — see SwapPage.applyPendingPair().
+        root.pendingPair = null
+        var idA = root.selectableTokenId(String(pair.tokenADefinitionId || ""))
+        var idB = root.selectableTokenId(String(pair.tokenBDefinitionId || ""))
+        if (idA.length > 0)
+            form.selectToken("A", idA)
+        if (idB.length > 0)
+            form.selectToken("B", idB)
+    }
+
+    onResolvedTokensChanged: root.applyPendingPair()
+
+    function refreshHoldings() {
+        if (!root.backend || root.runtime === null)
+            return
+        root.runtime.watch(root.backend.tokenHoldings(),
+            function(list) { root.holdings = list },
+            function(err) { console.warn("tokenHoldings error:", err) })
+    }
+
+    function refreshFeeTiers() {
+        if (!root.backend || root.runtime === null || root.feeTiers.length > 0)
+            return
+        root.runtime.watch(root.backend.feeTiers(),
+            function(list) { root.feeTiers = list },
+            function(err) { console.warn("feeTiers error:", err) })
+    }
+
+    function refreshTokens() {
+        if (!root.backend || root.runtime === null)
+            return
+        // Tag each request; a wallet toggle can start overlapping resolveTokens calls whose
+        // replies arrive out of order — drop any superseded callback (mirrors SwapPage's
+        // holdings-generation guard).
+        const generation = ++root.tokensGeneration
+        root.tokensLoading = true
+        root.runtime.watch(root.backend.resolveTokens(),
+            function(list) {
+                if (generation !== root.tokensGeneration)
+                    return
+                root.resolvedTokens = list
+                root.tokensLoading = false
+            },
+            function(err) {
+                if (generation !== root.tokensGeneration)
+                    return
+                root.tokensLoading = false
+                console.warn("resolveTokens error:", err)
+            })
+    }
+
+    // Validates + persists a user-pasted custom token id, then refreshes the list and hands the
+    // resolved row back to the form to complete selection (or reports the failure).
+    function addCustomToken(tokenId) {
+        if (!root.backend || root.runtime === null) {
+            form.failTokenResolution("backend_error")
+            return
+        }
+        root.runtime.watch(root.backend.addCustomToken(tokenId),
+            function(result) {
+                if (result && result.ok === true) {
+                    root.refreshTokens()
+                    form.finishTokenResolution(result.token)
+                } else {
+                    form.failTokenResolution(result && result.error ? result.error : "unresolved")
+                }
+            },
+            function(err) {
+                console.warn("addCustomToken error:", err)
+                form.failTokenResolution("backend_error")
+            })
+    }
+
+onBackendChanged: { root.refreshHoldings(); root.refreshFeeTiers(); root.refreshTokens() }
+    onRuntimeChanged: { root.refreshHoldings(); root.refreshFeeTiers(); root.refreshTokens() }
+    Component.onCompleted: { root.refreshHoldings(); root.refreshFeeTiers(); root.refreshTokens() }
+
+    Connections {
+        target: root.backend
+        function onIsWalletOpenChanged() { root.refreshHoldings(); root.refreshTokens() }
+    }
 
     readonly property int pageMargin: width < 640 ? 16 : 24
     readonly property int contentMaxWidth: 1200
@@ -96,11 +229,11 @@ Item {
                     iconSize: 18
                     Layout.preferredWidth: 40
                     Layout.preferredHeight: 40
-                    enabled: !newPositionFlow.contextLoading && !newPositionFlow.submitting
+                    enabled: !root.tokensLoading && !newPositionFlow.submitting
                     Accessible.name: qsTr("Refresh position data")
                     ToolTip.visible: hovered
                     ToolTip.text: Accessible.name
-                    onClicked: newPositionFlow.refreshContext(true)
+                    onClicked: { root.refreshTokens(); root.refreshHoldings() }
                 }
             }
 
@@ -215,7 +348,11 @@ Item {
                                    ? qsTr("Specify the token amounts for your liquidity contribution.")
                                    : qsTr("Choose two tokens and a fee tier for this position.")
                     showRefreshAction: false
-                    newPositionContext: newPositionFlow.newPositionContext
+                    holdings: root.holdings
+                    feeTiers: root.feeTiers
+                    tokens: root.resolvedTokens
+                    loadingTokens: root.tokensLoading
+                    walletReady: newPositionFlow.walletStateReady
                     flowState: newPositionFlow.viewState
 
                     onQuoteRequested: function(immediate, quoteRequest) {
@@ -227,11 +364,12 @@ Item {
                     }
 
                     onTokenResolveRequested: function(tokenId) {
-                        newPositionFlow.resolveToken(tokenId)
+                        root.addCustomToken(tokenId)
                     }
 
                     onDraftChanged: newPositionFlow.draftChanged()
-                    onRefreshRequested: newPositionFlow.refreshContext(true)
+                    onPairReset: newPositionFlow.resetPoolExistence()
+                    onRefreshRequested: { root.refreshTokens(); root.refreshHoldings() }
                 }
             }
         }
@@ -240,18 +378,8 @@ Item {
     Connections {
         target: newPositionFlow
 
-        function onTokenResolutionFinished(finalResponse) {
-            form.finishTokenResolution(finalResponse)
-        }
-
-        function onTokenResolutionFailed(code) {
-            form.failTokenResolution(code)
-        }
-
-        function onPoolActivated(quote) {
-            form.acceptPoolActivation(quote)
-        }
-
+        // Token resolution now goes app-side (addCustomToken → form callbacks); the flow only
+        // signals when a pool-existence change should re-request the quote.
         function onQuoteRefreshRequested(immediate) {
             form.requestQuote(immediate)
         }
@@ -266,6 +394,7 @@ Item {
     TransactionConfirmationDialog {
         id: confirmationDialog
 
+        objectName: "liquidityConfirmDialog"
         title: qsTr("Confirm new position")
         confirmText: qsTr("Submit")
         busy: newPositionFlow.submitting

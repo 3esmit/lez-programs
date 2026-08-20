@@ -19,8 +19,18 @@ AmmActionCard {
         id: fallbackTheme
     }
 
-    property var newPositionContext: ({})
     property var flowState: ({})
+    // True while the app is (re)loading the token selector rows (backend.resolveTokens());
+    // gates the selectors/spinner like the old context load did.
+    property bool loadingTokens: false
+    // Wallet token holdings (backend.tokenHoldings()) for the create-pool account
+    // selectors, narrowed per side by the selected token's base58 definitionId. The
+    // chosen holdings feed the createPool call via submissionSnapshot().
+    property var holdings: []
+    readonly property string selectedHoldingAId: tokenAInput.selectedHoldingId
+    readonly property string selectedHoldingBId: tokenBInput.selectedHoldingId
+    readonly property string selectedBalanceARaw: tokenAInput.selectedBalanceRaw
+    readonly property string selectedBalanceBRaw: tokenBInput.selectedBalanceRaw
     property string selectedTokenAId: ""
     property string selectedTokenBId: ""
     property int selectedFeeBps: 30
@@ -37,32 +47,46 @@ AmmActionCard {
     property string tokenResolutionError: ""
     property string tokenResolutionErrorSide: ""
     property string tokenResolutionMessage: ""
-    property string confirmedPoolStatus: ""
     property var activePoolQuote: ({})
     property string headingText: qsTr("New position")
     property string headingDetail: ""
     property bool showRefreshAction: true
 
     readonly property var quotePayload: root.flowState.quote || ({})
-    readonly property bool contextLoading: root.flowState.contextLoading === true
+    readonly property bool contextLoading: root.loadingTokens
     readonly property bool quoteLoading: root.flowState.quoteLoading === true
     readonly property bool submitting: root.flowState.submitting === true
     readonly property bool quoteStale: root.flowState.quoteStale === true
-    readonly property bool poolCreationPending: root.flowState.poolCreationPending === true
     readonly property string submitError: root.flowState.errorCode
                                                   ? root.issueText(root.flowState.errorCode) : ""
     readonly property string transactionId: String(root.flowState.transactionId || "")
     readonly property var emptyToken: ({
         "definitionId": "",
         "name": "",
-        "totalSupplyRaw": "0",
-        "balanceRaw": "0",
-        "selectable": false
+        "totalSupply": "0",
+        "balance": "0"
     })
-    readonly property var tokens: root.newPositionContext && root.newPositionContext.tokens
-                                         ? root.newPositionContext.tokens : []
-    readonly property var feeTiers: root.newPositionContext && root.newPositionContext.feeTiers
-                                           ? root.newPositionContext.feeTiers : []
+    // The liquidity token selector rows, injected from the app (backend.resolveTokens()):
+    // the union of configured tokens and persisted-custom tokens. Every row is
+    // { definitionId (base58), name, totalSupply, holdingId, balance } and already valid
+    // (unresolvable ids are omitted upstream), so every listed token is selectable.
+    property var tokens: []
+    // The ids currently offered by the selector — a readable projection of `tokens` (every
+    // listed token is selectable). Exposed as a property so it can be observed directly.
+    readonly property var selectableTokenIdList: root.selectableTokenIds()
+    // Same set as a comma-joined string — a form that serializes reliably over the QML
+    // inspector (var arrays may not), used by the custom-token test.
+    readonly property string selectableTokenIdsCsv: root.selectableTokenIds().join(",")
+    // Whether the wallet session is ready (from the flow); gates funding/selection like the
+    // old context "ready"/"no_wallet" status did, minus the network envelope.
+    property bool walletReady: false
+    // Supported fee tiers as raw bps, injected from backend.feeTiers() (amm_core's
+    // SUPPORTED_FEE_TIERS). The selector's delegate wants { feeBps } rows, so wrap
+    // each int; labels are derived locally via feeLabel().
+    property var feeTiers: []
+    readonly property var feeTierModel: (root.feeTiers || []).map(function(bps) {
+        return { "feeBps": Number(bps) }
+    })
     readonly property var tokenA: root.tokenById(root.selectedTokenAId)
     readonly property var tokenB: root.tokenById(root.selectedTokenBId)
     readonly property int decimalsA: 0
@@ -78,30 +102,58 @@ AmmActionCard {
     readonly property string inverseInitialPrice: AmountMath.ratioValue(root.priceAmountB,
                                                                          root.priceAmountA,
                                                                          12)
-    readonly property string poolStatus: root.effectivePoolStatus()
-    readonly property bool activePool: root.poolStatus === "active_pool"
-    readonly property bool missingPool: root.poolStatus === "missing_pool"
+    // Create-vs-add comes from the flow's resolvePool read (pool existence), not the quote.
+    // undefined ⇒ not resolved yet (neither branch shown).
+    readonly property bool activePool: root.flowState.poolExists === true
+    readonly property bool missingPool: root.flowState.poolExists === false
     readonly property int poolFeeBps: root.knownPoolFeeBps()
     readonly property bool compact: root.width < 420
     readonly property bool hasPair: root.selectedTokenAId.length > 0
                                     && root.selectedTokenBId.length > 0
                                     && root.selectedTokenAId !== root.selectedTokenBId
     readonly property bool resolvingToken: root.resolvingTokenId.length > 0
-    readonly property bool canConfirm: root.quotePayload.schema === "new-position.v1"
-                                       && root.quotePayload.status === "ok"
-                                       && root.quotePayload.canSubmit === true
+    // Both createPool and addLiquidity submit caller-provided A/B holdings (see
+    // submissionSnapshot), so once a pool status is known both require the two selectors
+    // resolved (the selectors are shown for both branches).
+    readonly property bool holdingsReady: !(root.missingPool || root.activePool)
+                                          || (root.selectedHoldingAId.length > 0
+                                              && root.selectedHoldingBId.length > 0)
+    // Both deposit amounts must be present. For create the quote auto-fills them from the
+    // opening deposit; for add the user enters one and the other ratio-fills. Without this
+    // an active-pool probe quote (sent on pair-select with simulated amounts) would enable
+    // the CTA before any amount is entered.
+    readonly property bool hasDepositAmounts: root.amountA.length > 0 && root.amountB.length > 0
+    // A successful lean quote is submittable — funding is gated below (holdings + amounts),
+    // not by a quote-side canSubmit flag.
+    readonly property bool canConfirm: root.quotePayload.status === "ok"
                                        && root.quoteMatchesPair()
-                                       && String(root.quotePayload.quoteHash || "").length > 0
+                                       && root.holdingsReady
+                                       && root.hasDepositAmounts
+                                       // The lean quotes don't check funding, so gate the CTA on
+                                       // the entered amounts fitting the selected holdings' balances.
+                                       && root.fundingSufficient
                                        && !root.contextLoading
                                        && !root.quoteLoading
                                        && !root.quoteStale
                                        && !root.submitting
-                                       && !root.poolCreationPending
+                                       // A create-pool tx for this pair is already in flight
+                                       // (transactionId set) but the pool still reads missing until
+                                       // the chain processes it — block confirm so a stale
+                                       // missing_pool quote can't submit a duplicate NewDefinition.
+                                       && !(root.missingPool && root.transactionId.length > 0)
+    // Per-side funding check, decoupled from buildQuoteRequest/the quote: the deposit each side
+    // spends must fit its selected holding's balance (the lean createPoolQuote / addLiquidityQuote
+    // ops never compare amount to balance, so a submit would otherwise fail on an
+    // insufficient-balance transfer). amountA / selectedBalanceARaw are both the display token-A
+    // side, so no canonical reorientation is needed.
+    readonly property bool fundingSufficient: root.fundingError("A").length === 0
+                                              && root.fundingError("B").length === 0
 
     signal quoteRequested(bool immediate, var quoteRequest)
     signal confirmationRequested(var snapshot)
     signal tokenResolveRequested(string tokenId)
     signal draftChanged
+    signal pairReset
     signal refreshRequested
 
     readonly property int contentPadding: width >= 600 ? 24 : 16
@@ -110,17 +162,13 @@ AmmActionCard {
     implicitWidth: 480
 
     Component.onCompleted: Qt.callLater(root.reconcileSelection)
-    onNewPositionContextChanged: Qt.callLater(root.applyContextChange)
-    function applyContextChange() {
-        if (root.resolvingToken)
-            root.finishTokenResolution()
-        else
-            root.reconcileSelection()
-    }
+    // Re-reconcile the current selection whenever the app's token list changes (e.g. after a
+    // wallet toggle or a custom token is added). Resolution completion is driven externally
+    // (LiquidityPage calls finishTokenResolution once addCustomToken returns).
+    onTokensChanged: Qt.callLater(root.reconcileSelection)
     onQuotePayloadChanged: {
         if (root.quoteStale)
             return
-        root.rememberPoolStatus()
         root.rememberActivePoolQuote()
         Qt.callLater(root.applyQuoteSideEffects)
     }
@@ -204,26 +252,6 @@ AmmActionCard {
             }
         }
 
-        Rectangle {
-            Layout.fillWidth: true
-            implicitHeight: networkMessage.implicitHeight + 20
-            radius: 6
-            color: root.theme.colors.panelBg
-            border.color: root.theme.colors.error
-            visible: root.contextBlocksForm()
-
-            Text {
-                id: networkMessage
-                anchors.fill: parent
-                anchors.margins: 10
-                text: root.contextErrorText()
-                color: root.theme.colors.textPrimary
-                font.pixelSize: 12
-                wrapMode: Text.Wrap
-                verticalAlignment: Text.AlignVCenter
-            }
-        }
-
         ColumnLayout {
             Layout.fillWidth: true
             spacing: 0
@@ -246,6 +274,10 @@ AmmActionCard {
                 tokenData: root.tokenA.definitionId ? root.tokenA : null
                 tokens: root.tokens
                 selectedTokenId: root.selectedTokenAId
+                holdings: root.holdings
+                holdingDefinitionId: root.selectedTokenAId
+                showHoldingSelector: (root.missingPool || root.activePool) && root.hasPair
+                selectorObjectName: "newPositionAccountSelectorA"
                 tokenInvalid: root.tokenHasError("A")
                 tokenSelectionEnabled: !root.contextLoading && !root.submitting
                 adjustment: root.missingPool ? priceAmountAAdjustment : null
@@ -294,6 +326,10 @@ AmmActionCard {
                 tokenData: root.tokenB.definitionId ? root.tokenB : null
                 tokens: root.tokens
                 selectedTokenId: root.selectedTokenBId
+                holdings: root.holdings
+                holdingDefinitionId: root.selectedTokenBId
+                showHoldingSelector: (root.missingPool || root.activePool) && root.hasPair
+                selectorObjectName: "newPositionAccountSelectorB"
                 tokenInvalid: root.tokenHasError("B")
                 tokenSelectionEnabled: !root.contextLoading && !root.submitting
                 adjustment: root.missingPool ? priceAmountBAdjustment : null
@@ -366,7 +402,7 @@ AmmActionCard {
                 rowSpacing: 8
 
                 Repeater {
-                    model: root.feeTiers
+                    model: root.feeTierModel
 
                     Item {
                         id: feeTierOption
@@ -530,61 +566,6 @@ AmmActionCard {
                                       ? root.quotePayload.minimumLpRaw
                                       : root.quotePayload.lockedLpRaw)
             }
-
-            LabelValueRow {
-                label: qsTr("Pool")
-                value: String(root.quotePayload.poolId || "")
-                valueWrapAnywhere: true
-            }
-
-            LogosButton {
-                id: accountPlanButton
-                text: qsTr("Account plan (%1)").arg(root.accountPreview().length)
-                enabled: root.accountPreview().length > 0
-                property bool checked: false
-                implicitWidth: 150
-                implicitHeight: 36
-                radius: 6
-                Layout.alignment: Qt.AlignLeft
-                onClicked: checked = !checked
-            }
-
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: 5
-                visible: accountPlanButton.checked
-
-                Repeater {
-                    model: root.accountPreview()
-
-                    LabelValueRow {
-                        required property var modelData
-                        label: qsTr("%1. %2 · %3").arg(modelData.order + 1).arg(modelData.role).arg(modelData.action)
-                        value: modelData.accountId ? modelData.accountId : qsTr("Assigned by wallet")
-                        valueWrapAnywhere: true
-                    }
-                }
-            }
-        }
-
-        Rectangle {
-            Layout.fillWidth: true
-            implicitHeight: warningTextItem.implicitHeight + 20
-            radius: 6
-            color: root.theme.colors.panelBg
-            border.color: root.theme.colors.ctaBg
-            visible: root.warningText().length > 0
-
-            Text {
-                id: warningTextItem
-                anchors.fill: parent
-                anchors.margins: 10
-                text: root.warningText()
-                color: root.theme.colors.textPrimary
-                font.pixelSize: 12
-                wrapMode: Text.Wrap
-                verticalAlignment: Text.AlignVCenter
-            }
         }
 
         SubmittedTransaction {
@@ -595,13 +576,13 @@ AmmActionCard {
         }
 
         AmmPrimaryButton {
+            objectName: "newPositionSubmitButton"
             Layout.fillWidth: true
             Layout.minimumHeight: 56
             theme: root.theme
             text: root.submitting
                   ? qsTr("Submitting…")
                   : root.contextLoading ? qsTr("Loading…")
-                  : root.poolCreationPending ? qsTr("Waiting for pool")
                   : root.missingPool ? qsTr("Create pool") : qsTr("Add liquidity")
             enabled: root.canConfirm
             onClicked: root.confirmationRequested(root.submissionSnapshot())
@@ -701,9 +682,11 @@ AmmActionCard {
     }
 
     function selectableTokenIds() {
+        // Every injected row is already a valid, selectable token (resolveTokens omits
+        // anything unresolvable), so all listed ids are selectable.
         var result = []
         for (var i = 0; i < root.tokens.length; ++i) {
-            if (root.tokens[i].selectable === true)
+            if (root.tokens[i].definitionId)
                 result.push(root.tokens[i].definitionId)
         }
         return result
@@ -724,55 +707,33 @@ AmmActionCard {
             return
         }
 
+        // Already in the app's token list → select directly (every listed token is valid).
         var current = root.tokenById(tokenId)
         if (current.definitionId === tokenId) {
-            if (current.selectable === true)
-                root.selectToken(side, tokenId)
-            else {
-                root.tokenResolutionError = root.issueText(current.code || current.status)
-                root.tokenResolutionErrorSide = side
-            }
+            root.selectToken(side, tokenId)
             return
         }
+        // A custom/pasted id: ask the app to validate + persist it (backend.addCustomToken),
+        // which calls finishTokenResolution(token) on success or failTokenResolution(code) on
+        // an unresolvable / non-fungible id.
         root.resolvingTokenId = tokenId
         root.resolvingTokenSide = side
         root.tokenResolveRequested(tokenId)
     }
 
-    function finishTokenResolution(finalResponse) {
+    function finishTokenResolution(token) {
         if (!root.resolvingToken)
             return
-        var token = root.tokenById(root.resolvingTokenId)
         if (!token || !token.definitionId) {
-            if (finalResponse === true) {
-                var currentStatus = String(root.newPositionContext.status || "")
-                var code = currentStatus !== "ready" && currentStatus !== "no_wallet"
-                           && currentStatus !== "loading"
-                         ? root.newPositionContext.code || currentStatus
-                         : "token_definition_unreadable"
-                root.failTokenResolution(code)
-            }
-            return
-        }
-        var status = String(root.newPositionContext.status || "")
-        if (status === "loading")
-            return
-        if (status !== "ready" && status !== "no_wallet") {
-            root.failTokenResolution(root.newPositionContext.code || status)
+            root.failTokenResolution("token_definition_unreadable")
             return
         }
         var side = root.resolvingTokenSide
         root.resolvingTokenId = ""
         root.resolvingTokenSide = ""
-        if (token.selectable !== true) {
-            root.tokenResolutionError = root.issueText(token.code || token.status)
-            root.tokenResolutionErrorSide = side
-            return
-        }
-
         root.tokenResolutionMessage = qsTr("%1 - raw supply %2")
                 .arg(token.name || root.shortId(token.definitionId))
-                .arg(AmountMath.formatRaw(token.totalSupplyRaw || "0", 0))
+                .arg(AmountMath.formatRaw(token.totalSupply || "0", 0))
         root.selectToken(side, token.definitionId)
     }
 
@@ -787,9 +748,6 @@ AmmActionCard {
     }
 
     function reconcileSelection() {
-        var status = String(root.newPositionContext.status || "")
-        if (status !== "ready" && status !== "no_wallet")
-            return
         var previousA = root.selectedTokenAId
         var previousB = root.selectedTokenBId
         var selectable = root.selectableTokenIds()
@@ -844,7 +802,6 @@ AmmActionCard {
     }
 
     function resetPairDraft() {
-        root.confirmedPoolStatus = ""
         root.activePoolQuote = ({})
         root.amountA = ""
         root.amountB = ""
@@ -853,55 +810,21 @@ AmmActionCard {
         root.minimumAmountARaw = ""
         root.minimumAmountBRaw = ""
         root.localErrors = []
+        // The pair changed: the pool is unknown until re-resolved. Reset poolExists BEFORE
+        // requestQuote so activePool is false and the empty-amount short-circuit doesn't fire
+        // — the probe quote reloads the new pair's reserves/minimum like a fresh selection.
+        root.pairReset()
         root.noteDraftChanged()
         root.requestQuote(true)
-    }
-
-    function acceptPoolActivation(quote) {
-        if (!quote || quote.schema !== "new-position.v1"
-                || quote.status !== "ok"
-                || quote.poolStatus !== "active_pool"
-                || !root.quoteMatchesSelectedPair(quote)) {
-            return false
-        }
-        root.confirmedPoolStatus = "active_pool"
-        root.activePoolQuote = quote
-        root.amountA = ""
-        root.amountB = ""
-        root.minimumAmountARaw = ""
-        root.minimumAmountBRaw = ""
-        root.localErrors = []
-        return true
     }
 
     function noteDraftChanged() {
         root.draftChanged()
     }
 
-    function effectivePoolStatus() {
-        if (root.quoteStale || !root.quoteMatchesPair())
-            return root.confirmedPoolStatus
-        var status = String(root.quotePayload.poolStatus || "")
-        if (status === "active_pool" || status === "missing_pool")
-            return status
-        if (root.quotePayload.code === "fee_tier_mismatch")
-            return "active_pool"
-        return root.confirmedPoolStatus
-    }
-
-    function rememberPoolStatus() {
-        if (!root.quoteMatchesPair())
-            return
-        var status = String(root.quotePayload.poolStatus || "")
-        if (status === "active_pool" || status === "missing_pool")
-            root.confirmedPoolStatus = status
-        else if (root.quotePayload.code === "fee_tier_mismatch")
-            root.confirmedPoolStatus = "active_pool"
-    }
-
     function rememberActivePoolQuote() {
         if (root.quotePayload.status !== "ok"
-                || root.quotePayload.poolStatus !== "active_pool"
+                || !root.activePool
                 || !root.quoteMatchesPair()) {
             return
         }
@@ -1051,7 +974,7 @@ AmmActionCard {
                                                                root.canonicalDecimalsB,
                                                                root.displayIsCanonical)
                         if (actualPrice.ok) {
-                            request.initialPriceRealRaw = actualPrice.raw
+                            request.priceRaw = actualPrice.raw
                             priceFromAmounts = true
                         } else {
                             errors.push(root.localIssue(actualPrice.code, ["initialPrice"]))
@@ -1060,7 +983,7 @@ AmmActionCard {
                 }
             }
             if (price.ok && !priceFromAmounts)
-                request.initialPriceRealRaw = price.raw
+                request.priceRaw = price.raw
 
             if (!root.missingPool) {
                 var probeA = root.probeRaw(root.tokenA, root.decimalsA)
@@ -1077,7 +1000,6 @@ AmmActionCard {
 
     function pairRequest() {
         return {
-            "schema": "new-position.v1",
             "tokenAId": root.displayIsCanonical
                         ? root.selectedTokenAId : root.selectedTokenBId,
             "tokenBId": root.displayIsCanonical
@@ -1095,7 +1017,7 @@ AmmActionCard {
     }
 
     function probeRaw(token, decimals) {
-        var balance = String(token.balanceRaw || "0")
+        var balance = String(token.balance || "0")
         var simulated = AmountMath.multiply(AmountMath.pow10(decimals), "1000")
         if (AmountMath.isUnsigned(balance) && AmountMath.compare(balance, simulated) > 0)
             return balance
@@ -1135,12 +1057,33 @@ AmmActionCard {
             return root.displayIsCanonical ? "amountA" : "amountB"
         if (field === "amountBRaw")
             return root.displayIsCanonical ? "amountB" : "amountA"
-        if (field === "initialPriceRealRaw")
+        if (field === "priceRaw")
             return "initialPrice"
         return field
     }
 
+    // "amount_exceeds_balance" when `side` (A/B)'s entered deposit exceeds its selected holding's
+    // balance; "" when no holding is selected, the amount is unparsable, or it fits. Drives
+    // fundingSufficient (canConfirm) and the field / form error text.
+    function fundingError(side) {
+        var holdingId = side === "A" ? root.selectedHoldingAId : root.selectedHoldingBId
+        if (holdingId.length === 0)
+            return ""
+        var amount = side === "A" ? root.amountA : root.amountB
+        var decimals = side === "A" ? root.decimalsA : root.decimalsB
+        var balanceRaw = side === "A" ? root.selectedBalanceARaw : root.selectedBalanceBRaw
+        var parsed = AmountMath.parseHuman(amount, decimals)
+        if (parsed.ok && AmountMath.compare(parsed.raw, balanceRaw) > 0)
+            return "amount_exceeds_balance"
+        return ""
+    }
+
     function fieldError(field) {
+        // Funding is checked independently of the quote — surface it on the offending amount field.
+        if (field === "amountA" && root.fundingError("A").length > 0)
+            return root.issueText("amount_exceeds_balance")
+        if (field === "amountB" && root.fundingError("B").length > 0)
+            return root.issueText("amount_exceeds_balance")
         var collections = [root.localErrors, root.currentQuoteErrors()]
         for (var c = 0; c < collections.length; ++c) {
             for (var i = 0; i < collections[c].length; ++i) {
@@ -1171,6 +1114,8 @@ AmmActionCard {
             return root.tokenResolutionError
         if (root.submitError.length > 0)
             return root.submitError
+        if (root.fundingError("A").length > 0 || root.fundingError("B").length > 0)
+            return root.issueText("amount_exceeds_balance")
         var collections = [root.localErrors, root.currentQuoteErrors()]
         for (var c = 0; c < collections.length; ++c) {
             for (var i = 0; i < collections[c].length; ++i) {
@@ -1205,8 +1150,6 @@ AmmActionCard {
             "wallet_unavailable": qsTr("Wallet is unavailable."),
             "wallet_submission_failed": qsTr("Wallet submission failed. Review and retry manually."),
             "signature_rejected": qsTr("Wallet approval was rejected."),
-            "quote_changed": qsTr("Pool or wallet state changed. Review the refreshed quote."),
-            "quote_not_submittable": qsTr("Current quote cannot be submitted."),
             "submit_in_progress": qsTr("A submission is already in progress."),
             "transaction_deadline_expired": qsTr("Wallet approval expired. Retry to create a fresh request."),
             "high_slippage": qsTr("High slippage tolerance."),
@@ -1214,8 +1157,6 @@ AmmActionCard {
             "token_program_mismatch": qsTr("Token belongs to a different TokenProgram."),
             "token_not_fungible": qsTr("Token is not a public fungible token."),
             "backend_error": qsTr("Position backend failed. Refresh and retry."),
-            "network_unknown": qsTr("Network identity could not be verified. Refresh and retry."),
-            "network_mismatch": qsTr("Connected wallet uses a different network."),
             "config_missing": qsTr("Network configuration is missing."),
             "account_read_failed": qsTr("Required on-chain state could not be read."),
             "pool_unavailable": qsTr("Pool state is unavailable."),
@@ -1264,8 +1205,8 @@ AmmActionCard {
         var reserveB = root.poolReserve("B")
         if (!reserveA || !reserveB || reserveA === "0" || reserveB === "0")
             return
-        var balanceA = String(root.tokenA.balanceRaw || "0")
-        var balanceB = String(root.tokenB.balanceRaw || "0")
+        var balanceA = String(root.tokenA.balance || "0")
+        var balanceB = String(root.tokenB.balance || "0")
         var fitA = AmountMath.mulDivFloor(balanceB, reserveA, reserveB)
         var rawA = AmountMath.compare(balanceA, fitA) < 0 ? balanceA : fitA
         var rawB = AmountMath.mulDivFloor(rawA, reserveB, reserveA)
@@ -1408,9 +1349,9 @@ AmmActionCard {
     }
 
     function activePriceValue() {
-        var priceRaw = String(root.quotePayload.initialPriceRealRaw || "")
+        var priceRaw = String(root.quotePayload.priceRaw || "")
         if (priceRaw.length === 0 && root.quoteMatchesSelectedPair(root.activePoolQuote))
-            priceRaw = String(root.activePoolQuote.initialPriceRealRaw || "")
+            priceRaw = String(root.activePoolQuote.priceRaw || "")
         return AmountMath.priceFromQ64(priceRaw,
                                        root.canonicalDecimalsA,
                                        root.canonicalDecimalsB,
@@ -1427,11 +1368,6 @@ AmmActionCard {
                 .arg(root.shortTokenName(root.tokenB))
     }
 
-    function accountPreview() {
-        return !root.quoteStale && root.quoteMatchesPair()
-                ? root.quotePayload.accountPreview || [] : []
-    }
-
     function quoteError() {
         if (root.quoteLoading || root.quoteStale)
             return ""
@@ -1440,26 +1376,27 @@ AmmActionCard {
         return ""
     }
 
-    function warningText() {
-        var warnings = !root.quoteStale && root.quoteMatchesPair()
-                ? root.quotePayload.warnings || [] : []
-        if (warnings.length === 0)
-            warnings = root.newPositionContext.warnings || []
-        return warnings.length > 0 ? root.issueText(warnings[0].code) : ""
-    }
-
     function submissionSnapshot() {
         var built = root.buildQuoteRequest()
         return {
             "request": built.request,
-            "poolProbeRequest": root.poolProbeRequest(built.request),
-            "quoteHash": String(root.quotePayload.quoteHash || ""),
+            // Canonical-order holdings for the createPool / addLiquidity calls: the
+            // request's tokenAId/amountARaw are canonical, so holdingAId must be the
+            // canonical token A's holding too (the module re-canonicalizes as a no-op).
+            // The user picks these via the per-side account selectors; selectedHoldingA
+            // is display token A's holding, so it aligns with tokenA the same way.
+            "holdingAId": String(root.displayIsCanonical ? root.selectedHoldingAId : root.selectedHoldingBId),
+            "holdingBId": String(root.displayIsCanonical ? root.selectedHoldingBId : root.selectedHoldingAId),
+            // The add path's slippage floor on the LP minted (orientation-independent),
+            // taken from the active-pool quote; ignored by the create path.
+            "minLpRaw": String(root.quotePayload.minimumLpRaw || ""),
             "pairText": qsTr("%1 / %2").arg(root.shortTokenName(root.tokenA)).arg(root.shortTokenName(root.tokenB)),
             "feeText": root.feeLabel(root.selectedFeeBps),
             "depositAText": root.quoteAmount("actualAmountARaw", "actualAmountBRaw", "A"),
             "depositBText": root.quoteAmount("actualAmountARaw", "actualAmountBRaw", "B"),
             "expectedLpText": root.rawLpText(root.quotePayload.expectedLpRaw),
-            "instruction": String(root.quotePayload.instruction || "")
+            // Confirm-dialog action derives from the resolved pool state (add vs create).
+            "poolExists": root.activePool
         }
     }
 
@@ -1470,7 +1407,7 @@ AmmActionCard {
     }
 
     function balanceText(token, decimals) {
-        return AmountMath.formatRaw(String(token.balanceRaw || "0"), decimals)
+        return AmountMath.formatRaw(String(token.balance || "0"), decimals)
     }
 
     function tokenBalanceDetail(token) {
@@ -1518,20 +1455,7 @@ AmmActionCard {
     }
 
     function contextStatusText() {
-        var network = String(root.newPositionContext.networkId || "")
-        if (root.newPositionContext.status === "no_wallet")
-            return qsTr("%1 · simulation only").arg(network || qsTr("Wallet disconnected"))
-        if (root.newPositionContext.status === "ready")
-            return qsTr("%1 · wallet ready").arg(network)
-        return network.length > 0 ? network : qsTr("Loading network")
-    }
-
-    function contextBlocksForm() {
-        var status = String(root.newPositionContext.status || "")
-        return status !== "" && status !== "ready" && status !== "no_wallet" && status !== "loading"
-    }
-
-    function contextErrorText() {
-        return root.issueText(root.newPositionContext.code || root.newPositionContext.status)
+        return root.walletReady ? qsTr("Wallet ready")
+                                : qsTr("Wallet disconnected · simulation only")
     }
 }

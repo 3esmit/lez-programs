@@ -17,12 +17,99 @@ Item {
     // until the backend is ready and the call resolves.
     property var tokens: []
 
+    // The wallet's token holdings (backend.tokenHoldings()), fed to the swap card's
+    // account selectors. Refetched when the wallet opens (it needs an open wallet).
+    property var holdings: []
+
+    // Monotonic tag for refreshHoldings() requests: a callback applies only if it is still the
+    // latest, so an out-of-order tokenHoldings reply can't clobber the current wallet's list.
+    property int holdingsGeneration: 0
+
+    // A pair handed over from the pool detail view. Held until tokenList() has
+    // resolved, since the handoff can arrive before the config tokens do.
+    property var pendingPair: null
+
+    // Preselects a pool's pair on the swap card. Called by Main.qml when the pool
+    // detail view's "Swap" button is pressed.
+    function selectPair(pool) {
+        if (!pool)
+            return
+        root.pendingPair = pool
+        root.applyPendingPair()
+    }
+
+    // The pool config and the token config carry the same definition ids, so that
+    // is the primary match; the symbol is a fallback for a config that only
+    // agrees on the pair's names.
+    function tokenFor(definitionId, symbol) {
+        var i
+        if (definitionId.length > 0) {
+            for (i = 0; i < root.tokens.length; ++i) {
+                if (String(root.tokens[i].definitionId) === definitionId)
+                    return root.tokens[i]
+            }
+        }
+        if (symbol.length > 0) {
+            for (i = 0; i < root.tokens.length; ++i) {
+                if (String(root.tokens[i].symbol) === symbol)
+                    return root.tokens[i]
+            }
+        }
+        return null
+    }
+
+    function applyPendingPair() {
+        if (!root.pendingPair || root.tokens.length === 0)
+            return
+        var pair = root.pendingPair
+        // One attempt per handoff: a pair the token config doesn't carry stays
+        // unselected rather than lying in wait for a later tokenList() refresh.
+        root.pendingPair = null
+        var sell = root.tokenFor(String(pair.tokenADefinitionId || ""), String(pair.tokenA || ""))
+        var buy = root.tokenFor(String(pair.tokenBDefinitionId || ""), String(pair.tokenB || ""))
+        if (!sell && !buy)
+            return
+        swapCard.resetAmounts()
+        if (sell)
+            swapCard.setToken("sell", sell)
+        if (buy)
+            swapCard.setToken("buy", buy)
+    }
+
+    onTokensChanged: root.applyPendingPair()
+
+    function refreshHoldings() {
+        if (!root.backend)
+            return
+        // onBackendChanged and onIsWalletOpenChanged can start overlapping tokenHoldings
+        // requests (a wallet-open refresh racing a just-closed one, or a fast wallet switch)
+        // whose replies may arrive out of order. Tag each request and drop any callback a newer
+        // request has superseded, so a stale (empty, or previous-wallet) list can't overwrite
+        // the current holdings.
+        const generation = ++root.holdingsGeneration
+        logos.watch(root.backend.tokenHoldings(),
+            function(list) {
+                if (generation === root.holdingsGeneration)
+                    root.holdings = list
+            },
+            function(err) {
+                if (generation === root.holdingsGeneration)
+                    console.warn("tokenHoldings error:", err)
+            })
+    }
+
     onBackendChanged: {
         if (root.backend) {
             logos.watch(root.backend.tokenList(),
                 function(list) { root.tokens = list },
                 function(err) { console.warn("tokenList error:", err) })
+            root.refreshHoldings()
         }
+    }
+
+    Connections {
+        target: root.backend
+        function onIsWalletOpenChanged() { root.refreshHoldings() }
     }
 
     QtObject {
@@ -100,9 +187,11 @@ Item {
 
             SwapCard {
                 id: swapCard
+                objectName: "swapCard"
                 Layout.alignment: Qt.AlignHCenter
                 theme: pageTheme
                 tokens: root.tokens
+                holdings: root.holdings
                 backend: root.backend
                 width: Math.min(480, root.width - 32)
 
@@ -137,7 +226,6 @@ Item {
 
         TokenSelectorModal {
             id: tokenModal
-            anchors.fill: parent
             z: 10
             theme: pageTheme
             tokens: root.tokens
@@ -145,6 +233,15 @@ Item {
             property string targetSide: "sell"
 
             onTokenSelected: function(tok) {
+                // Prevent picking the same token on both sides (a same-token pool
+                // panics amm_core). The consolidated modal no longer takes a
+                // disabled id, so enforce it at selection time.
+                var other = targetSide === "sell" ? swapCard.buyToken : swapCard.sellToken
+                if (other && tok
+                        && String(tok.definitionId || "") === String(other.definitionId || "")) {
+                    tokenModal.close()
+                    return
+                }
                 swapCard.setToken(targetSide, tok)
                 tokenModal.close()
             }
@@ -172,6 +269,7 @@ Item {
 
         TransactionConfirmationDialog {
             id: swapConfirmationDialog
+            objectName: "swapConfirmDialog"
             title: qsTr("Confirm swap")
             confirmText: qsTr("Confirm swap")
             summary: swapConfirmationSummary

@@ -1,9 +1,14 @@
+use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
 use nssa::{
     program_deployment_transaction::{self, ProgramDeploymentTransaction},
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
 };
 use nssa_core::account::{Account, AccountId, Data, Nonce};
-use stablecoin_core::{compute_position_pda, compute_position_vault_pda, Position};
+use stablecoin_core::{
+    compute_position_pda, compute_position_vault_pda, compute_protocol_parameters_pda,
+    compute_redemption_price_state_pda, compute_stability_fee_accumulator_pda,
+    compute_stablecoin_definition_pda, compute_stablecoin_master_holding_pda, Position,
+};
 use token_core::{TokenDefinition, TokenHolding};
 
 struct Keys;
@@ -22,6 +27,10 @@ impl Keys {
 
     fn user_stablecoin_holding() -> PrivateKey {
         PrivateKey::try_new([43; 32]).expect("valid private key")
+    }
+
+    fn admin() -> PrivateKey {
+        PrivateKey::try_new([44; 32]).expect("valid private key")
     }
 }
 
@@ -56,16 +65,39 @@ impl Ids {
         ))
     }
 
+    fn position_nonce() -> u64 {
+        0
+    }
+
     fn position() -> AccountId {
         compute_position_pda(
             Self::stablecoin_program(),
             Self::owner(),
-            Self::collateral_definition(),
+            Self::position_nonce(),
         )
     }
 
     fn vault() -> AccountId {
         compute_position_vault_pda(Self::stablecoin_program(), Self::position())
+    }
+
+    fn admin() -> AccountId {
+        AccountId::from(&PublicKey::new_from_private_key(&Keys::admin()))
+    }
+
+    fn freeze_authority() -> AccountId {
+        AccountId::new([0xFE; 32])
+    }
+
+    fn oracle() -> AccountId {
+        AccountId::new([0x70; 32])
+    }
+
+    /// The stablecoin's `TokenDefinition` PDA created by `initialize_program`
+    /// (distinct from `stablecoin_definition`, the externally-owned definition
+    /// the repay test uses).
+    fn stablecoin_definition_pda() -> AccountId {
+        compute_stablecoin_definition_pda(Self::stablecoin_program())
     }
 }
 
@@ -157,14 +189,47 @@ impl Accounts {
             program_owner: stablecoin_methods::STABLECOIN_ID,
             balance: 0_u128,
             data: Data::from(&Position {
-                collateral_vault_id: Ids::vault(),
-                collateral_definition_id: Ids::collateral_definition(),
+                owner_account_id: Ids::owner(),
+                position_nonce: Ids::position_nonce(),
+                vault_account_id: Ids::vault(),
                 collateral_amount: Balances::collateral_deposit(),
-                debt_amount: Balances::initial_debt(),
+                normalized_debt_amount: Balances::initial_debt(),
+                opened_at: 0,
             }),
             nonce: Nonce(0),
         }
     }
+
+    fn oracle_init(base_asset: AccountId, quote_asset: AccountId) -> Account {
+        Account {
+            program_owner: [9u32; 8],
+            balance: 0_u128,
+            data: Data::from(&twap_oracle_core::OraclePriceAccount {
+                base_asset,
+                quote_asset,
+                price: stablecoin_core::math::FIXED_POINT_ONE / 2,
+                timestamp: 0,
+                source_id: Ids::oracle(),
+                confidence_interval: 0,
+            }),
+            nonce: Nonce(0),
+        }
+    }
+}
+
+/// Seeds the canonical `CLOCK_01` account at `timestamp`. `V03State::new()` no longer
+/// auto-creates it, and `initialize_program` reads it for wall-clock time.
+fn seed_clock(state: &mut V03State, timestamp: u64) {
+    let data = ClockAccountData {
+        block_id: 0,
+        timestamp,
+    }
+    .to_bytes();
+    let clock_account = Account {
+        data: Data::try_from(data).expect("clock account data fits"),
+        ..Account::default()
+    };
+    state.force_insert_account(CLOCK_01_PROGRAM_ACCOUNT_ID, clock_account);
 }
 
 fn deploy_programs(state: &mut V03State) {
@@ -223,12 +288,10 @@ fn assert_position(state: &V03State, expected_collateral: u128) {
     let position =
         Position::try_from(&state.get_account_by_id(Ids::position()).data).expect("valid Position");
     assert_eq!(position.collateral_amount, expected_collateral);
-    assert_eq!(position.debt_amount, 0);
-    assert_eq!(position.collateral_vault_id, Ids::vault());
-    assert_eq!(
-        position.collateral_definition_id,
-        Ids::collateral_definition()
-    );
+    assert_eq!(position.normalized_debt_amount, 0);
+    assert_eq!(position.vault_account_id, Ids::vault());
+    assert_eq!(position.owner_account_id, Ids::owner());
+    assert_eq!(position.position_nonce, Ids::position_nonce());
 }
 
 fn assert_fungible_balance(state: &V03State, account_id: AccountId, expected_balance: u128) {
@@ -254,6 +317,7 @@ fn stablecoin_open_position_then_withdraw_collateral() {
 
     // Open the position: deposit collateral from the user's holding into a fresh vault.
     let open = stablecoin_core::Instruction::OpenPosition {
+        position_nonce: Ids::position_nonce(),
         collateral_amount: Balances::collateral_deposit(),
     };
     let message = public_transaction::Message::try_new(
@@ -363,7 +427,7 @@ fn stablecoin_repay_debt_burns_stablecoins_and_decreases_debt() {
     let position =
         Position::try_from(&state.get_account_by_id(Ids::position()).data).expect("valid Position");
     assert_eq!(
-        position.debt_amount,
+        position.normalized_debt_amount,
         Balances::initial_debt() - Balances::debt_repay_amount()
     );
     assert_eq!(position.collateral_amount, Balances::collateral_deposit());
@@ -392,6 +456,154 @@ fn stablecoin_repay_debt_burns_stablecoins_and_decreases_debt() {
                 balance,
                 Balances::user_stablecoin_holding_init() - Balances::debt_repay_amount()
             );
+        }
+        TokenHolding::NftMaster { .. } | TokenHolding::NftPrintedCopy { .. } => {
+            panic!("expected Fungible holding")
+        }
+    }
+}
+
+#[test]
+fn stablecoin_initialize_program_creates_globals_and_stablecoin_definition() {
+    use stablecoin_core::math::FIXED_POINT_ONE;
+
+    // `V03State::new()` no longer auto-creates the clock account; seed CLOCK_01 with this
+    // timestamp, which initialize_program reads as `now` to anchor the accumulator and
+    // redemption-price state.
+    let now: u64 = 1_700_000_000;
+    let mut state = V03State::new();
+    seed_clock(&mut state, now);
+    deploy_programs(&mut state);
+
+    // Externally-created collateral definition + market-price oracle.
+    state.force_insert_account(
+        Ids::collateral_definition(),
+        Accounts::collateral_definition_init(),
+    );
+    state.force_insert_account(
+        Ids::oracle(),
+        Accounts::oracle_init(
+            Ids::stablecoin_definition_pda(),
+            Ids::collateral_definition(),
+        ),
+    );
+
+    let instruction = stablecoin_core::Instruction::InitializeProgram {
+        freeze_authority_account_id: Ids::freeze_authority(),
+        initial_stability_fee_per_millisecond: FIXED_POINT_ONE + 1_500_000_000_000_000,
+        initial_controller_proportional_gain: 0,
+        initial_controller_integral_gain: 0,
+        initial_minimum_collateralization_ratio: FIXED_POINT_ONE * 3 / 2,
+        minimum_milliseconds_between_rate_updates: 300_000,
+        maximum_oracle_price_age_milliseconds: 900_000,
+        initial_redemption_price: FIXED_POINT_ONE / 2,
+        stablecoin_name: String::from("test-stable"),
+    };
+
+    let message = public_transaction::Message::try_new(
+        Ids::stablecoin_program(),
+        vec![
+            Ids::admin(),
+            compute_protocol_parameters_pda(Ids::stablecoin_program()),
+            compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
+            compute_redemption_price_state_pda(Ids::stablecoin_program()),
+            Ids::stablecoin_definition_pda(),
+            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
+            Ids::collateral_definition(),
+            Ids::oracle(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![current_nonce(&state, Ids::admin())],
+        instruction,
+    )
+    .unwrap();
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::admin()]);
+    let tx = PublicTransaction::new(message, witness_set);
+    state
+        .transition_from_public_transaction(&tx, 1, now)
+        .expect("initialize_program must succeed");
+
+    // ProtocolParameters claimed with the expected handles.
+    let pp = stablecoin_core::ProtocolParameters::try_from(
+        &state
+            .get_account_by_id(compute_protocol_parameters_pda(Ids::stablecoin_program()))
+            .data,
+    )
+    .expect("valid ProtocolParameters");
+    assert_eq!(pp.admin_account_id, Ids::admin());
+    assert_eq!(pp.freeze_authority_account_id, Ids::freeze_authority());
+    assert_eq!(
+        pp.stablecoin_definition_id,
+        Ids::stablecoin_definition_pda()
+    );
+    assert_eq!(pp.collateral_definition_id, Ids::collateral_definition());
+    assert_eq!(pp.market_price_oracle_id, Ids::oracle());
+    assert!(!pp.is_frozen);
+
+    // Accumulator anchored at FIXED_POINT_ONE / now.
+    let acc = stablecoin_core::StabilityFeeAccumulator::try_from(
+        &state
+            .get_account_by_id(compute_stability_fee_accumulator_pda(
+                Ids::stablecoin_program(),
+            ))
+            .data,
+    )
+    .expect("valid StabilityFeeAccumulator");
+    assert_eq!(acc.accumulated_rate_at_last_accrual, FIXED_POINT_ONE);
+    assert_eq!(acc.last_accrued_at, now);
+
+    // Redemption price anchored at the initial value / now.
+    let rp = stablecoin_core::RedemptionPriceState::try_from(
+        &state
+            .get_account_by_id(compute_redemption_price_state_pda(Ids::stablecoin_program()))
+            .data,
+    )
+    .expect("valid RedemptionPriceState");
+    assert_eq!(rp.redemption_price_at_last_update, FIXED_POINT_ONE / 2);
+    assert_eq!(rp.redemption_rate_per_millisecond, FIXED_POINT_ONE);
+    assert_eq!(rp.controller_integral_term, 0);
+    assert_eq!(rp.last_updated_at, now);
+
+    // Stablecoin definition created via the chained Token::NewFungibleDefinition.
+    let definition = TokenDefinition::try_from(
+        &state
+            .get_account_by_id(Ids::stablecoin_definition_pda())
+            .data,
+    )
+    .expect("valid TokenDefinition");
+    match definition {
+        TokenDefinition::Fungible {
+            name,
+            total_supply,
+            metadata_id,
+            authority,
+        } => {
+            assert_eq!(name, "test-stable");
+            assert_eq!(total_supply, 0);
+            assert_eq!(metadata_id, None);
+            // Self/PDA authority: the definition is its own mint authority, so later
+            // debt operations can mint/burn by presenting the definition PDA seed.
+            assert_eq!(authority, Some(Ids::stablecoin_definition_pda()));
+        }
+        TokenDefinition::NonFungible { .. } => panic!("expected Fungible definition"),
+    }
+
+    // Empty master holding created alongside the definition.
+    let master = TokenHolding::try_from(
+        &state
+            .get_account_by_id(compute_stablecoin_master_holding_pda(
+                Ids::stablecoin_program(),
+            ))
+            .data,
+    )
+    .expect("valid TokenHolding");
+    match master {
+        TokenHolding::Fungible {
+            definition_id,
+            balance,
+        } => {
+            assert_eq!(definition_id, Ids::stablecoin_definition_pda());
+            assert_eq!(balance, 0);
         }
         TokenHolding::NftMaster { .. } | TokenHolding::NftPrintedCopy { .. } => {
             panic!("expected Fungible holding")

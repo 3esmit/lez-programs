@@ -12,23 +12,23 @@
 
 #include "rep_AmmUiBackend_source.h"
 
-#include "ActiveNetwork.h"
 #include "WalletAccountModel.h"
-
-extern "C" {
-#include "amm_client_ffi.h"
-}
 
 class LogosAPI;
 struct LogosModules;
-class AmmClient;
 class LogosWalletProvider;
-class NewPositionRuntime;
 class WalletController;
 
 // Source-side implementation of the AmmUiBackend .rep interface.
 // Inheriting from AmmUiBackendSimpleSource gives us the generated PROPs and
 // SLOTs from AmmUiBackend.rep — all the simple ones flow over QtRO.
+//
+// The AMM business logic (pool resolution, swaps, add-liquidity) lives in the
+// amm_module core Logos module; this backend owns only wallet-session lifecycle
+// and forwards every AMM slot to modules().amm_module. The one exception is
+// creating a fresh LP holding for add-liquidity: that mutates the wallet keyset,
+// so it stays here (via the wallet provider, which keeps the account model and
+// on-disk storage coherent) and its id is handed to the module's submit.
 class AmmUiBackend : public AmmUiBackendSimpleSource {
     Q_OBJECT
     Q_PROPERTY(WalletAccountModel* accountModel READ accountModel CONSTANT)
@@ -46,9 +46,6 @@ public slots:
     void refreshAccounts() override;
     void refreshBalances() override;
     QString getBalance(QString accountIdHex, bool isPublic) override;
-    void refreshNewPositionContext(QVariantMap request) override;
-    QVariantMap quoteNewPosition(QVariantMap request) override;
-    QVariantMap submitNewPosition(QVariantMap request, QString quoteHash) override;
     // Return the new wallet's BIP39 mnemonic (empty string on failure) so the
     // UI can force a one-time seed-phrase backup step.
     QString createNewDefault(QString password) override;
@@ -56,60 +53,67 @@ public slots:
     bool openExisting() override;
     void disconnectWallet() override;
 
-    // AMM
-    QVariantMap resolvePool(QString defAHex, QString defBHex) override;
+    // AMM — all forwarded to the amm_module core module.
+    QVariantMap resolvePoolAccount(QString defAHex, QString defBHex) override;
+    QVariantMap configAccount() override;
+    QVariantMap transferOwnership(QVariantMap request) override;
+    QVariantMap createPriceObservations(QVariantMap request) override;
+    QVariantMap createOraclePriceAccount(QVariantMap request) override;
     QString swapExactInput(QString defAHex, QString defBHex, QString userInputHoldingHex,
                             QString userOutputHoldingHex, QString amountInDecimal,
                             QString minOutDecimal, QString deadlineDecimal) override;
-    // Reads the token list from TOKENS_CONFIG (see AmmUiBackend.cpp) so the
-    // Swap UI's token picker is config-driven instead of hardcoded.
+    QVariantMap swapExactInQuote(QString tokenInHex, QString tokenOutHex,
+                                  QString amountInDecimal, int slippageBps) override;
+    QVariantMap swapExactOutQuote(QString tokenInHex, QString tokenOutHex,
+                                   QString amountOutDecimal, int slippageBps) override;
+    QString swapExactOutput(QString defAHex, QString defBHex, QString userInputHoldingHex,
+                             QString userOutputHoldingHex, QString amountOutDecimal,
+                             QString maxInDecimal, QString deadlineDecimal) override;
+    // Reads the token list from TOKENS_CONFIG app-side (like poolList reads
+    // AMM_POOLS_CONFIG) so the Swap UI's token picker is config-driven.
     QVariantList tokenList() override;
+    // Create-pool preview (createPoolQuote, read-only) and submit (createPool). The caller
+    // supplies lpHoldingId in the request — a fresh account it created via
+    // createAccountPublic() — so createPool forwards to the module and creates no wallet
+    // accounts here.
+    QVariantMap createPoolQuote(QVariantMap request) override;
+    // Read-only add-liquidity preview (forwards to the module).
+    QVariantMap addLiquidityQuote(QVariantMap request) override;
+    QVariantMap createPool(QVariantMap request) override;
+    // Add-liquidity submit. Forwards to the module; the flow supplies a fresh LP
+    // holding in the request (the backend creates no wallet accounts here).
+    QVariantMap addLiquidity(QVariantMap request) override;
+    // Lists the wallet's fungible token holdings for the account selector.
+    QVariantList tokenHoldings() override;
+    // Reads the known-pools list from AMM_POOLS_CONFIG (app config JSON, read
+    // here rather than in the amm_module — pool discovery is an app detail).
+    QVariantList poolList() override;
+    // The AMM's supported fee tiers (raw bps) for the fee selector.
+    QVariantList feeTiers() override;
+    // Resolves the liquidity token selector rows for the app-owned id set
+    // (configured ∪ persisted custom; held-but-unlisted tokens are added by id).
+    QVariantList resolveTokens() override;
+    // Validates + persists a user-pasted custom token id (see the .rep).
+    QVariantMap addCustomToken(QString tokenId) override;
 
 private:
     void syncWalletState();
-    void publishNetworkContext();
-
-    // Builds the new-position network context from the same sources the Swap
-    // view uses: ammProgramId from $AMM_PROGRAM_BIN, tokenIds from
-    // $TOKENS_CONFIG. status is "ready" once AMM_PROGRAM_BIN resolves, else
-    // "config_missing". There is no separate network config or channel probe.
-    ActiveNetworkSnapshot networkSnapshot();
-
-    // 64-char lowercase-hex AMM program id derived from $AMM_PROGRAM_BIN (empty
-    // if unset/unreadable); matches swapExactInput's program-id encoding.
-    QString ammProgramIdHex();
-
-    // Normalizes an account id given as either 64-char lowercase/uppercase hex
-    // or base58 to lowercase hex. Returns an empty QString if `id` is neither
-    // (or the base58 decode fails), so callers can detect and skip it.
-    QString normalizeAccountId(const QString& id);
-
-    // Returns the deployed AMM program-binary bytes (a RISC Zero ProgramBinary
-    // .bin, not a raw ELF) from $AMM_PROGRAM_BIN, or an empty QByteArray (with a
-    // qWarning) if the env var is unset/unreadable/empty.
-    QByteArray loadAmmElf();
+    // Persisted custom (user-pasted) token ids. Stored as a JSON array of id
+    // strings at customTokenStorePath(); missing/unreadable ⇒ empty. The path is
+    // CUSTOM_TOKEN_CONFIG if set, else a per-user app-data fallback.
+    QStringList loadCustomTokenIds() const;
+    bool saveCustomTokenIds(const QStringList& ids) const;
+    QString customTokenStorePath() const;
 
     LogosAPI* m_logosAPI;
-    // Direct module handle for the AMM/swap path (resolvePool/swapExactInput/
-    // tokenList). The shared wallet provider exposes only wallet-level ops, not
-    // the raw account-id / get_account_public / send_generic_public_transaction
-    // calls the AMM path needs, so keep a thin LogosModules over the same
-    // LogosAPI as the wallet provider.
+    // Handle for the amm_module core module (resolvePool / swapExactInput /
+    // resolveTokens). The module wraps the amm_ffi brain and
+    // reaches the shared wallet through its own logos_execution_zone dependency;
+    // this backend keeps a thin LogosModules over the same LogosAPI as the
+    // wallet provider so both resolve that one shared wallet instance.
     std::unique_ptr<LogosModules> m_logos;
     std::unique_ptr<LogosWalletProvider> m_wallet;
     std::unique_ptr<WalletController> m_walletController;
-    std::unique_ptr<AmmClient> m_ammClient;
-    std::unique_ptr<NewPositionRuntime> m_newPosition;
-
-    QVariantMap m_newPositionHints;
-
-    // Network context is derived from $AMM_PROGRAM_BIN + $TOKENS_CONFIG, which are
-    // fixed for the process lifetime — resolve them once and cache. networkSnapshot()
-    // runs on the hot path (every quote) and from inside runtime callbacks, and
-    // tokenList() makes remote base58 conversions, so it must not recompute each call.
-    bool m_networkResolved = false;
-    QString m_ammProgramIdCache;
-    QStringList m_tokenIdsCache;
 };
 
 #endif // AMM_UI_BACKEND_H

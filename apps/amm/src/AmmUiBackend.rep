@@ -26,14 +26,6 @@ class AmmUiBackend
     SLOT(void refreshBalances())
     SLOT(QString getBalance(QString accountIdHex, bool isPublic))
 
-    // New Position backend surface. QML calls these through logos.watch(...).
-    // The QVariant payloads are stable maps/lists so the UI never assembles AMM
-    // transactions or duplicates quote state.
-    PROP(QVariantMap newPositionContext READONLY)
-    SLOT(void refreshNewPositionContext(QVariantMap request))
-    SLOT(QVariantMap quoteNewPosition(QVariantMap request))
-    SLOT(QVariantMap submitNewPosition(QVariantMap request, QString quoteHash))
-
     // Wallet lifecycle. createNewDefault() is the happy path: it creates a
     // fresh wallet at the canonical walletHome with no path picking. createNew()
     // keeps explicit paths for an "advanced" flow. Both return the new wallet's
@@ -49,13 +41,32 @@ class AmmUiBackend
     SLOT(void disconnectWallet())
 
     // AMM
-    // Derives the AMM pool's PDAs (config/pool/vaults/current-tick) from the
-    // deployed AMM program binary (see AMM_PROGRAM_BIN — a RISC Zero
-    // ProgramBinary .bin, not a raw ELF) and reads the pool's
-    // on-chain reserves. Returns `{ exists: false }` if the AMM program bin
-    // isn't configured, the AMM isn't initialized, or the pool has no
-    // liquidity yet.
-    SLOT(QVariantMap resolvePool(QString defAHex, QString defBHex))
+    // Derives the AMM pool PDA for (defAHex, defBHex) from the deployed AMM program
+    // binary (see AMM_PROGRAM_BIN — a RISC Zero ProgramBinary .bin, not a raw ELF)
+    // and reads/decodes the pool account. On success `{ status:"ok", error:"", poolId,
+    // defAHex, defBHex, vaultAId, vaultBId, lpDefinitionId, reserveA, reserveB,
+    // liquiditySupply, feeBps }` (A/B oriented to the requested order); otherwise
+    // `{ status:"error", error:<code> }` — `no_pool` for the ordinary "no pool /
+    // no liquidity yet" state, else no_program_bin / amm_not_initialized / bad_config.
+    SLOT(QVariantMap resolvePoolAccount(QString defAHex, QString defBHex))
+    // Decodes the singleton AMM config account: `{ status:"ok", error:"", configId,
+    // ammProgramId, authority, tokenProgramId, twapOracleProgramId }` (ids base58), or
+    // `{ status:"error", error:"config_missing"|"config_unavailable"|"backend_error" }`.
+    SLOT(QVariantMap configAccount())
+    // Submits an UpdateConfig transferring admin authority. `request` carries
+    // { newAuthorityId } (base58 or hex). Only the current admin can sign, so the
+    // connected wallet must control it. Returns { status:"ok", error:"",
+    // transactionId:<hex> } or { status:"error", error:<code> } (wallet_unavailable,
+    // config_missing, invalid_account_id, wallet_submission_failed, backend_error).
+    SLOT(QVariantMap transferOwnership(QVariantMap request))
+    // Oracle setup (keeper): seed a pool's TWAP feed / create its oracle price account for a
+    // window. `request` carries { tokenAId, tokenBId, windowDurationMs }. Direct submits
+    // (chained into the oracle, seeded from validated pool state — nothing signs). Return
+    // { status:"ok", error:"", transactionId:<hex> } or { status:"error", error:<code> }
+    // (wallet_unavailable, config_missing, invalid_token_id, invalid_window, same_token_pair,
+    // config_unavailable, already_exists, wallet_submission_failed, backend_error).
+    SLOT(QVariantMap createPriceObservations(QVariantMap request))
+    SLOT(QVariantMap createOraclePriceAccount(QVariantMap request))
     // Submits a real on-chain SwapExactInput transaction against the pool for
     // (defAHex, defBHex). amountInDecimal/minOutDecimal are decimal-string
     // u128 amounts in base units; deadlineDecimal is a decimal-string u64 unix
@@ -64,9 +75,107 @@ class AmmUiBackend
     // is enforced). Returns the tx hash, or an empty string on failure
     // (no pool, unreadable AMM_PROGRAM_BIN, bad inputs, or a failed tx).
     SLOT(QString swapExactInput(QString defAHex, QString defBHex, QString userInputHoldingHex, QString userOutputHoldingHex, QString amountInDecimal, QString minOutDecimal, QString deadlineDecimal))
+    // Server-side SwapExactInput preview for (tokenInHex, tokenOutHex): reads the
+    // pool and returns { status:"ok", error:"", expectedOutRaw, minReceivedRaw,
+    // priceImpactBps }, oriented and priced via the shared on-chain formula.
+    // amountInDecimal is a decimal-string base-unit amount; slippageBps is basis
+    // points. On failure { status:"error", error:<code> } — no_pool,
+    // config_missing, bad_amount, invalid_slippage (slippageBps out of range),
+    // backend_error. Read-only, no submission.
+    SLOT(QVariantMap swapExactInQuote(QString tokenInHex, QString tokenOutHex, QString amountInDecimal, int slippageBps))
+    // Server-side SwapExactOutput preview for (tokenInHex, tokenOutHex): reads the
+    // pool and returns { status:"ok", error:"", requiredInRaw, maxInRaw,
+    // priceImpactBps } — the input needed for the desired output and the slippage
+    // ceiling on it — oriented and priced via the shared on-chain formula.
+    // amountOutDecimal is a decimal-string base-unit amount; slippageBps is basis
+    // points. On failure { status:"error", error:<code> } — no_pool,
+    // output_exceeds_liquidity, config_missing, bad_amount, backend_error.
+    // Read-only, no submission.
+    SLOT(QVariantMap swapExactOutQuote(QString tokenInHex, QString tokenOutHex, QString amountOutDecimal, int slippageBps))
+    // Submits a real on-chain SwapExactOutput transaction against the pool for
+    // (defAHex, defBHex). amountOutDecimal is the exact desired output (base
+    // units); maxInDecimal is the slippage ceiling on the input actually spent;
+    // deadlineDecimal is a decimal-string u64 unix timestamp in MILLISECONDS.
+    // Same return contract as swapExactInput (tx hash, empty string on failure).
+    SLOT(QString swapExactOutput(QString defAHex, QString defBHex, QString userInputHoldingHex, QString userOutputHoldingHex, QString amountOutDecimal, QString maxInDecimal, QString deadlineDecimal))
     // Reads the token list config at TOKENS_CONFIG (absolute path, JSON array
     // of { symbol, name, definitionId, holding, decimals }) and returns it as
-    // a QVariantList of QVariantMap entries. Returns an empty list if
-    // TOKENS_CONFIG is unset/unreadable/invalid.
+    // a QVariantList of QVariantMap entries. Read app-side (like poolList); ids
+    // pass through as configured (base58 or hex) and the swap/quote module
+    // methods normalize them. Returns an empty list if TOKENS_CONFIG is
+    // unset/unreadable/invalid.
     SLOT(QVariantList tokenList())
+
+    // Server-side create-pool preview from the two deposit amounts. `request`
+    // carries { tokenAId, tokenBId, amountARaw, amountBRaw } (ids hex or base58;
+    // amounts decimal-string base units). Returns { status:"ok", error:"",
+    // amountARaw, amountBRaw, expectedLpRaw, lockedLpRaw, initialPriceRaw } — the
+    // LP the creator receives and the opening price, via the shared on-chain math.
+    // On failure { status:"error", error:<code> } — invalid_token_id,
+    // same_token_pair, amount_too_low, amount_required, bad_amount, backend_error.
+    // Read-only, no submission (the fee is not needed — it isn't part of the pool
+    // PDA nor the pricing).
+    SLOT(QVariantMap createPoolQuote(QVariantMap request))
+    // Server-side add-liquidity preview from the two max deposit amounts. `request`
+    // carries { tokenAId, tokenBId, maxAmountARaw, maxAmountBRaw, slippageBps } (ids hex or
+    // base58). Reads the pool and returns { status:"ok", error:"", amountARaw, amountBRaw
+    // (the actual ratio-matched deposits, display order), expectedLpRaw, minimumLpRaw (the
+    // slippage floor on the LP minted — the submit's min_amount_liquidity), priceRaw }. On
+    // failure { status:"error", error:<code> } — no_pool, pair_mismatch, invalid_token_id,
+    // invalid_slippage, amount_too_low, minimum_lp_zero, bad_amount, backend_error.
+    // Read-only, no submission.
+    SLOT(QVariantMap addLiquidityQuote(QVariantMap request))
+    // Submits a NewDefinition transaction creating the pool for the request's pair.
+    // `request` carries { tokenAId, tokenBId, holdingAId, holdingBId, lpHoldingId,
+    // amountARaw, amountBRaw, feeBps, deadlineMs } (ids hex or base58; amounts/deadline
+    // decimal strings). A new pool has no existing LP holding, so the caller supplies
+    // lpHoldingId — a fresh account it created via createAccountPublic(); the backend
+    // just forwards to the module and creates no wallet accounts here. Returns
+    // { status:"ok", error:"", transactionId:<hex tx hash> } on success, else
+    // { status:"error", error:<code> } (wallet_unavailable, config_missing,
+    // invalid_account_id, bad_amount, bad_fee_bps_amount, invalid_fee_tier,
+    // wallet_submission_failed, backend_error).
+    SLOT(QVariantMap createPool(QVariantMap request))
+    // Submits an AddLiquidity transaction into the request's existing pool. `request`
+    // carries { tokenAId, tokenBId, holdingAId, holdingBId, lpHoldingId, maxAmountARaw,
+    // maxAmountBRaw, minLpRaw, deadlineMs } (ids hex or base58; amounts/deadline decimal
+    // strings). minLpRaw is the slippage floor on the LP minted; lpHoldingId is a fresh
+    // holding the caller supplies (the flow creates it) to receive the minted LP — the
+    // backend forwards and creates no wallet accounts. Returns
+    // { status:"ok", error:"", transactionId:<hex tx hash> } on success, else
+    // { status:"error", error:<code> } (wallet_unavailable, config_missing,
+    // invalid_account_id, bad_amount, no_pool, wallet_submission_failed, backend_error).
+    SLOT(QVariantMap addLiquidity(QVariantMap request))
+    // Lists the connected wallet's fungible token holdings for the account
+    // selector: [{ accountId, accountType:"TokenHolding", definitionId,
+    // definitionIdHex, balanceRaw }] — one row per holding account, every token,
+    // including zero-balance holdings. The selector narrows to a token by id.
+    SLOT(QVariantList tokenHoldings())
+    // Reads the known-pools config at AMM_POOLS_CONFIG (absolute path, JSON array
+    // of { tokenA, tokenB, feeBps, poolId, tokenADefinitionId, tokenBDefinitionId })
+    // and returns it as a QVariantList of QVariantMap entries. tokenA/tokenB are
+    // display symbols; the id fields identify the pool on-chain. Returns an empty
+    // list if AMM_POOLS_CONFIG is unset/unreadable/invalid. This is app config, not
+    // an on-chain read, so it lives in the backend rather than the amm_module.
+    SLOT(QVariantList poolList())
+
+    // The AMM's supported fee tiers as raw basis points, ascending: [1, 5, 30,
+    // 100]. Input-free — sourced from amm_core's SUPPORTED_FEE_TIERS (the set the
+    // guest enforces), so the fee selector never hardcodes or drifts. The QML
+    // formats labels and decides selectability.
+    SLOT(QVariantList feeTiers())
+
+    // Resolves the liquidity token selector's rows. The backend owns the id set:
+    // the configured tokens (TOKENS_CONFIG) plus the user's persisted custom tokens
+    // (see addCustomToken) — the same "known list" shape the swap side shows. Tokens
+    // the wallet merely holds are NOT auto-listed; add an unlisted one by id. Returns
+    // [{ definitionId (base58), name, totalSupply, holdingId, balance }] — every row
+    // the same shape, held tokens first (holdingId "" / balance "0" when not held).
+    SLOT(QVariantList resolveTokens())
+
+    // Adds a user-pasted custom token id (base58 or hex) to the persisted set, after
+    // validating it resolves to a fungible definition. On success persists it (de-duped)
+    // and returns { ok: true, token: <row> } with the resolved row; on an unresolvable /
+    // non-fungible id returns { ok: false, error: "unresolved" } and persists nothing.
+    SLOT(QVariantMap addCustomToken(QString tokenId))
 }

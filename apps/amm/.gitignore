@@ -1,3 +1,26 @@
 result
 result-*
 modules/
+
+# Personal token/account config — copy amm-tokens.json.example and fill in
+# your own definitionId/holding accounts. Never commit your real accounts.
+amm-tokens.json
+
+# Personal known-pools config (AMM_POOLS_CONFIG). Same rationale as above.
+amm-pools.json
+
+# Screenshot artifacts written by tests/swap.mjs
+tests/*.png
+
+# Isolated wallet home used by tests/testnet/setup-amm-testnet.sh
+tests/testnet/.wallet/
+
+# Isolated token config written by tests/testnet/setup-amm-testnet.sh
+tests/testnet/amm-tokens.json
+
+# Isolated known-pools config written by tests/testnet/setup-amm-testnet.sh
+tests/testnet/amm-pools.json
+
+# Isolated custom-token store (CUSTOM_TOKEN_CONFIG) — initialized by the setup script
+# and written by the app during tests/custom-token.mjs
+tests/testnet/custom-tokens.json
