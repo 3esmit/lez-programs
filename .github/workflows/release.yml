@@ -198,13 +198,13 @@ jobs:
           name: risc-zero
           path: dist/risc
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
-          name: risc-zero-validator
-          path: "${{ runner.temp }}/release-validator"
+          toolchain: "1.94.0"
 
-      - name: Make ProgramBinary validator executable
-        run: chmod +x "${RUNNER_TEMP}/release-validator/risc0-packager"
+      - name: Build native ProgramBinary validator
+        run: cargo build -p risc0-packager --release
 
       - name: Build and package standalone applications
         shell: bash
@@ -226,7 +226,7 @@ jobs:
             --license-file LICENSE \
             --tokens-example apps/amm/amm-tokens.json.example \
             --pools-example apps/amm/amm-pools.json.example \
-            --validator "${RUNNER_TEMP}/release-validator/risc0-packager" \
+            --validator target/release/risc0-packager \
             --output-dir dist/standalone
 
           python3 scripts/release-catalog.py package-standalone \
@@ -239,7 +239,7 @@ jobs:
             --risc-dir dist/risc \
             --catalog "${NETWORK_CATALOG}" \
             --license-file LICENSE \
-            --validator "${RUNNER_TEMP}/release-validator/risc0-packager" \
+            --validator target/release/risc0-packager \
             --output-dir dist/standalone
 
       - name: Upload standalone producer output
