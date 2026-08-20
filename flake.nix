@@ -2,6 +2,8 @@
   description = "LEZ programs — host client modules and FFIs";
 
   inputs = {
+    # The pinned upstream wallet FFI supports Linux and Apple Silicon Darwin.
+    # Keep the root output matrix aligned with those supported targets.
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     crane.url = "github:ipetkov/crane";
@@ -16,6 +18,12 @@
     # history: a `git+file://` URL pointing at a local checkout is
     # machine-specific and not portable).
     logos-module-builder.url = "github:logos-co/logos-module-builder";
+
+    # Release bundles use the standalone host and relocation tool already
+    # pinned through the Logos module builder graph. Following those inputs
+    # avoids a second dependency graph and keeps one host contract per system.
+    logos-standalone-app.follows = "logos-module-builder/logos-standalone-app";
+    nix-bundle-dir.follows = "logos-module-builder/nix-bundle-lgx/nix-bundle-dir";
 
     # Core wallet module (the LEZ wallet FFI Qt plugin). The input name must
     # match the metadata.json `dependencies` entry so the builder can resolve it
@@ -41,9 +49,11 @@
   };
 
   outputs =
-    inputs@{ self, nixpkgs, flake-utils, crane, rust-overlay, logos-module-builder, logos_execution_zone, ... }:
+    inputs@{ self, nixpkgs, flake-utils, crane, rust-overlay, logos-module-builder,
+      logos-standalone-app, nix-bundle-dir, logos_execution_zone, ... }:
     let
-      crateOutputs = flake-utils.lib.eachDefaultSystem (
+      supportedSystems = [ "x86_64-linux" "aarch64-darwin" ];
+      crateOutputs = flake-utils.lib.eachSystem supportedSystems (
       system:
       let
         pkgs = import nixpkgs {
@@ -223,10 +233,12 @@
       # and `appOutputs.packages.<sys>.default` (the UI launcher and its
       # bundle, respectively) are renamed to `amm-ui`; no `default` survives
       # for either attribute set.
-      appApps = appOutputs.apps or { };
-      appPkgs = appOutputs.packages or { };
-      tokenAppApps = tokenAppOutputs.apps or { };
-      tokenAppPkgs = tokenAppOutputs.packages or { };
+      filterSystems = output:
+        builtins.mapAttrs (system: _: output.${system} or { }) crateOutputs.packages;
+      appApps = filterSystems (appOutputs.apps or { });
+      appPkgs = filterSystems (appOutputs.packages or { });
+      tokenAppApps = filterSystems (tokenAppOutputs.apps or { });
+      tokenAppPkgs = filterSystems (tokenAppOutputs.packages or { });
 
       # Keep the token UI's Basecamp install artifacts addressable after the
       # core token module is merged into the same package set. Both builders
@@ -272,7 +284,9 @@
       ammModuleAliases = builtins.mapAttrs (
         system: attrs:
         (if attrs ? lgx then { amm-module-lgx = attrs.lgx; } else { })
+        // (if attrs ? lgx-portable then { amm-module-lgx-portable = attrs.lgx-portable; } else { })
         // (if attrs ? install then { amm-module-install = attrs.install; } else { })
+        // (if attrs ? install-portable then { amm-module-install-portable = attrs.install-portable; } else { })
       ) ammModulePkgs;
 
       # Token core module (modules/token): complete Token Program inspection
@@ -299,8 +313,87 @@
       tokenModuleAliases = builtins.mapAttrs (
         system: attrs:
         (if attrs ? lgx then { token-module-lgx = attrs.lgx; } else { })
+        // (if attrs ? lgx-portable then { token-module-lgx-portable = attrs.lgx-portable; } else { })
         // (if attrs ? install then { token-module-install = attrs.install; } else { })
+        // (if attrs ? install-portable then { token-module-install-portable = attrs.install-portable; } else { })
       ) tokenModulePkgs;
+
+      # Relocatable standalone app roots. The builder's host package supplies
+      # the shell, while the matching UI/core/wallet install trees are copied
+      # into explicit `plugins/` and `modules/` roots before nix-bundle-dir
+      # rewrites native references and collects the runtime closure.
+      mkStandaloneBundle =
+        { system, product, uiInstall, moduleInstall }:
+        let
+          pkgs = import nixpkgs {
+            inherit system;
+            overlays = [ rust-overlay.overlays.default ];
+          };
+          standaloneHost =
+            (logos-standalone-app.packages.${system} or { }).default;
+          executionZonePkgs =
+            (logos_execution_zone.packages.${system} or { });
+          stage = pkgs.runCommand "${product}-standalone-stage" { } ''
+            mkdir -p "$out/bin" "$out/lib" "$out/modules" "$out/plugins"
+            cp -a ${standaloneHost}/lib/. "$out/lib/"
+            cp -a ${standaloneHost}/modules/. "$out/modules/"
+            chmod -R u+w "$out"
+            cp ${standaloneHost}/bin/.logos-standalone-app-bin "$out/bin/logos-standalone-app.bin"
+            cp ${standaloneHost}/bin/logos_host "$out/bin/"
+            cp ${standaloneHost}/bin/ui-host "$out/bin/"
+            cp -a ${uiInstall}/plugins/. "$out/plugins/"
+            cp -a ${moduleInstall}/modules/. "$out/modules/"
+            chmod -R u+w "$out"
+            cp -a ${executionZonePkgs.install-portable}/modules/. "$out/modules/"
+            cat > "$out/bin/logos-standalone-app" <<'HOST_LAUNCHER'
+            #!/bin/sh
+            set -eu
+            root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+            export QML_IMPORT_PATH="$root/lib''${QML_IMPORT_PATH:+:$QML_IMPORT_PATH}"
+            export QML2_IMPORT_PATH="$QML_IMPORT_PATH"
+            exec "$root/bin/logos-standalone-app.bin" "$@"
+            HOST_LAUNCHER
+            chmod 755 "$out/bin/logos-standalone-app"
+            cat > "$out/bin/${product}-ui" <<'LAUNCHER'
+            #!/bin/sh
+            set -eu
+            root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+            export QML_IMPORT_PATH="$root/lib''${QML_IMPORT_PATH:+:$QML_IMPORT_PATH}"
+            export QML2_IMPORT_PATH="$QML_IMPORT_PATH"
+            exec "$root/bin/logos-standalone-app" \
+              --plugin "$root/plugins/${product}_ui" \
+              --modules-dir "$root/modules" "$@"
+            LAUNCHER
+            chmod 755 "$out/bin/${product}-ui"
+          '';
+        in
+        nix-bundle-dir.lib.${system}.mkBundle {
+          drv = stage;
+          name = "standalone-${product}";
+          extraDirs = [ "plugins" "modules" ];
+          # C++/Qt binaries can retain harmless compiler include paths in
+          # debug/string sections. nix-bundle-dir still rejects non-portable
+          # dynamic references; treat those embedded strings as warnings.
+          warnOnBinaryData = true;
+        };
+
+      standalonePackages = builtins.mapAttrs (
+        system: _:
+        {
+          standalone-amm-bundle = mkStandaloneBundle {
+            inherit system;
+            product = "amm";
+            uiInstall = appPkgs.${system}.install-portable;
+            moduleInstall = ammModulePkgs.${system}.install-portable;
+          };
+          standalone-token-bundle = mkStandaloneBundle {
+            inherit system;
+            product = "token";
+            uiInstall = tokenAppPkgs.${system}.install-portable;
+            moduleInstall = tokenModulePkgs.${system}.install-portable;
+          };
+        }
+      ) crateOutputs.packages;
 
       # Wrap the app launcher to export DYLD_FALLBACK_LIBRARY_PATH pointing at the
       # amm_ffi lib. The logos module builder links the plugin against
@@ -375,6 +468,7 @@
           ammModAliasPkgs = ammModuleAliases.${system} or { };
           tokenModSysPkgs = tokenModulePkgs.${system} or { };
           tokenModAliasPkgs = tokenModuleAliases.${system} or { };
+          standaloneSysPkgs = standalonePackages.${system} or { };
         in
         (builtins.removeAttrs cratePkgs [ "default" ])
         // (builtins.removeAttrs appSysPkgs [ "default" ])
@@ -389,11 +483,14 @@
         // (builtins.removeAttrs tokenModSysPkgs [ "default" ])
         // (if tokenModSysPkgs ? default then { token-module = tokenModSysPkgs.default; } else { })
         // tokenModAliasPkgs
+        // standaloneSysPkgs
       ) crateOutputs.packages;
     in
-    (builtins.removeAttrs appOutputs [ "apps" "packages" ])
+    (builtins.removeAttrs appOutputs [ "apps" "packages" "checks" "devShells" ])
     // {
       apps = mergedApps;
       packages = mergedPackages;
+      checks = if appOutputs ? checks then filterSystems appOutputs.checks else { };
+      devShells = if appOutputs ? devShells then filterSystems appOutputs.devShells else { };
     };
 }

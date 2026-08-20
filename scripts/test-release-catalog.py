@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+"""Tests for the source-owned multi-artifact release contract."""
+
+from __future__ import annotations
+
+import importlib.util
+import io
+import json
+import sys
+import tarfile
+import tempfile
+import unittest
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+
+SCRIPT = Path(__file__).with_name("release-catalog.py")
+SPEC = importlib.util.spec_from_file_location("release_catalog", SCRIPT)
+if SPEC is None or SPEC.loader is None:
+    raise RuntimeError(f"cannot load {SCRIPT}")
+RELEASE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(RELEASE)
+
+
+class ReleaseCatalogTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp(prefix="release-catalog-test-"))
+        self.matrix = Path(__file__).parents[1] / ".github/release/components.json"
+        self.catalog = Path(__file__).parents[1] / "release/networks.json"
+        self.license = self.root / "LICENSE"
+        self.license.write_text("License\n", encoding="utf-8")
+        self.network = self.root / "network.json"
+        self.network.write_bytes(self.catalog.read_bytes())
+
+    def test_matrix_expands_to_exact_direct_and_internal_sets(self) -> None:
+        components = RELEASE.load_matrix(self.matrix)
+        expanded = RELEASE.expand_assets(components, "v1.1.0")
+        self.assertEqual(len(expanded), 24)
+        self.assertIn("logos-amm-aarch64-darwin.tar.gz", expanded)
+        self.assertIn("standalone-token-aarch64-darwin.tar.gz", expanded)
+        self.assertNotIn("amm-api-x86_64-linux.lgx", expanded)
+
+    def test_empty_catalog_is_valid(self) -> None:
+        self.assertEqual(RELEASE.validate_catalog(self.catalog)["networks"], [])
+
+    def test_catalog_rejects_duplicate_network_ids(self) -> None:
+        value = {
+            "schema_version": 1,
+            "networks": [
+                {
+                    "id": "testnet",
+                    "display_name": "Testnet",
+                    "status": "preview",
+                    "endpoints": {},
+                    "programs": {},
+                },
+                {
+                    "id": "testnet",
+                    "display_name": "Testnet again",
+                    "status": "preview",
+                    "endpoints": {},
+                    "programs": {},
+                },
+            ],
+        }
+        path = self.root / "duplicate.json"
+        path.write_text(json.dumps(value), encoding="utf-8")
+        with self.assertRaises(RELEASE.ReleaseError):
+            RELEASE.validate_catalog(path)
+
+    def test_catalog_rejects_user_holding_fields(self) -> None:
+        value = {
+            "schema_version": 1,
+            "networks": [
+                {
+                    "id": "testnet",
+                    "display_name": "Testnet",
+                    "status": "preview",
+                    "endpoints": {},
+                    "programs": {},
+                    "holding": "user-specific",
+                }
+            ],
+        }
+        path = self.root / "holding.json"
+        path.write_text(json.dumps(value), encoding="utf-8")
+        with self.assertRaises(RELEASE.ReleaseError):
+            RELEASE.validate_catalog(path)
+
+    def test_catalog_accepts_hex_program_id_and_release_mapping(self) -> None:
+        value = {
+            "schema_version": 1,
+            "networks": [
+                {
+                    "id": "preview-net",
+                    "display_name": "Preview",
+                    "status": "preview",
+                    "endpoints": {"sequencer": "https://example.test"},
+                    "programs": {
+                        "amm": {"program_id": "00" * 32, "release_binary": "amm.bin"}
+                    },
+                }
+            ],
+        }
+        path = self.root / "mapping.json"
+        path.write_text(json.dumps(value), encoding="utf-8")
+        self.assertEqual(RELEASE.validate_catalog(path)["networks"][0]["id"], "preview-net")
+
+    def test_logos_package_contains_catalog_and_manifest(self) -> None:
+        api = self.root / "amm-api.lgx"
+        ui = self.root / "amm-ui.lgx"
+        for path, name, variant in ((api, "amm_module", "linux-amd64"), (ui, "amm_ui", "linux-amd64")):
+            with tarfile.open(path, "w:gz") as archive:
+                manifest = json.dumps({"name": name, "version": "0.1.0", "main": {variant: "plugin.so"}}).encode()
+                info = tarfile.TarInfo("manifest.json")
+                info.size = len(manifest)
+                archive.addfile(info, io.BytesIO(manifest))
+        output = self.root / "logos-amm-x86_64-linux.tar.gz"
+        RELEASE.build_logos_package("amm", "x86_64-linux", "linux-amd64", api, ui, self.network, self.license, output)
+        manifest = RELEASE.validate_package_archive(output, RELEASE.sha256(self.network))
+        self.assertEqual(manifest["kind"], "logos-product")
+
+    def test_standalone_package_rejects_nix_store_leak(self) -> None:
+        bundle = self.root / "bundle"
+        (bundle / "bin").mkdir(parents=True)
+        (bundle / "bin/amm-ui").write_text("#!/bin/sh\n", encoding="utf-8")
+        (bundle / "bin/logos-standalone-app").write_text("#!/bin/sh\n", encoding="utf-8")
+        (bundle / "lib").mkdir()
+        (bundle / "lib/bad.so").write_bytes(b"/nix/store/leak")
+        with self.assertRaises(RELEASE.ReleaseError):
+            RELEASE.validate_bundle_tree(bundle, "amm")
+
+    def test_standalone_package_contains_reference_kit_and_catalog(self) -> None:
+        bundle = self.root / "bundle"
+        (bundle / "bin").mkdir(parents=True)
+        (bundle / "bin/amm-ui").write_text("#!/bin/sh\n", encoding="utf-8")
+        (bundle / "bin/logos-standalone-app").write_text("#!/bin/sh\n", encoding="utf-8")
+        risc = self.root / "risc"
+        risc.mkdir()
+        (risc / "amm.bin").write_bytes(b"program-binary")
+        (risc / "amm-idl.json").write_text('{"name":"amm"}\n', encoding="utf-8")
+        tokens = self.root / "amm-tokens.json.example"
+        pools = self.root / "amm-pools.json.example"
+        tokens.write_text("[]\n", encoding="utf-8")
+        pools.write_text("[]\n", encoding="utf-8")
+        output = self.root / "standalone-amm-x86_64-linux.tar.gz"
+
+        RELEASE.build_standalone_package(
+            "amm",
+            "x86_64-linux",
+            "linux-amd64",
+            bundle,
+            risc,
+            self.network,
+            self.license,
+            output,
+            tokens,
+            pools,
+        )
+
+        manifest = RELEASE.validate_package_archive(output, RELEASE.sha256(self.network))
+        self.assertEqual(manifest["reference_binary"], "reference/programs/amm.bin")
+        self.assertEqual(
+            RELEASE.archive_member_bytes(output, "standalone-amm-x86_64-linux/reference/idl/amm-idl.json"),
+            b'{"name":"amm"}\n',
+        )
+        self.assertEqual(
+            RELEASE.archive_member_bytes(output, "standalone-amm-x86_64-linux/config/network.json"),
+            self.network.read_bytes(),
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
