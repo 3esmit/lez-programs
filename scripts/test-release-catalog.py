@@ -120,6 +120,33 @@ class ReleaseCatalogTests(unittest.TestCase):
         manifest = RELEASE.validate_package_archive(output, RELEASE.sha256(self.network))
         self.assertEqual(manifest["kind"], "logos-product")
 
+    def test_aggregate_returns_manifest_digest_after_temporary_workspace_cleanup(self) -> None:
+        output = self.root / "release"
+        output.mkdir()
+        raw_names = ["amm.bin", "amm-idl.json"]
+        for name in raw_names:
+            (output / name).write_bytes(name.encode())
+        kit = output / "lez-risc-zero-programs.tar.gz"
+        kit.write_bytes(b"risc-kit")
+        logos = output / "logos-amm-x86_64-linux.tar.gz"
+        logos.write_bytes(b"logos")
+        standalone = output / "standalone-amm-x86_64-linux.tar.gz"
+        standalone.write_bytes(b"standalone")
+
+        aggregate, manifest_digest = RELEASE.build_aggregate(
+            "v1.1.3",
+            output,
+            raw_names,
+            kit,
+            [logos],
+            [standalone],
+            self.network,
+            self.license,
+        )
+
+        manifest_member = "lez-programs-v1.1.3/manifest/component-manifest.json"
+        self.assertEqual(manifest_digest, RELEASE.sha256_bytes(RELEASE.archive_member_bytes(aggregate, manifest_member)))
+
     def test_standalone_package_rejects_nix_store_leak(self) -> None:
         bundle = self.root / "bundle"
         (bundle / "bin").mkdir(parents=True)

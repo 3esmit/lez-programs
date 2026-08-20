@@ -758,7 +758,7 @@ def build_aggregate(
     standalone_archives: list[Path],
     network: Path,
     license_file: Path,
-) -> tuple[Path, Path]:
+) -> tuple[Path, str]:
     with tempfile.TemporaryDirectory(prefix="release-aggregate-") as temporary:
         root = Path(temporary) / f"lez-programs-{tag}"
         for name in raw_names:
@@ -784,9 +784,10 @@ def build_aggregate(
                 "artifacts": [{"name": path.name, "sha256": sha256(path), "size": path.stat().st_size} for path in payloads],
             },
         )
+        component_manifest_digest = sha256(component_manifest)
         archive = output / f"lez-programs-{tag}.tar.gz"
         write_deterministic_archive(root, archive, root.name)
-        return archive, component_manifest
+        return archive, component_manifest_digest
 
 
 def assemble_release(args: argparse.Namespace) -> None:
@@ -833,7 +834,7 @@ def assemble_release(args: argparse.Namespace) -> None:
                 copy_file(standalone, destination)
                 standalone_archives.append(destination)
 
-        aggregate, component_manifest = build_aggregate(
+        aggregate, component_manifest_sha256 = build_aggregate(
             args.tag,
             args.output_dir,
             raw_names,
@@ -869,7 +870,7 @@ def assemble_release(args: argparse.Namespace) -> None:
                 "name": aggregate.name,
                 "sha256": sha256(aggregate),
                 "size": aggregate.stat().st_size,
-                "component_manifest_sha256": sha256(component_manifest),
+                "component_manifest_sha256": component_manifest_sha256,
                 "format": "deterministic-tar-gz-v1",
             },
             "expected_direct_asset_count": 24,
