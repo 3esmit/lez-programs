@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import io
 import json
@@ -146,6 +147,86 @@ class ReleaseCatalogTests(unittest.TestCase):
 
         manifest_member = "lez-programs-v1.1.3/manifest/component-manifest.json"
         self.assertEqual(manifest_digest, RELEASE.sha256_bytes(RELEASE.archive_member_bytes(aggregate, manifest_member)))
+
+    def test_assemble_verifies_using_its_output_directory(self) -> None:
+        risc = self.root / "risc"
+        logos = self.root / "logos"
+        standalone = self.root / "standalone"
+        release = self.root / "release"
+        risc.mkdir()
+        logos.mkdir()
+        standalone.mkdir()
+        programs = []
+        for program in RELEASE.PROGRAMS:
+            (risc / f"{program}.bin").write_bytes(f"{program}-binary".encode())
+            (risc / f"{program}-idl.json").write_text(
+                json.dumps({"name": program, "instructions": [{"name": "test"}]}),
+                encoding="utf-8",
+            )
+            programs.append({"name": program})
+        (risc / "risc-metadata.json").write_text(json.dumps({"programs": programs}), encoding="utf-8")
+
+        validator = self.root / "validator"
+        validator.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = image-id ]; then\n"
+            "  printf '%064d\\n' 0\n"
+            "fi\n",
+            encoding="utf-8",
+        )
+        validator.chmod(0o755)
+        tokens_example = self.root / "tokens.example"
+        pools_example = self.root / "pools.example"
+        tokens_example.write_text("[]\n", encoding="utf-8")
+        pools_example.write_text("[]\n", encoding="utf-8")
+
+        for product in ("amm", "token"):
+            for system, variant in (("x86_64-linux", "linux-amd64"), ("aarch64-darwin", "darwin-arm64")):
+                for kind, name in (("api", f"{product}_module"), ("ui", f"{product}_ui")):
+                    path = logos / f"{product}-{kind}-{system}.lgx"
+                    with tarfile.open(path, "w:gz") as archive:
+                        manifest = json.dumps({"name": name, "version": "0.1.0", "main": {variant: "plugin"}}).encode()
+                        info = tarfile.TarInfo("manifest.json")
+                        info.size = len(manifest)
+                        archive.addfile(info, io.BytesIO(manifest))
+
+                bundle = self.root / f"{product}-{system}-bundle"
+                (bundle / "bin").mkdir(parents=True)
+                (bundle / "bin" / f"{product}-ui").write_text("#!/bin/sh\n", encoding="utf-8")
+                (bundle / "bin" / "logos-standalone-app").write_text("#!/bin/sh\n", encoding="utf-8")
+                output = standalone / f"standalone-{product}-{system}.tar.gz"
+                RELEASE.build_standalone_package(
+                    product,
+                    system,
+                    variant,
+                    bundle,
+                    risc,
+                    self.network,
+                    self.license,
+                    output,
+                    tokens_example if product == "amm" else None,
+                    pools_example if product == "amm" else None,
+                )
+
+        args = argparse.Namespace(
+            tag="v1.1.3-test",
+            source_commit="0" * 40,
+            repository="owner/repository",
+            matrix=self.matrix,
+            catalog=self.catalog,
+            license_file=self.license,
+            risc_dir=risc,
+            logos_dir=logos,
+            standalone_dir=standalone,
+            validator=validator,
+            flake_lock=Path(__file__).parents[1] / "flake.lock",
+            risc0_builder_tag="test",
+            rust_toolchain="test",
+            output_dir=release,
+        )
+        self.assertFalse(release.exists())
+        RELEASE.assemble_release(args)
+        self.assertEqual(len(list(release.iterdir())), 24)
 
     def test_standalone_package_rejects_nix_store_leak(self) -> None:
         bundle = self.root / "bundle"

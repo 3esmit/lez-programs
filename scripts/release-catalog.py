@@ -905,8 +905,11 @@ def parse_checksums(path: Path) -> dict[str, str]:
 def verify_release(args: argparse.Namespace) -> None:
     components = load_matrix(args.matrix)
     expected = set(expand_assets(components, args.tag))
-    assert_exact_files(args.assets_dir, expected, "release")
-    manifest_path = args.assets_dir / "release-manifest.json"
+    assets_dir = getattr(args, "assets_dir", None)
+    if assets_dir is None:
+        assets_dir = args.output_dir
+    assert_exact_files(assets_dir, expected, "release")
+    manifest_path = assets_dir / "release-manifest.json"
     manifest = load_json(manifest_path)
     if manifest.get("schema_version") != 3 or manifest.get("release_tag") != args.tag:
         fail("release manifest identity does not match the requested release")
@@ -914,19 +917,19 @@ def verify_release(args: argparse.Namespace) -> None:
         fail("release manifest source identity does not match the requested source")
     if manifest.get("expected_direct_asset_count") != 24:
         fail("release manifest expected_direct_asset_count is not 24")
-    checksums = parse_checksums(args.assets_dir / "SHA256SUMS")
+    checksums = parse_checksums(assets_dir / "SHA256SUMS")
     expected_checksums = expected - {"SHA256SUMS"}
     if set(checksums) != expected_checksums:
         fail("SHA256SUMS does not cover exactly every other direct asset")
     for name, digest in checksums.items():
-        if sha256(args.assets_dir / name) != digest:
+        if sha256(assets_dir / name) != digest:
             fail(f"checksum mismatch: {name}")
-    if manifest.get("network_catalog_sha256") != sha256(args.assets_dir / "network.json"):
+    if manifest.get("network_catalog_sha256") != sha256(assets_dir / "network.json"):
         fail("release manifest network catalog digest mismatch")
-    validate_catalog(args.assets_dir / "network.json")
-    validate_risc_inputs(args.assets_dir, args.assets_dir, args.validator)
-    network_digest = sha256(args.assets_dir / "network.json")
-    for path in sorted(args.assets_dir.glob("*.tar.gz")):
+    validate_catalog(assets_dir / "network.json")
+    validate_risc_inputs(assets_dir, assets_dir, args.validator)
+    network_digest = sha256(assets_dir / "network.json")
+    for path in sorted(assets_dir.glob("*.tar.gz")):
         if path.name.startswith(("logos-", "standalone-", "lez-risc-zero-programs")):
             package = validate_package_archive(path, network_digest)
             if path.name == "lez-risc-zero-programs.tar.gz":
@@ -940,7 +943,7 @@ def verify_release(args: argparse.Namespace) -> None:
                 match = re.fullmatch(r"standalone-(amm|token)-(x86_64-linux|aarch64-darwin)\.tar\.gz", path.name)
                 if match is None or package.get("kind") != "standalone-product" or package.get("product") != match.group(1) or package.get("system") != match.group(2):
                     fail(f"standalone package manifest does not match its filename: {path.name}")
-    aggregate = args.assets_dir / f"lez-programs-{args.tag}.tar.gz"
+    aggregate = assets_dir / f"lez-programs-{args.tag}.tar.gz"
     if not aggregate.is_file():
         fail("aggregate archive is missing")
     root, names = archive_file_names(aggregate)
