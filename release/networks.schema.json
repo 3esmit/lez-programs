@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LEZ supported networks",
+  "type": "object",
+  "required": ["schema_version", "networks"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": 1},
+    "networks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "display_name", "status", "endpoints", "programs"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+          "display_name": {"type": "string", "minLength": 1},
+          "status": {"enum": ["supported", "preview", "deprecated"]},
+          "endpoints": {
+            "type": "object",
+            "additionalProperties": {"type": "string", "format": "uri"}
+          },
+          "programs": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "required": ["program_id"],
+              "additionalProperties": false,
+              "properties": {
+                "program_id": {"type": "string", "minLength": 32},
+                "release_binary": {"type": "string", "pattern": "^[a-z_]+\\.bin$"}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

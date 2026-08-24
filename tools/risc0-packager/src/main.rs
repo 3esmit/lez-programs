@@ -27,6 +27,18 @@ fn main() -> Result<()> {
         return validate_file(&binary);
     }
 
+    if first_argument == OsStr::new("image-id") {
+        let binary = required_arg(&mut args, &command, "program .bin")?;
+        if args.next().is_some() {
+            bail!(
+                "usage: {} image-id <program-bin>",
+                command.to_string_lossy()
+            );
+        }
+
+        return print_image_id(&binary);
+    }
+
     let output = required_arg(&mut args, &command, "output .bin")?;
 
     if args.next().is_some() {
@@ -59,6 +71,20 @@ fn validate_file(path: &Path) -> Result<()> {
     let encoded = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
     validate_program_binary(&encoded)
         .with_context(|| format!("invalid RISC Zero program binary: {}", path.display()))
+}
+
+fn print_image_id(path: &Path) -> Result<()> {
+    let encoded = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let binary = ProgramBinary::decode(&encoded)
+        .with_context(|| format!("cannot decode ProgramBinary: {}", path.display()))?;
+    let image_id = binary.compute_image_id().with_context(|| {
+        format!(
+            "ProgramBinary does not contain valid RISC Zero ELFs: {}",
+            path.display()
+        )
+    })?;
+    println!("{image_id}");
+    Ok(())
 }
 
 fn validate_program_binary(encoded: &[u8]) -> Result<()> {

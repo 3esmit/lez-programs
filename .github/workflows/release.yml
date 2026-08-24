@@ -1,16 +1,32 @@
-name: Release Program Artifacts
+name: Release
 
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "SemVer tag used for a read-only release dry run"
+        required: true
+        default: "v0.0.0-ci"
+        type: string
 
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+  MATRIX_FILE: .github/release/components.json
+  NETWORK_CATALOG: release/networks.json
+
 jobs:
-  build:
-    name: Build and verify release assets
+  risc-zero:
+    name: RISC Zero programs
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -18,7 +34,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Record release source commit
+      - name: Record source commit
         run: echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> "${GITHUB_ENV}"
 
       - name: Build guest program binaries
@@ -42,32 +58,273 @@ jobs:
       - name: Build ProgramBinary validator
         run: cargo build -p risc0-packager --release
 
-      - name: Package release assets
+      - name: Validate and stage RISC Zero assets
         run: |
-          python3 scripts/program-release.py package \
-            --tag "${GITHUB_REF_NAME}" \
-            --source-commit "${SOURCE_COMMIT}" \
-            --repository "${GITHUB_REPOSITORY}" \
+          set -euo pipefail
+          python3 scripts/release-catalog.py validate-matrix --matrix "${MATRIX_FILE}"
+          python3 scripts/release-catalog.py stage-risc \
+            --catalog "${NETWORK_CATALOG}" \
+            --guest-dir target/guest \
+            --idl-dir artifacts \
             --validator target/release/risc0-packager \
-            --output-dir dist/release
+            --output-dir dist/risc
 
-      - name: Upload verified release assets
+      - name: Upload RISC Zero producer output
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: program-release-assets
-          path: dist/release
+          name: risc-zero
+          path: dist/risc
           if-no-files-found: error
 
       - name: Upload ProgramBinary validator
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: program-release-validator
+          name: risc-zero-validator
           path: target/release/risc0-packager
           if-no-files-found: error
 
+  logos:
+    name: Logos modules (${{ matrix.system }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-latest
+            variant: linux-amd64
+            amm_api_attribute: amm-module-lgx-portable
+            amm_ui_attribute: amm-ui-lgx-portable
+            token_api_attribute: token-module-lgx-portable
+            token_ui_attribute: token-ui-lgx-portable
+            amm_api_component: logos-amm-api-x86_64-linux
+            amm_ui_component: logos-amm-ui-x86_64-linux
+            token_api_component: logos-token-api-x86_64-linux
+            token_ui_component: logos-token-ui-x86_64-linux
+          - system: aarch64-darwin
+            runner: macos-15
+            variant: darwin-arm64
+            amm_api_attribute: amm-module-lgx-portable
+            amm_ui_attribute: amm-ui-lgx-portable
+            token_api_attribute: token-module-lgx-portable
+            token_ui_attribute: token-ui-lgx-portable
+            amm_api_component: logos-amm-api-aarch64-darwin
+            amm_ui_component: logos-amm-ui-aarch64-darwin
+            token_api_component: logos-token-api-aarch64-darwin
+            token_ui_component: logos-token-ui-aarch64-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: cachix/install-nix-action@b85815f71a6de0ddee80b8a80a98d43f4bcc66c7 # v31
+
+      - name: Build and stage portable LGX files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          find_lgx() {
+            local output="$1"
+            if [[ "${output}" == *.lgx && -f "${output}" ]]; then
+              printf '%s\n' "${output}"
+              return
+            fi
+            local matches=()
+            local candidate
+            for candidate in "${output}"/*.lgx; do
+              if [[ -f "${candidate}" ]]; then
+                matches+=("${candidate}")
+              fi
+            done
+            if [[ "${#matches[@]}" -ne 1 ]]; then
+              echo "Expected one LGX file in ${output}; found ${#matches[@]}" >&2
+              exit 1
+            fi
+            printf '%s\n' "${matches[0]}"
+          }
+
+          stage_lgx() {
+            local attribute="$1"
+            local component="$2"
+            local output
+            local lgx
+            output="$(nix build ".#${attribute}" --no-link --print-out-paths)"
+            lgx="$(find_lgx "${output}")"
+            python3 scripts/release-catalog.py stage-lgx \
+              --matrix "${MATRIX_FILE}" \
+              --component-id "${component}" \
+              --input "${lgx}" \
+              --output-dir dist/logos
+          }
+
+          stage_lgx "${{ matrix.amm_api_attribute }}" "${{ matrix.amm_api_component }}"
+          stage_lgx "${{ matrix.amm_ui_attribute }}" "${{ matrix.amm_ui_component }}"
+          stage_lgx "${{ matrix.token_api_attribute }}" "${{ matrix.token_api_component }}"
+          stage_lgx "${{ matrix.token_ui_attribute }}" "${{ matrix.token_ui_component }}"
+
+      - name: Upload portable LGX producer output
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: logos-${{ matrix.system }}
+          path: dist/logos
+          if-no-files-found: error
+
+  standalone:
+    name: Standalone apps (${{ matrix.system }})
+    needs: risc-zero
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-latest
+            variant: linux-amd64
+          - system: aarch64-darwin
+            runner: macos-15
+            variant: darwin-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: cachix/install-nix-action@b85815f71a6de0ddee80b8a80a98d43f4bcc66c7 # v31
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: risc-zero
+          path: dist/risc
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: "1.94.0"
+
+      - name: Build native ProgramBinary validator
+        run: cargo build -p risc0-packager --release
+
+      - name: Build and package standalone applications
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          amm_bundle="$(nix build .#standalone-amm-bundle --no-link --print-out-paths)"
+          token_bundle="$(nix build .#standalone-token-bundle --no-link --print-out-paths)"
+
+          python3 scripts/release-catalog.py package-standalone \
+            --matrix "${MATRIX_FILE}" \
+            --component-id "standalone-amm-${{ matrix.system }}" \
+            --product amm \
+            --system "${{ matrix.system }}" \
+            --variant "${{ matrix.variant }}" \
+            --bundle "${amm_bundle}" \
+            --risc-dir dist/risc \
+            --catalog "${NETWORK_CATALOG}" \
+            --license-file LICENSE \
+            --tokens-example apps/amm/amm-tokens.json.example \
+            --pools-example apps/amm/amm-pools.json.example \
+            --validator target/release/risc0-packager \
+            --output-dir dist/standalone
+
+          python3 scripts/release-catalog.py package-standalone \
+            --matrix "${MATRIX_FILE}" \
+            --component-id "standalone-token-${{ matrix.system }}" \
+            --product token \
+            --system "${{ matrix.system }}" \
+            --variant "${{ matrix.variant }}" \
+            --bundle "${token_bundle}" \
+            --risc-dir dist/risc \
+            --catalog "${NETWORK_CATALOG}" \
+            --license-file LICENSE \
+            --validator target/release/risc0-packager \
+            --output-dir dist/standalone
+
+      - name: Upload standalone producer output
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: standalone-${{ matrix.system }}
+          path: dist/standalone
+          if-no-files-found: error
+
+  assemble:
+    name: Assemble and verify release
+    needs: [risc-zero, logos, standalone]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: risc-zero
+          path: dist/risc
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: risc-zero-validator
+          path: "${{ runner.temp }}/release-validator"
+
+      - name: Make ProgramBinary validator executable
+        run: chmod +x "${RUNNER_TEMP}/release-validator/risc0-packager"
+
+      - name: Download Linux Logos producer output
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: logos-x86_64-linux
+          path: dist/logos
+
+      - name: Download Apple Silicon Logos producer output
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: logos-aarch64-darwin
+          path: dist/logos
+
+      - name: Download Linux standalone producer output
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: standalone-x86_64-linux
+          path: dist/standalone
+
+      - name: Download Apple Silicon standalone producer output
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: standalone-aarch64-darwin
+          path: dist/standalone
+
+      - name: Assemble and verify exact release set
+        run: |
+          set -euo pipefail
+          SOURCE_COMMIT="$(git rev-parse HEAD)"
+          python3 scripts/release-catalog.py assemble \
+            --tag "${RELEASE_TAG}" \
+            --source-commit "${SOURCE_COMMIT}" \
+            --repository "${GITHUB_REPOSITORY}" \
+            --matrix "${MATRIX_FILE}" \
+            --catalog "${NETWORK_CATALOG}" \
+            --license-file LICENSE \
+            --risc-dir dist/risc \
+            --logos-dir dist/logos \
+            --standalone-dir dist/standalone \
+            --validator "${RUNNER_TEMP}/release-validator/risc0-packager" \
+            --flake-lock flake.lock \
+            --output-dir dist/release
+
+      - name: Upload assembled release
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: assembled-release
+          path: dist/release
+          if-no-files-found: error
+
   publish:
-    name: Publish verified release assets
-    needs: build
+    name: Publish verified release
+    if: github.event_name == 'push'
+    needs: assemble
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -78,29 +335,26 @@ jobs:
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: program-release-assets
+          name: assembled-release
           path: dist/release
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: program-release-validator
+          name: risc-zero-validator
           path: "${{ runner.temp }}/release-validator"
 
       - name: Make ProgramBinary validator executable
         run: chmod +x "${RUNNER_TEMP}/release-validator/risc0-packager"
-
-      - name: Record release source commit
-        run: echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> "${GITHUB_ENV}"
 
       - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release create "${GITHUB_REF_NAME}" \
+          gh release create "${RELEASE_TAG}" \
             --draft \
             --generate-notes \
-            --title "LEZ programs ${GITHUB_REF_NAME}" \
+            --title "LEZ programs ${RELEASE_TAG}" \
             --verify-tag \
             dist/release/*
 
@@ -109,13 +363,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          rm -rf "${RUNNER_TEMP}/release-download"
           mkdir -p "${RUNNER_TEMP}/release-download"
-          gh release download "${GITHUB_REF_NAME}" \
+          gh release download "${RELEASE_TAG}" \
             --dir "${RUNNER_TEMP}/release-download"
-          python3 scripts/program-release.py verify \
-            --tag "${GITHUB_REF_NAME}" \
-            --source-commit "${SOURCE_COMMIT}" \
+          python3 scripts/release-catalog.py verify \
+            --tag "${RELEASE_TAG}" \
+            --source-commit "$(git rev-parse HEAD)" \
             --repository "${GITHUB_REPOSITORY}" \
+            --matrix "${MATRIX_FILE}" \
             --validator "${RUNNER_TEMP}/release-validator/risc0-packager" \
             --assets-dir "${RUNNER_TEMP}/release-download"
 
@@ -125,9 +381,9 @@ jobs:
         run: |
           set -euo pipefail
           prerelease=()
-          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+          if [[ "${RELEASE_TAG}" == *-* ]]; then
             prerelease=(--prerelease)
           fi
-          gh release edit "${GITHUB_REF_NAME}" \
+          gh release edit "${RELEASE_TAG}" \
             --draft=false \
             "${prerelease[@]}"
