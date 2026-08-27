@@ -169,6 +169,7 @@ std::string stableFfiError(const std::string& error) {
         "invalid_redemption_price_state_data",
         "invalid_stability_fee_accumulator_data",
         "invalid_stablecoin_name",
+        "market_price_oracle_mismatch",
         "oracle_asset_mismatch",
         "position_nonce_mismatch",
         "position_owner_mismatch",
