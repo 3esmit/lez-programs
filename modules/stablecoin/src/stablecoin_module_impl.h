@@ -33,6 +33,10 @@ public:
     /// `not_found` with the derived position and vault IDs.
     LogosMap positionAccount(const LogosMap& request);
 
+    /// Reads and exactly decodes the singleton RedemptionPriceState account.
+    /// Returns stored controller state without projecting the current price.
+    LogosMap redemptionPriceState();
+
     /// Initializes the stablecoin protocol. Request fields are `adminId`,
     /// `freezeAuthorityId`, `collateralDefinitionId`, `marketPriceOracleId`,
     /// `initialStabilityFeePerMillisecond`,

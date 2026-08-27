@@ -166,6 +166,7 @@ std::string stableFfiError(const std::string& error) {
         "invalid_program_binary",
         "invalid_program_id",
         "invalid_protocol_parameters_data",
+        "invalid_redemption_price_state_data",
         "invalid_stability_fee_accumulator_data",
         "invalid_stablecoin_name",
         "oracle_asset_mismatch",
@@ -175,6 +176,7 @@ std::string stableFfiError(const std::string& error) {
         "position_vault_mismatch",
         "program_id_mismatch",
         "protocol_parameters_pda_mismatch",
+        "redemption_price_state_pda_mismatch",
         "stability_fee_accumulator_pda_mismatch",
         "stablecoin_program_mismatch",
     };

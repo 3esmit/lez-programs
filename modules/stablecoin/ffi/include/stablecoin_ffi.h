@@ -55,6 +55,14 @@ char *stablecoin_position_info(const char *request_json);
 char *stablecoin_decode_position(const char *request_json);
 
 /**
+ * Decodes and validates the singleton `RedemptionPriceState` account.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_decode_redemption_price_state(const char *request_json);
+
+/**
  * Builds the exact wallet submission plan for `InitializeProgram`.
  *
  * # Safety

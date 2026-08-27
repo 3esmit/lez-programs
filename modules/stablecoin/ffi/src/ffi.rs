@@ -7,8 +7,8 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use crate::api::{
     self, DecodePositionRequest, DecodeProtocolParametersRequest,
-    DecodeStabilityFeeAccumulatorRequest, InitializeProgramPlanRequest, PositionInfoRequest,
-    ProgramInfoRequest, StablecoinResult,
+    DecodeRedemptionPriceStateRequest, DecodeStabilityFeeAccumulatorRequest,
+    InitializeProgramPlanRequest, PositionInfoRequest, ProgramInfoRequest, StablecoinResult,
 };
 
 #[derive(Serialize)]
@@ -145,6 +145,20 @@ pub unsafe extern "C" fn stablecoin_position_info(request_json: *const c_char) -
 pub unsafe extern "C" fn stablecoin_decode_position(request_json: *const c_char) -> *mut c_char {
     // SAFETY: Forwarded from this function's caller contract.
     unsafe { call::<DecodePositionRequest>(request_json, api::decode_position) }
+}
+
+#[unsafe(no_mangle)]
+/// Decodes and validates the singleton `RedemptionPriceState` account.
+///
+/// # Safety
+/// `request_json` must be null or point to a live NUL-terminated byte string.
+pub unsafe extern "C" fn stablecoin_decode_redemption_price_state(
+    request_json: *const c_char,
+) -> *mut c_char {
+    // SAFETY: Forwarded from this function's caller contract.
+    unsafe {
+        call::<DecodeRedemptionPriceStateRequest>(request_json, api::decode_redemption_price_state)
+    }
 }
 
 #[unsafe(no_mangle)]

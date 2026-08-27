@@ -112,6 +112,14 @@ LOGOS_TEST(ffi_error_mapping_preserves_only_public_codes) {
         stablecoin_module::detail::stableFfiError("position_vault_mismatch"),
         std::string("position_vault_mismatch"));
     LOGOS_ASSERT_EQ(
+        stablecoin_module::detail::stableFfiError(
+            "invalid_redemption_price_state_data"),
+        std::string("invalid_redemption_price_state_data"));
+    LOGOS_ASSERT_EQ(
+        stablecoin_module::detail::stableFfiError(
+            "redemption_price_state_pda_mismatch"),
+        std::string("redemption_price_state_pda_mismatch"));
+    LOGOS_ASSERT_EQ(
         stablecoin_module::detail::stableFfiError("internal parse detail"),
         std::string("backend_error"));
     LOGOS_ASSERT_EQ(

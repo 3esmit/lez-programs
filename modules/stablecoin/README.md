@@ -68,6 +68,15 @@ When the derived position account does not exist, the method returns
 the derived owner, position, and vault IDs. No account decoder runs for this
 ordinary absence case.
 
+### `redemptionPriceState()`
+
+Reads the singleton Redemption Price State account through `lez_core`, verifies
+its PDA and owner, and exactly decodes its stored controller state. The result
+includes the account ID in base58 and lowercase hexadecimal form plus
+`redemptionPriceAtLastUpdate`, `redemptionRatePerMillisecond`,
+`controllerIntegralTerm`, and `lastUpdatedAt` as decimal strings. It does not
+project the current redemption price or simulate a controller update.
+
 ### `initializeProgram(request)`
 
 Required request fields:

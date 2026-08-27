@@ -11,13 +11,16 @@ mod tests;
 
 use std::{error::Error, fmt};
 
-pub use decode::{decode_protocol_parameters, decode_stability_fee_accumulator};
+pub use decode::{
+    decode_protocol_parameters, decode_redemption_price_state, decode_stability_fee_accumulator,
+};
 pub use plan::initialize_program_plan;
 pub use position::{decode_position, position_info};
 pub use program::program_info;
 pub use request::{
-    DecodePositionRequest, DecodeProtocolParametersRequest, DecodeStabilityFeeAccumulatorRequest,
-    InitializeProgramPlanRequest, PositionInfoRequest, ProgramInfoRequest,
+    DecodePositionRequest, DecodeProtocolParametersRequest, DecodeRedemptionPriceStateRequest,
+    DecodeStabilityFeeAccumulatorRequest, InitializeProgramPlanRequest, PositionInfoRequest,
+    ProgramInfoRequest,
 };
 use serde_json::Value;
 
