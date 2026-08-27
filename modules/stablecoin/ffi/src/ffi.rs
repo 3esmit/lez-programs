@@ -6,7 +6,7 @@ use std::{
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::api::{
-    self, DecodePositionRequest, DecodeProtocolParametersRequest,
+    self, CurrentGlobalStateRequest, DecodePositionRequest, DecodeProtocolParametersRequest,
     DecodeRedemptionPriceStateRequest, DecodeStabilityFeeAccumulatorRequest,
     InitializeProgramPlanRequest, PositionInfoRequest, ProgramInfoRequest, StablecoinResult,
 };
@@ -162,6 +162,18 @@ pub unsafe extern "C" fn stablecoin_decode_redemption_price_state(
 }
 
 #[unsafe(no_mangle)]
+/// Validates stablecoin global accounts and projects their current values at `CLOCK_01`.
+///
+/// # Safety
+/// `request_json` must be null or point to a live NUL-terminated byte string.
+pub unsafe extern "C" fn stablecoin_current_global_state(
+    request_json: *const c_char,
+) -> *mut c_char {
+    // SAFETY: Forwarded from this function's caller contract.
+    unsafe { call::<CurrentGlobalStateRequest>(request_json, api::current_global_state) }
+}
+
+#[unsafe(no_mangle)]
 /// Builds the exact wallet submission plan for `InitializeProgram`.
 ///
 /// # Safety
@@ -277,6 +289,18 @@ mod tests {
         assert!(document["value"]["positionIdHex"].is_string());
         assert!(document["value"]["vaultId"].is_string());
         assert!(document["value"]["vaultIdHex"].is_string());
+    }
+
+    #[test]
+    fn current_global_state_rejects_json_floats_at_the_boundary() {
+        let request = match CString::new(r#"{"stablecoinProgramId":1.5}"#) {
+            Ok(value) => value,
+            Err(error) => panic!("{error}"),
+        };
+        // SAFETY: request is a live NUL-terminated CString for this call.
+        let response = unsafe { stablecoin_current_global_state(request.as_ptr()) };
+        // SAFETY: response was returned by stablecoin_current_global_state and remains live.
+        unsafe { assert_failure_response(response, "bad_request") };
     }
 
     #[test]

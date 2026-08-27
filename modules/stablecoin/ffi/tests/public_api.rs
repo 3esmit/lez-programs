@@ -1,7 +1,8 @@
 use stablecoin_ffi::{
-    decode_position, decode_protocol_parameters, decode_redemption_price_state,
-    decode_stability_fee_accumulator, initialize_program_plan, position_info, program_info,
-    DecodePositionRequest, DecodeProtocolParametersRequest, DecodeRedemptionPriceStateRequest,
+    current_global_state, decode_position, decode_protocol_parameters,
+    decode_redemption_price_state, decode_stability_fee_accumulator, initialize_program_plan,
+    position_info, program_info, CurrentGlobalStateRequest, DecodePositionRequest,
+    DecodeProtocolParametersRequest, DecodeRedemptionPriceStateRequest,
     DecodeStabilityFeeAccumulatorRequest, InitializeProgramPlanRequest, PositionInfoRequest,
     ProgramInfoRequest, StablecoinResult,
 };
@@ -17,5 +18,7 @@ fn crate_root_reexports_stablecoin_surface() {
     let _decode_position: fn(DecodePositionRequest) -> StablecoinResult = decode_position;
     let _decode_redemption_state: fn(DecodeRedemptionPriceStateRequest) -> StablecoinResult =
         decode_redemption_price_state;
+    let _current_global_state: fn(CurrentGlobalStateRequest) -> StablecoinResult =
+        current_global_state;
     let _initialize: fn(InitializeProgramPlanRequest) -> StablecoinResult = initialize_program_plan;
 }
