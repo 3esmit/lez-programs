@@ -148,6 +148,12 @@ onBackendChanged: { root.refreshHoldings(); root.refreshFeeTiers(); root.refresh
     Connections {
         target: root.backend
         function onIsWalletOpenChanged() { root.refreshHoldings(); root.refreshTokens() }
+        function onSyncStatusChanged() {
+            if (root.backend && root.backend.syncStatus === "ready") {
+                root.refreshHoldings()
+                root.refreshTokens()
+            }
+        }
     }
 
     readonly property int pageMargin: width < 640 ? 16 : 24
@@ -353,6 +359,8 @@ onBackendChanged: { root.refreshHoldings(); root.refreshFeeTiers(); root.refresh
                     tokens: root.resolvedTokens
                     loadingTokens: root.tokensLoading
                     walletReady: newPositionFlow.walletStateReady
+                                 && root.backend !== null
+                                 && root.backend.isWalletOpen
                     flowState: newPositionFlow.viewState
 
                     onQuoteRequested: function(immediate, quoteRequest) {

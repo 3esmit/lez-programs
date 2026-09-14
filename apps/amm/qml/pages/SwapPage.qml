@@ -110,6 +110,10 @@ Item {
     Connections {
         target: root.backend
         function onIsWalletOpenChanged() { root.refreshHoldings() }
+        function onSyncStatusChanged() {
+            if (root.backend && root.backend.syncStatus === "ready")
+                root.refreshHoldings()
+        }
     }
 
     QtObject {
