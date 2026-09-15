@@ -15,7 +15,7 @@ Basecamp UI / logoscore
           |
      token_module       Qt-free C++ transport/orchestration
        /      \
-token_ffi      logos_execution_zone
+token_ffi      lez_core
 Rust codecs    shared wallet reads, account listing, transaction submission
 and planners
 ```
@@ -25,7 +25,7 @@ them with RISC Zero. This is intentional: the current Token IDL cannot fully
 describe `new_definition_with_metadata`, and its final three instruction
 indexes do not match the Rust enum's serialized order.
 
-The module reuses the host-loaded `logos_execution_zone` instance. It never
+The module reuses the host-loaded `lez_core` instance. It never
 opens a second wallet and never creates account keys. Callers create fresh
 public accounts through the wallet module, then pass their IDs to Token
 operations.
@@ -117,7 +117,7 @@ Creation, explicit initialization, and NFT printing require fresh public wallet
 accounts. Create each one before calling the token method:
 
 ```bash
-logoscore call logos_execution_zone create_account_public --json
+logoscore call lez_core create_account_public --json
 ```
 
 For transfer and mint, an initialized destination needs no destination
@@ -177,12 +177,12 @@ ls result/lib/          # token_module_plugin.dylib  libtoken_ffi.dylib
 
 # The wallet module it depends on — the SAME pin the repo-root flake and
 # amm_module use, with its inner monorepo input overridden to the rev the target
-# sequencer runs (415964d7). See apps/amm/README.md for the fuller build notes.
-nix build 'github:gravityblast/logos-execution-zone-module?ref=fix/generic-tx-instruction-bstr' \
+# sequencer runs (70c41652). See apps/amm/README.md for the fuller build notes.
+nix build 'github:logos-blockchain/logos-execution-zone-module?rev=b60be4640c4dc5ba3e0b552ecbe859482d02f2dd' \
   --override-input logos-execution-zone \
-  'github:logos-blockchain/logos-execution-zone?rev=415964d7f9043a1bfe28da8d0e8b3a6f64abb258' \
+  'github:logos-blockchain/logos-execution-zone?rev=70c41652fa129d8a0e0fe74c4caa1b11a6b5de9c' \
   --out-link result-lez
-ls result-lez/lib/      # logos_execution_zone_plugin.dylib  libwallet_ffi.dylib
+ls result-lez/lib/      # lez_core_plugin.dylib  libwallet_ffi.dylib
 ```
 
 ### 2. Stage a modules directory
@@ -199,8 +199,8 @@ modules/
     libtoken_ffi.dylib
     variant                     # one line: darwin-arm64-dev
     manifest.json
-  logos_execution_zone/
-    logos_execution_zone_plugin.dylib
+  lez_core/
+    lez_core_plugin.dylib
     libwallet_ffi.dylib
     variant
     manifest.json
@@ -211,15 +211,15 @@ modules/
 ```json
 {
   "name": "token_module", "type": "core", "version": "0.1.0",
-  "manifestVersion": "0.2.0", "dependencies": ["logos_execution_zone"],
+  "manifestVersion": "0.2.0", "dependencies": ["lez_core"],
   "main": { "darwin-arm64-dev": "token_module_plugin.dylib" }
 }
 ```
 
 Copy the dylibs into place (`result/lib/*` → `modules/token_module/`,
-`result-lez/lib/*` → `modules/logos_execution_zone/`) and write each `variant`
+`result-lez/lib/*` → `modules/lez_core/`) and write each `variant`
 as a single line (`darwin-arm64-dev` on arm64 macOS). The
-`logos_execution_zone/manifest.json` mirrors this with its own name and plugin.
+`lez_core/manifest.json` mirrors this with its own name and plugin.
 
 ### 3. Start the daemon and load (dependency first)
 
@@ -230,7 +230,7 @@ dependency before the module:
 TOKEN_PROGRAM_ID=F8sGbDbjcxvJHpUQJcArEaY7EbLMVmqZgRm3fXPw3jb3 \
 logoscore -D -m ./modules --persistence-path ./data
 
-logoscore load-module logos_execution_zone   # dependency first
+logoscore load-module lez_core   # dependency first
 logoscore load-module token_module
 logoscore module-info token_module --json
 logoscore call token_module programInfo --json
@@ -245,8 +245,8 @@ The final call must return `invalid_account_id` without crashing, and
 Open a wallet configured for the target sequencer, then pass a real account ID:
 
 ```bash
-logoscore call logos_execution_zone open \
-  /path/to/wallet_config.json /path/to/storage.json "$WALLET_PASSWORD" --json
+logoscore call lez_core open \
+  /path/to/wallet_config.json /path/to/storage.json /path/to/statistics.json --json
 
 logoscore call token_module inspectDefinition \
   7b464ff9dd0d3bc07f7e2e0b0667ccd066d85ad12be4c79fc55687a863910aa6 --json

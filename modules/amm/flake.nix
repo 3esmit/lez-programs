@@ -6,9 +6,13 @@
 
     # Core wallet module dependency. The input name must match the
     # metadata.json `dependencies` entry so the builder resolves it as a module
-    # dependency. Same fork the repo-root flake pins (the QtRO byte-string
-    # `instruction` fix for send_generic_public_transaction).
-    logos_execution_zone.url = "github:gravityblast/logos-execution-zone-module?ref=fix/generic-tx-instruction-bstr";
+    # dependency. Pin the byte-string module and the 700 KiB-compatible wallet
+    # client together.
+    lez_core = {
+      url = "github:logos-blockchain/logos-execution-zone-module?rev=b60be4640c4dc5ba3e0b552ecbe859482d02f2dd";
+      inputs.logos-execution-zone.url =
+        "github:logos-blockchain/logos-execution-zone?rev=70c41652fa129d8a0e0fe74c4caa1b11a6b5de9c";
+    };
   };
 
   # NOTE: like apps/amm, this flake is NOT built standalone. The amm_ffi

@@ -24,6 +24,7 @@ QString walletFailureCode(WalletFailure failure);
 struct WalletPaths {
     QString config;
     QString storage;
+    QString statistics;
 };
 
 struct WalletAccountRead {
