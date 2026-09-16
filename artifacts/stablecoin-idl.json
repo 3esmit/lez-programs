@@ -97,7 +97,8 @@
           "name": "stablecoin_name",
           "type": "string"
         }
-      ]
+      ],
+      "variant_index": 0
     },
     {
       "name": "open_position",
@@ -143,7 +144,7 @@
           "type": "u128"
         }
       ],
-      "variant_index": 0
+      "variant_index": 1
     },
     {
       "name": "withdraw_collateral",
@@ -179,7 +180,7 @@
           "type": "u128"
         }
       ],
-      "variant_index": 1
+      "variant_index": 2
     },
     {
       "name": "repay_debt",
@@ -215,7 +216,7 @@
           "type": "u128"
         }
       ],
-      "variant_index": 2
+      "variant_index": 3
     }
   ],
   "accounts": [

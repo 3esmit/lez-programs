@@ -39330,7 +39330,16 @@
         "crane": "crane",
         "flake-utils": "flake-utils",
         "logos-module-builder": "logos-module-builder",
+        "logos-standalone-app": [
+          "logos-module-builder",
+          "logos-standalone-app"
+        ],
         "logos_execution_zone": "logos_execution_zone",
+        "nix-bundle-dir": [
+          "logos-module-builder",
+          "nix-bundle-lgx",
+          "nix-bundle-dir"
+        ],
         "nixpkgs": "nixpkgs_571",
         "rust-overlay": "rust-overlay_5"
       }

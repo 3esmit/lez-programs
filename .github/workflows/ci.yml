@@ -218,5 +218,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Test release packaging and verification
+      - name: Validate release matrix and network catalog
+        run: |
+          python3 scripts/release-catalog.py validate-matrix \
+            --matrix .github/release/components.json
+          python3 scripts/release-catalog.py validate-catalog \
+            --catalog release/networks.json
+
+      - name: Test multi-artifact release contract
+        run: python3 scripts/test-release-catalog.py
+
+      - name: Test legacy program release contract
         run: python3 scripts/test-program-release.py
