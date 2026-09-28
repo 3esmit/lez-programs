@@ -20,7 +20,7 @@ pub use decode::{
     decode_protocol_parameters, decode_redemption_price_state, decode_stability_fee_accumulator,
 };
 pub use plan::{
-    accrue_stability_fee_plan, initialize_program_plan, refresh_globals_plan,
+    accrue_stability_fee_plan, initialize_program_plan, open_position_plan, refresh_globals_plan,
     update_redemption_rate_plan,
 };
 pub use position::{decode_position, position_info};
@@ -30,9 +30,9 @@ pub use quote::redemption_rate_update_quote;
 pub use request::{
     AccrueStabilityFeePlanRequest, CurrentGlobalStateRequest, DecodePositionRequest,
     DecodeProtocolParametersRequest, DecodeRedemptionPriceStateRequest,
-    DecodeStabilityFeeAccumulatorRequest, InitializeProgramPlanRequest, PositionInfoRequest,
-    ProgramInfoRequest, RedemptionRateUpdateQuoteRequest, RefreshGlobalsPlanRequest,
-    UpdateRedemptionRatePlanRequest,
+    DecodeStabilityFeeAccumulatorRequest, InitializeProgramPlanRequest, OpenPositionPlanRequest,
+    PositionInfoRequest, ProgramInfoRequest, RedemptionRateUpdateQuoteRequest,
+    RefreshGlobalsPlanRequest, UpdateRedemptionRatePlanRequest,
 };
 use serde_json::Value;
 
