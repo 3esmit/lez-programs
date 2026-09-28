@@ -1,4 +1,4 @@
-use lee_core::{account::AccountId, program::ProgramId};
+use lee_core::account::AccountId;
 use serde_json::{json, Value};
 use stablecoin_core::{
     compute_protocol_parameters_pda, compute_redemption_price_state_pda,
@@ -44,7 +44,7 @@ pub fn decode_redemption_price_state(
 }
 
 pub(super) fn validated_protocol_parameters(
-    stablecoin_program_id: ProgramId,
+    stablecoin_program_id: AccountId,
     read: &AccountRead,
 ) -> Result<(AccountId, ProtocolParameters), StablecoinApiError> {
     let (account_id, account) =
@@ -61,7 +61,7 @@ pub(super) fn validated_protocol_parameters(
 }
 
 pub(super) fn validated_stability_fee_accumulator(
-    stablecoin_program_id: ProgramId,
+    stablecoin_program_id: AccountId,
     read: &AccountRead,
 ) -> Result<(AccountId, StabilityFeeAccumulator), StablecoinApiError> {
     let (account_id, account) =
@@ -80,7 +80,7 @@ pub(super) fn validated_stability_fee_accumulator(
 }
 
 pub(super) fn validated_redemption_price_state(
-    stablecoin_program_id: ProgramId,
+    stablecoin_program_id: AccountId,
     read: &AccountRead,
 ) -> Result<(AccountId, RedemptionPriceState), StablecoinApiError> {
     let (account_id, account) =

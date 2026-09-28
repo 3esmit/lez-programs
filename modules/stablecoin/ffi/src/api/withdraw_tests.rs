@@ -1,8 +1,5 @@
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
-use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
-    program::ProgramId,
-};
+use lee_core::account::{Account, AccountId, AccountWithMetadata, Data, Nonce};
 use serde_json::{json, Value};
 use stablecoin_core::{
     compute_position_pda, compute_position_vault_pda, compute_position_vault_pda_seed,
@@ -13,20 +10,23 @@ use stablecoin_core::{
 };
 use token_core::TokenHolding;
 
-use super::{withdraw_collateral_plan, WithdrawCollateralPlanRequest};
+use super::{
+    test_support::{chained_input, post_account},
+    withdraw_collateral_plan, WithdrawCollateralPlanRequest,
+};
 use crate::{
-    account::{account_id_hex, account_read, decode_account, program_id_bytes},
+    account::{account_id_hex, account_read, decode_account},
     AccountRead,
 };
 
-const PROGRAM: ProgramId = [0x11; 8];
-const TOKEN_PROGRAM: ProgramId = [0x22; 8];
+const PROGRAM: AccountId = AccountId::new([0x11; 32]);
+const TOKEN_PROGRAM: AccountId = AccountId::new([0x22; 32]);
 const START: u64 = 1_000;
 const NONCE: u64 = u64::MAX;
 fn id(seed: u8) -> AccountId {
     AccountId::new([seed; 32])
 }
-fn read(account_id: AccountId, owner: ProgramId, data: Data) -> AccountRead {
+fn read(account_id: AccountId, owner: AccountId, data: Data) -> AccountRead {
     account_read(
         account_id,
         &Account {
@@ -91,7 +91,7 @@ impl Fixture {
 
     fn request(&self, amount: Value) -> WithdrawCollateralPlanRequest {
         WithdrawCollateralPlanRequest {
-            stablecoin_program_id: hex::encode(program_id_bytes(PROGRAM)),
+            stablecoin_program_id: account_id_hex(PROGRAM),
             owner_id: account_id_hex(id(20)),
             position_nonce: NONCE.to_string(),
             amount,
@@ -134,7 +134,7 @@ impl Fixture {
             ),
             clock: read(
                 CLOCK_01_PROGRAM_ACCOUNT_ID,
-                [0x44; 8],
+                AccountId::new([0x44; 32]),
                 Data::try_from(
                     ClockAccountData {
                         block_id: 1,
@@ -194,9 +194,9 @@ fn execute(fixture: &Fixture, amount: u128) {
         inputs.try_into().expect("eight inputs");
     assert!(!vault.is_authorized);
     assert!(!destination.is_authorized);
-    let words: Vec<u32> = serde_json::from_value(plan["instruction"].clone()).expect("words");
+    let words: Vec<u8> = serde_json::from_value(plan["instruction"].clone()).expect("words");
     let Instruction::WithdrawCollateral { amount } =
-        risc0_zkvm::serde::from_slice(&words).expect("instruction")
+        borsh::from_slice(&words).expect("instruction")
     else {
         panic!("expected withdrawal");
     };
@@ -213,14 +213,15 @@ fn execute(fixture: &Fixture, amount: u128) {
         amount,
     );
     let actual =
-        Position::try_from(&posts.get(1).expect("position post").account().data).expect("position");
+        Position::try_from(&post_account(posts.get(1).expect("position post"), PROGRAM).data)
+            .expect("position");
     let mut expected = fixture.position.clone();
     expected.collateral_amount -= amount;
     assert_eq!(actual, expected);
     let [call] = calls.as_slice() else {
         panic!("one chained transfer");
     };
-    assert_eq!(call.program_id, TOKEN_PROGRAM);
+    assert_eq!(call.program_account_id, TOKEN_PROGRAM);
     assert_eq!(
         call.pda_seeds,
         vec![compute_position_vault_pda_seed(compute_position_pda(
@@ -230,31 +231,36 @@ fn execute(fixture: &Fixture, amount: u128) {
         ))]
     );
     let token_core::Instruction::Transfer { amount_to_transfer } =
-        risc0_zkvm::serde::from_slice(&call.instruction_data).expect("token instruction")
+        borsh::from_slice(&call.instruction_data).expect("token instruction")
     else {
         panic!("expected transfer");
     };
     assert_eq!(amount_to_transfer, amount);
-    let [vault, destination] = call.pre_states.as_slice() else {
+    let [vault_id, destination_id] = call.pre_state_ids.as_slice() else {
         panic!("two transfer inputs");
     };
-    assert!(vault.is_authorized);
-    assert!(!destination.is_authorized);
-    assert_eq!(vault.account_id, fixture.position.vault_account_id);
-    assert_eq!(destination.account_id, id(21));
+    assert_eq!(*vault_id, fixture.position.vault_account_id);
+    assert_eq!(*destination_id, id(21));
+    // The vault is authorized by the call's PDA seed, asserted above.
+    let vault = chained_input(&posts, PROGRAM, *vault_id, true);
+    let destination = chained_input(&posts, PROGRAM, *destination_id, false);
     let transferred =
         token_program::transfer::transfer(vault.clone(), destination.clone(), amount_to_transfer);
     assert_eq!(
-        TokenHolding::try_from(&transferred.first().expect("vault post").account().data)
-            .expect("vault"),
+        TokenHolding::try_from(
+            &post_account(transferred.first().expect("vault post"), TOKEN_PROGRAM).data
+        )
+        .expect("vault"),
         TokenHolding::Fungible {
             definition_id: id(4),
             balance: fixture.vault_balance - amount
         }
     );
     assert_eq!(
-        TokenHolding::try_from(&transferred.get(1).expect("destination post").account().data)
-            .expect("destination"),
+        TokenHolding::try_from(
+            &post_account(transferred.get(1).expect("destination post"), TOKEN_PROGRAM).data
+        )
+        .expect("destination"),
         TokenHolding::Fungible {
             definition_id: id(4),
             balance: fixture.destination_balance + amount
@@ -285,9 +291,9 @@ fn withdrawal_pins_serialization_pdas_guest_flags_and_owner_only_signing() {
         plan["signingRequirements"],
         json!([true, false, false, false, false, false, false, false])
     );
-    let words: Vec<u32> = serde_json::from_value(plan["instruction"].clone()).expect("words");
+    let words: Vec<u8> = serde_json::from_value(plan["instruction"].clone()).expect("words");
     assert!(matches!(
-        risc0_zkvm::serde::from_slice::<Instruction, u32>(&words).expect("instruction"),
+        borsh::from_slice::<Instruction>(&words).expect("instruction"),
         Instruction::WithdrawCollateral { amount: 20 }
     ));
     let idl: Value =
@@ -417,9 +423,9 @@ fn withdrawal_preserves_maximum_amounts_lossless_json_integers_and_base58_ids() 
     request.owner_id = id(20).to_string();
     request.user_collateral_holding_id = id(21).to_string();
     let plan = withdraw_collateral_plan(request).expect("lossless integer and base58");
-    let words: Vec<u32> = serde_json::from_value(plan["instruction"].clone()).expect("words");
+    let words: Vec<u8> = serde_json::from_value(plan["instruction"].clone()).expect("words");
     assert!(
-        matches!(risc0_zkvm::serde::from_slice::<Instruction,u32>(&words).expect("instruction"),
+        matches!(borsh::from_slice::<Instruction>(&words).expect("instruction"),
         Instruction::WithdrawCollateral { amount } if amount == u128::from(u64::MAX))
     );
     for amount in [
@@ -508,7 +514,7 @@ fn withdrawal_rejects_wrong_position_vault_and_destination_bindings() {
         .account
         .as_mut()
         .expect("account")
-        .program_owner = hex::encode(program_id_bytes(PROGRAM));
+        .program_owner = account_id_hex(PROGRAM);
     error(invalid, "token_program_mismatch");
     for vault in [false, true] {
         let mut invalid = fixture.request(json!("0"));

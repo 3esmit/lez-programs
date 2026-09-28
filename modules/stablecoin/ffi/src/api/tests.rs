@@ -1,7 +1,7 @@
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
 use lee_core::{
     account::{Account, AccountId, Data, Nonce},
-    program::ProgramId,
+    program::{ProgramHeader, PROGRAM_LOADER_ACCOUNT_ID},
 };
 use risc0_binfmt::ProgramBinary;
 use serde_json::{json, Value};
@@ -26,14 +26,14 @@ use super::{
     PositionInfoRequest, ProgramInfoRequest, RefreshGlobalsPlanRequest, StablecoinResult,
     UpdateRedemptionRatePlanRequest,
 };
-use crate::account::{account_id_hex, account_read, program_id_bytes};
+use crate::account::{account_id_hex, account_read, AccountRead};
 
-const STABLECOIN_PROGRAM_ID: ProgramId = [0x11_u32; 8];
-const TOKEN_PROGRAM_ID: ProgramId = [0x22_u32; 8];
-const ORACLE_PROGRAM_ID: ProgramId = [0x33_u32; 8];
-const CLOCK_PROGRAM_ID: ProgramId = [0x44_u32; 8];
+const STABLECOIN_PROGRAM_ID: AccountId = AccountId::new([0x11_u8; 32]);
+const TOKEN_PROGRAM_ID: AccountId = AccountId::new([0x22_u8; 32]);
+const ORACLE_PROGRAM_ID: AccountId = AccountId::new([0x33_u8; 32]);
+const CLOCK_PROGRAM_ID: AccountId = AccountId::new([0x44_u8; 32]);
 
-fn account(owner: ProgramId, data: Data) -> Account {
+fn account(owner: AccountId, data: Data) -> Account {
     Account {
         program_owner: owner,
         balance: 0,
@@ -47,13 +47,14 @@ fn id(seed: u8) -> AccountId {
 }
 
 fn program_id_hex() -> String {
-    hex::encode(program_id_bytes(STABLECOIN_PROGRAM_ID))
+    account_id_hex(STABLECOIN_PROGRAM_ID)
 }
 
-fn deployable_program_binary() -> (String, ProgramId) {
+fn deployable_program_binary() -> (String, AccountId) {
     let encoded = stablecoin_methods::STABLECOIN_ELF;
     let binary = ok(ProgramBinary::decode(encoded));
-    let image_id = ok(binary.compute_image_id()).into();
+    let image_id: lee_core::program::ProgramId = ok(binary.compute_image_id()).into();
+    let image_id = AccountId::from(image_id);
     (hex::encode(encoded), image_id)
 }
 
@@ -429,8 +430,8 @@ fn deposit_collateral_request(is_frozen: bool, amount: Value) -> DepositCollater
 }
 
 fn decode_instruction(value: &Value) -> Instruction {
-    let words: Vec<u32> = ok(serde_json::from_value(value.clone()));
-    ok(risc0_zkvm::serde::from_slice::<Instruction, u32>(&words))
+    let bytes: Vec<u8> = ok(serde_json::from_value(value.clone()));
+    ok(borsh::from_slice::<Instruction>(&bytes))
 }
 
 #[test]
@@ -438,9 +439,11 @@ fn program_info_derives_all_singleton_ids_from_program_id() {
     let value = ok(program_info(ProgramInfoRequest {
         stablecoin_program_id: Some(program_id_hex()),
         elf: None,
+        program_header: None,
     }));
+    assert_eq!(value["imageIdHex"], "");
 
-    let program_account = AccountId::new(program_id_bytes(STABLECOIN_PROGRAM_ID));
+    let program_account = STABLECOIN_PROGRAM_ID;
     assert_eq!(value["programId"], program_account.to_string());
     assert_eq!(value["programIdHex"], account_id_hex(program_account));
     assert_eq!(
@@ -469,31 +472,82 @@ fn program_info_derives_all_singleton_ids_from_program_id() {
     );
 }
 
+fn header_data(image_id: AccountId) -> Data {
+    let header = ProgramHeader {
+        image_id: image_id.into(),
+        program_first_segment: id(0x77),
+        immutable: true,
+    };
+    ok(Data::try_from(header.to_bytes()))
+}
+
+/// The header a deployer created at `program_id` for bytecode with `image_id`.
+fn program_header(program_id: AccountId, image_id: AccountId) -> AccountRead {
+    account_read(
+        program_id,
+        &account(PROGRAM_LOADER_ACCOUNT_ID, header_data(image_id)),
+    )
+}
+
 #[test]
-fn program_info_derives_from_binary_and_rejects_mismatched_inputs() {
-    let (binary, derived_program_id) = deployable_program_binary();
-    let derived_program_id_hex = hex::encode(program_id_bytes(derived_program_id));
+fn program_info_checks_a_binary_against_the_deployed_header() {
+    // The program lives at an address unrelated to its ImageID, as any deploy may pick.
+    let (binary, image_id) = deployable_program_binary();
+    assert_ne!(image_id, STABLECOIN_PROGRAM_ID);
     let value = ok(program_info(ProgramInfoRequest {
-        stablecoin_program_id: None,
-        elf: Some(binary.clone()),
+        stablecoin_program_id: Some(program_id_hex()),
+        elf: Some(binary),
+        program_header: Some(program_header(STABLECOIN_PROGRAM_ID, image_id)),
     }));
-    assert_eq!(value["programIdHex"], derived_program_id_hex);
+    assert_eq!(value["programIdHex"], program_id_hex());
+    assert_eq!(value["imageIdHex"], account_id_hex(image_id));
+    assert_eq!(
+        value["protocolParametersIdHex"],
+        account_id_hex(compute_protocol_parameters_pda(STABLECOIN_PROGRAM_ID))
+    );
+}
+
+#[test]
+fn program_info_rejects_a_binary_that_is_not_deployed_there() {
+    let (binary, image_id) = deployable_program_binary();
+    let request = |header: Option<AccountRead>| ProgramInfoRequest {
+        stablecoin_program_id: Some(program_id_hex()),
+        elf: Some(binary.clone()),
+        program_header: header,
+    };
 
     assert_error(
-        program_info(ProgramInfoRequest {
-            stablecoin_program_id: Some(program_id_hex()),
-            elf: Some(binary.clone()),
-        }),
-        "program_id_mismatch",
+        program_info(request(Some(program_header(
+            STABLECOIN_PROGRAM_ID,
+            id(0x99),
+        )))),
+        "program_binary_mismatch",
     );
-
-    let value = ok(program_info(ProgramInfoRequest {
-        stablecoin_program_id: Some(derived_program_id_hex),
-        elf: Some(binary),
-    }));
-    assert_eq!(
-        value["programIdHex"],
-        hex::encode(program_id_bytes(derived_program_id))
+    assert_error(program_info(request(None)), "program_header_unavailable");
+    // A header read for another account, one not owned by the program loader, or
+    // undecodable data does not describe the configured program.
+    assert_error(
+        program_info(request(Some(program_header(id(0x55), image_id)))),
+        "program_header_unavailable",
+    );
+    let forged = account_read(
+        STABLECOIN_PROGRAM_ID,
+        &account(TOKEN_PROGRAM_ID, header_data(image_id)),
+    );
+    assert_error(
+        program_info(request(Some(forged))),
+        "program_header_unavailable",
+    );
+    let garbage = account_read(
+        STABLECOIN_PROGRAM_ID,
+        &account(
+            PROGRAM_LOADER_ACCOUNT_ID,
+            ok(Data::try_from(vec![1_u8, 2, 3])),
+        ),
+    );
+    assert_error(
+        program_info(request(Some(garbage))),
+        "program_header_unavailable",
     );
 }
 
@@ -503,6 +557,17 @@ fn program_info_rejects_missing_and_invalid_inputs() {
         program_info(ProgramInfoRequest {
             stablecoin_program_id: None,
             elf: None,
+            program_header: None,
+        }),
+        "config_missing",
+    );
+    // The ImageID is not an address: a binary alone cannot name the program.
+    let (binary, _) = deployable_program_binary();
+    assert_error(
+        program_info(ProgramInfoRequest {
+            stablecoin_program_id: None,
+            elf: Some(binary),
+            program_header: None,
         }),
         "config_missing",
     );
@@ -510,13 +575,15 @@ fn program_info_rejects_missing_and_invalid_inputs() {
         program_info(ProgramInfoRequest {
             stablecoin_program_id: Some(String::from("not-an-id")),
             elf: None,
+            program_header: None,
         }),
         "invalid_program_id",
     );
     assert_error(
         program_info(ProgramInfoRequest {
-            stablecoin_program_id: None,
+            stablecoin_program_id: Some(program_id_hex()),
             elf: Some(String::from("00")),
+            program_header: None,
         }),
         "invalid_program_binary",
     );
@@ -557,7 +624,7 @@ fn protocol_parameters_decode_rejects_wrong_pda_owner_and_non_exact_data() {
 
     let mut wrong_owner = protocol_request(&parameters);
     if let Some(account) = &mut wrong_owner.protocol_parameters.account {
-        account.program_owner = hex::encode(program_id_bytes(TOKEN_PROGRAM_ID));
+        account.program_owner = account_id_hex(TOKEN_PROGRAM_ID);
     }
     assert_error(
         decode_protocol_parameters(wrong_owner),
@@ -588,11 +655,11 @@ fn stability_fee_accumulator_decode_preserves_fixed_id_and_boundary_values() {
 
     assert_eq!(
         value["accountId"],
-        "E4tfkjjkPz2g1G3bpgkXQx4M7e7g4Lr2Mr8bxvAsSmzE"
+        "4gA2zUQxomXfgMaPv7WF4YhjNmQHjM3bNNC1sRyF4uQq"
     );
     assert_eq!(
         value["accountIdHex"],
-        "c22718073968c322725e4ba774b270036c294663a547f43285a214614c1c258f"
+        "369aed6f31e8b5a47faba313c65a343b67425e7fa9d4cee387f8e29fb3310e0e"
     );
     assert_eq!(value["accumulatedRateAtLastAccrual"], u128::MAX.to_string());
     assert_eq!(value["lastAccruedAt"], u64::MAX.to_string());
@@ -619,7 +686,7 @@ fn stability_fee_accumulator_decode_rejects_failed_reads_and_wrong_identity() {
 
     let mut wrong_owner = accumulator_request(&accumulator);
     if let Some(account) = &mut wrong_owner.stability_fee_accumulator.account {
-        account.program_owner = hex::encode(program_id_bytes(TOKEN_PROGRAM_ID));
+        account.program_owner = account_id_hex(TOKEN_PROGRAM_ID);
     }
     assert_error(
         decode_stability_fee_accumulator(wrong_owner),
@@ -670,19 +737,19 @@ fn position_info_has_fixed_owner_nonce_and_domain_separated_vectors() {
     assert_eq!(value["positionNonce"], "18446744073709551615");
     assert_eq!(
         value["positionId"],
-        "DrRDBHo3NRFzMjT75JFiHoL1tXCdfCmv86sAvfq4bJar"
+        "5b4G1Dy6YZ11Beitx96kJeWVFUbexCeqKoEnRy64Qg6b"
     );
     assert_eq!(
         value["positionIdHex"],
-        "bef513b932022feee48d0ab25aa2ffc935395fc473f5fc4148fa8f7d721e888f"
+        "44282e08e5ce89a1e6d509efffb5b03294b2b5b8bcc242a46520584c12840fa8"
     );
     assert_eq!(
         value["vaultId"],
-        "2iAjtRxV42s9SFN8aLwJ4MTzo4BAxBhXqbkEbkWd9YWV"
+        "HCssgv4hQr8Ss4FxrZ9soMUUkSJTNLhcHJnLHoM44eqj"
     );
     assert_eq!(
         value["vaultIdHex"],
-        "19678333644b6bad9ced47c8dbb5424611069d5a93bd6f5840904a1e89e9bd6a"
+        "f0c5e72f17d09fe157f332bc69e3645504f6244fbf9f2b9622c685a83c05d7e6"
     );
     assert_ne!(value["positionIdHex"], value["vaultIdHex"]);
 }
@@ -743,7 +810,7 @@ fn position_decode_rejects_wrong_address_program_and_stored_identity() {
 
     let mut wrong_program = position_decode_request(owner_id, 7, &stored_position);
     if let Some(account) = &mut wrong_program.position.account {
-        account.program_owner = hex::encode(program_id_bytes(TOKEN_PROGRAM_ID));
+        account.program_owner = account_id_hex(TOKEN_PROGRAM_ID);
     }
     assert_error(
         decode_position(wrong_program),
@@ -820,11 +887,11 @@ fn redemption_price_state_decode_preserves_fixed_id_and_boundary_values() {
     let expected_id = compute_redemption_price_state_pda(STABLECOIN_PROGRAM_ID);
     assert_eq!(
         account_id_hex(expected_id),
-        "8ec72eaff1c70ac76ed0c139026671fc9991cae1466749dffb3280a5a5aed533"
+        "0236c97aef1dd1f3b9b98ccbbfe97065f0c1a8fa54ac46e9d7fc1b2c89f6bfea"
     );
     assert_eq!(
         expected_id.to_string(),
-        "AcM3xWAMKUEPPzCjT1EHssertgGhvDhLe8KGP1uvbRjp"
+        "9eGd1RnZscJZTvPEp1fKLE8TW1xbQ2pev1aDEKop5H3"
     );
 
     for controller_integral_term in [1, 0, -1, i128::MIN, i128::MAX] {
@@ -865,7 +932,7 @@ fn redemption_price_state_decode_rejects_failed_reads_and_wrong_identity() {
 
     let mut wrong_owner = redemption_price_state_request(&state);
     if let Some(account) = &mut wrong_owner.redemption_price_state.account {
-        account.program_owner = hex::encode(program_id_bytes(TOKEN_PROGRAM_ID));
+        account.program_owner = account_id_hex(TOKEN_PROGRAM_ID);
     }
     assert_error(
         decode_redemption_price_state(wrong_owner),
@@ -1173,8 +1240,8 @@ fn open_position_plan_derives_all_accounts_and_preserves_boundary_values() {
     let request = open_position_request(false);
     let owner = account_id_hex(id(20));
     let holding = request.user_collateral_holding_id.clone();
-    let position = String::from("a87123457e26409c6a787258e4e4620ba51eff2da1623e429ec01ca5862a165d");
-    let vault = String::from("3908984cfc287c2297d95d12559432450ba6f290427c6095af401254097ad19f");
+    let position = String::from("18dde7962af579e2e9bb804d0b76dd6e3cd16f906f795a8d8c048533b391256a");
+    let vault = String::from("96cc8eae9ce458e0e6ed728a4e2364853b0a7f16829eb5223a52d6ceba76d4e0");
     let collateral = request.collateral_definition.id.clone();
     let plan = ok(open_position_plan(request));
 
@@ -1376,11 +1443,11 @@ fn position_addresses_match_the_open_position_pdas() {
 
     assert_eq!(
         value["positionIdHex"],
-        "a87123457e26409c6a787258e4e4620ba51eff2da1623e429ec01ca5862a165d"
+        "18dde7962af579e2e9bb804d0b76dd6e3cd16f906f795a8d8c048533b391256a"
     );
     assert_eq!(
         value["vaultIdHex"],
-        "3908984cfc287c2297d95d12559432450ba6f290427c6095af401254097ad19f"
+        "96cc8eae9ce458e0e6ed728a4e2364853b0a7f16829eb5223a52d6ceba76d4e0"
     );
     assert_error(
         position_addresses(PositionAddressesRequest {

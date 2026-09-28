@@ -1,5 +1,5 @@
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
-use lee_core::{account::AccountId, program::ProgramId};
+use lee_core::account::AccountId;
 use stablecoin_core::{math::FIXED_POINT_ONE, Instruction, ProtocolParameters};
 use twap_oracle_core::OraclePriceAccount;
 
@@ -19,7 +19,7 @@ use super::{
 };
 
 struct ValidatedAdmin {
-    program_id: ProgramId,
+    program_id: AccountId,
     admin: AccountId,
     parameters_id: AccountId,
     parameters: ProtocolParameters,

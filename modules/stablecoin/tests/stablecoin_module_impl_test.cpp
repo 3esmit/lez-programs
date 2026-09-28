@@ -298,16 +298,14 @@ QVariantList submissionArguments(const std::vector<std::string>& account_ids,
         qt_account_ids.push_back(QString::fromStdString(account_ids[index]));
         signing_requirements.push_back(index == 0);
     }
-    const QByteArray instruction(
-        1,
-        static_cast<char>(instruction_word));
-    QByteArray instruction_le = instruction;
-    instruction_le.append(3, '\0');
+    // A unit instruction variant is its one-byte Borsh tag.
+    const QByteArray instruction(1, static_cast<char>(instruction_word));
     return {
         QVariant(qt_account_ids),
         QVariant(signing_requirements),
-        QVariant(instruction_le),
+        QVariant(instruction),
         QVariant(QString::fromStdString(PROGRAM_ID_HEX)),
+        QVariant(QString()),
     };
 }
 
@@ -323,13 +321,12 @@ QVariantList submissionArguments(const std::vector<std::string>& account_ids,
             std::find(signer_indices.begin(), signer_indices.end(), index) != signer_indices.end());
     }
     const QByteArray instruction(1, static_cast<char>(instruction_word));
-    QByteArray instruction_le = instruction;
-    instruction_le.append(3, '\0');
     return {
         QVariant(qt_account_ids),
         QVariant(signing_requirements),
-        QVariant(instruction_le),
+        QVariant(instruction),
         QVariant(QString::fromStdString(program_id)),
+        QVariant(QString()),
     };
 }
 

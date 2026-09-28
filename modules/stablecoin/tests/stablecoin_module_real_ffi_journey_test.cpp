@@ -279,13 +279,14 @@ QVariantList submissionArguments(const std::vector<std::string>& account_ids,
         ids.push_back(QString::fromStdString(account_ids[index]));
         signers.push_back(index == 0);
     }
-    QByteArray instruction(1, static_cast<char>(instruction_word));
-    instruction.append(3, '\0');
+    // A unit instruction variant is its one-byte Borsh tag.
+    const QByteArray instruction(1, static_cast<char>(instruction_word));
     return {
         QVariant(ids),
         QVariant(signers),
         QVariant(instruction),
         QVariant(QString::fromStdString(program_id)),
+        QVariant(QString()),
     };
 }
 
@@ -301,18 +302,17 @@ QVariantList submissionArguments(const json& plan,
         signers.push_back(std::find(signer_indices.begin(), signer_indices.end(), index)
                           != signer_indices.end());
     }
+    // The plan's instruction is Borsh, one number per byte.
     QByteArray instruction;
     for (const auto& item : plan.at("instruction")) {
-        const std::uint32_t word = item.get<std::uint32_t>();
-        for (unsigned int shift = 0; shift < 32; shift += 8) {
-            instruction.push_back(static_cast<char>((word >> shift) & 0xff));
-        }
+        instruction.push_back(static_cast<char>(item.get<std::uint8_t>()));
     }
     return {
         QVariant(ids),
         QVariant(signers),
         QVariant(instruction),
         QVariant(QString::fromStdString(program_id)),
+        QVariant(QString()),
     };
 }
 
@@ -1486,11 +1486,11 @@ LOGOS_TEST(real_ffi_journey_deposit_collateral_reconciles_frozen_vault_donation)
         json::array({owner_id, position_id, vault_id, holding_id, protocol_id}));
     LOGOS_ASSERT_EQ(plan["signingRequirements"],
                     json::array({true, false, false, true, false}));
-    LOGOS_ASSERT_EQ(plan["instruction"].size(), 5);
-    LOGOS_ASSERT_EQ(plan["instruction"][1], 0);
-    LOGOS_ASSERT_EQ(plan["instruction"][2], 0);
-    LOGOS_ASSERT_EQ(plan["instruction"][3], 0);
-    LOGOS_ASSERT_EQ(plan["instruction"][4], 0);
+    // Borsh: a one-byte variant tag, then the zero `amount` as 16 little-endian bytes.
+    LOGOS_ASSERT_EQ(plan["instruction"].size(), 17);
+    for (std::size_t index = 1; index < 17; ++index) {
+        LOGOS_ASSERT_EQ(plan["instruction"][index], 0);
+    }
     LOGOS_ASSERT_TRUE(context.moduleCalledWith(
         "lez_core",
         "send_generic_public_transaction",
