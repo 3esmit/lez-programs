@@ -15,6 +15,7 @@
 #include <QNetworkRequest>
 #include <QStandardPaths>
 #include <QString>
+#include <QStringList>
 #include <QVariantMap>
 
 namespace {
@@ -127,10 +128,26 @@ bool RegistryLoader::hasLocalSource()
         || !qEnvironmentVariableIsEmpty(POOLS_CONFIG_ENV);
 }
 
+QVariantMap RegistryLoader::status() const
+{
+    return {
+        {QStringLiteral("source"), m_source},
+        {QStringLiteral("effectiveUrl"), m_effectiveUrl},
+        {QStringLiteral("snapshotUrl"), m_snapshotUrl},
+        {QStringLiteral("override"), m_override},
+        {QStringLiteral("loading"), m_loading},
+        {QStringLiteral("error"), m_fetchError},
+    };
+}
+
 void RegistryLoader::refresh()
 {
     // Supersede any in-flight remote fetch.
     ++m_generation;
+    m_loading = false;
+    m_fetchError.clear();
+    m_effectiveUrl.clear();
+    m_override.clear();
 
     // No adopted instance until applyRegistry selects one; the local / none paths
     // below carry neither id, so ops fall back to AMM_PROGRAM_ID / AMM_CONFIG_ID.
@@ -138,6 +155,7 @@ void RegistryLoader::refresh()
     m_activeAmmConfigId.clear();
 
     // AMM_REGISTRY_URL (e2e / dev) overrides the UI-configured URL.
+    const bool envUrl = !qEnvironmentVariableIsEmpty(REGISTRY_URL_ENV);
     QString url = qEnvironmentVariable(REGISTRY_URL_ENV);
     if (url.isEmpty())
         url = m_configuredUrl;
@@ -156,21 +174,35 @@ void RegistryLoader::refresh()
                 << "is set; local files take precedence and carry no program/config ids."
                 << "Unset them to use the registry.";
         }
+        QStringList overrides;
+        if (!qEnvironmentVariableIsEmpty(TOKENS_CONFIG_ENV))
+            overrides.append(QString::fromLatin1(TOKENS_CONFIG_ENV));
+        if (!qEnvironmentVariableIsEmpty(POOLS_CONFIG_ENV))
+            overrides.append(QString::fromLatin1(POOLS_CONFIG_ENV));
+        m_override = overrides.join(QStringLiteral(", "));
+        m_snapshotUrl.clear();
         loadLocal();
         return;
     }
 
+    if (envUrl)
+        m_override = QString::fromLatin1(REGISTRY_URL_ENV);
+    m_effectiveUrl = url;
     if (url.isEmpty()) {
+        m_snapshotUrl.clear();
         m_registryObj = {};  // no registry ⇒ no networks to pick
         publish({}, {}, QStringLiteral("none"), {});
         return;
     }
+
+    m_loading = true;
 
     // stale-while-revalidate: serve the on-disk cache immediately when we have
     // nothing yet, then revalidate against the network below.
     if (m_tokens.isEmpty() && m_pools.isEmpty())
         loadDiskCache(url);
 
+    emit statusChanged();
     startRemote(QUrl(url));
 }
 
@@ -191,29 +223,36 @@ void RegistryLoader::startRemote(const QUrl& url)
         reply->deleteLater();
         if (generation != m_generation)
             return;  // superseded by a newer refresh
+        m_loading = false;
         if (reply->error() != QNetworkReply::NoError) {
             qWarning() << "AMM registry: fetch failed:" << reply->errorString();
+            m_fetchError = QStringLiteral("fetch_failed");
+            emit statusChanged();
             return;  // keep serving whatever we have (cache / previous)
         }
 
+        m_fetchError.clear();
         const QByteArray body = reply->readAll();
-        if (applyRegistry(body, QStringLiteral("remote"))) {
+        if (applyRegistry(body, QStringLiteral("remote"), reply->url().toString())) {
             // Key the cache by the effective URL (env or UI-configured), matching
             // what loadDiskCache() looks up.
             saveDiskCache(reply->url().toString(), body);
         }
+        emit statusChanged();
     });
 }
 
-bool RegistryLoader::applyRegistry(const QByteArray& body, const QString& source)
+bool RegistryLoader::applyRegistry(const QByteArray& body, const QString& source, const QString& url)
 {
     const QJsonDocument doc = QJsonDocument::fromJson(body);
     if (!doc.isObject()) {
         qWarning() << "AMM registry: document is not a JSON object";
+        m_fetchError = QStringLiteral("invalid_registry");
         return false;
     }
     m_registryObj = doc.object();
     m_lastSource = source;
+    m_snapshotUrl = url;
     return applySelection();
 }
 
@@ -223,6 +262,7 @@ bool RegistryLoader::applySelection()
     const QString activeId = selectActiveNetwork(networks);
     if (activeId.isEmpty()) {
         qWarning() << "AMM registry: no networks declared; nothing applied";
+        m_fetchError = QStringLiteral("no_networks");
         m_activeAmmProgramId.clear();
         m_activeAmmConfigId.clear();
         publish({}, {}, m_lastSource, {});
@@ -315,6 +355,7 @@ void RegistryLoader::publish(const QVariantList& tokens, const QVariantList& poo
     m_activeNetwork = network;
     ++m_revision;
     emit changed();
+    emit statusChanged();
 }
 
 void RegistryLoader::loadDiskCache(const QString& url)
@@ -331,7 +372,7 @@ void RegistryLoader::loadDiskCache(const QString& url)
     // network may resolve differently than when it was written).
     const QByteArray body =
         QJsonDocument(obj.value(QStringLiteral("registry")).toObject()).toJson(QJsonDocument::Compact);
-    applyRegistry(body, QStringLiteral("cache"));
+    applyRegistry(body, QStringLiteral("cache"), url);
 }
 
 void RegistryLoader::saveDiskCache(const QString& url, const QByteArray& body) const
