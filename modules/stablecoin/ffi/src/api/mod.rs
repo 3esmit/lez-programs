@@ -1,6 +1,7 @@
 //! Transport-independent stablecoin client operations.
 
 mod decode;
+mod health;
 mod plan;
 mod position;
 mod program;
@@ -17,11 +18,15 @@ mod journeys;
 #[cfg(test)]
 mod repay_tests;
 
+#[cfg(test)]
+mod health_tests;
+
 use std::{error::Error, fmt};
 
 pub use decode::{
     decode_protocol_parameters, decode_redemption_price_state, decode_stability_fee_accumulator,
 };
+pub use health::position_health;
 pub use plan::{
     accrue_stability_fee_plan, deposit_collateral_plan, initialize_program_plan,
     open_position_plan, position_addresses, refresh_globals_plan, repay_debt_plan,
@@ -36,8 +41,9 @@ pub use request::{
     DecodeProtocolParametersRequest, DecodeRedemptionPriceStateRequest,
     DecodeStabilityFeeAccumulatorRequest, DepositCollateralPlanRequest,
     InitializeProgramPlanRequest, OpenPositionPlanRequest, PositionAddressesRequest,
-    PositionInfoRequest, ProgramInfoRequest, RedemptionRateUpdateQuoteRequest,
-    RefreshGlobalsPlanRequest, RepayDebtPlanRequest, UpdateRedemptionRatePlanRequest,
+    PositionHealthRequest, PositionInfoRequest, ProgramInfoRequest,
+    RedemptionRateUpdateQuoteRequest, RefreshGlobalsPlanRequest, RepayDebtPlanRequest,
+    UpdateRedemptionRatePlanRequest,
 };
 use serde_json::Value;
 
