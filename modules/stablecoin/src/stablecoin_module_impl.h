@@ -54,17 +54,23 @@ public:
     /// a transaction; soft gates return `canSubmit: false` with blockers.
     LogosMap redemptionRateUpdateQuote();
 
+    // Every method below submits a transaction. LEZ v0.2.5 charges public
+    // transactions, so each names its fee payer: `feePayerId` in the request, or
+    // the trailing `fee_payer_id` argument. It must be a funded public wallet
+    // account: one of the signers, or a separate account that co-signs the fee.
+    // A payer that takes part without signing is rejected as `invalid_fee_payer`.
+
     /// Advances the stability-fee accumulator. `caller_id` must identify a
     /// public account controlled by the connected wallet and is the sole signer.
-    LogosMap accrueStabilityFee(const std::string& caller_id);
+    LogosMap accrueStabilityFee(const std::string& caller_id, const std::string& fee_payer_id);
 
     /// Runs one strict redemption-rate controller tick. The live quote preflight
     /// blocks stale/zero oracle data and updates attempted before the interval.
-    LogosMap updateRedemptionRate(const std::string& caller_id);
+    LogosMap updateRedemptionRate(const std::string& caller_id, const std::string& fee_payer_id);
 
     /// Advances the fee accumulator and best-effort redemption-rate state. The
     /// redemption half may be skipped on soft gates; the transaction still runs.
-    LogosMap refreshGlobals(const std::string& caller_id);
+    LogosMap refreshGlobals(const std::string& caller_id, const std::string& fee_payer_id);
 
     /// Initializes the stablecoin protocol. Request fields are `adminId`,
     /// `freezeAuthorityId`, `collateralDefinitionId`, `marketPriceOracleId`,
@@ -171,9 +177,11 @@ private:
     LogosMap planAndSubmit(StablecoinOperation planner,
                            const nlohmann::json& request,
                            const std::string& expected_program_id,
+                           const std::string& fee_payer,
                            std::size_t expected_account_count,
                            std::vector<std::size_t> expected_signer_indices = {0});
     LogosMap submitPlan(const nlohmann::json& plan,
+                        const std::string& fee_payer,
                         std::size_t expected_account_count,
                         const std::vector<std::size_t>& expected_signer_indices = {0});
     LogosMap adminPlanAndSubmit(StablecoinOperation planner,

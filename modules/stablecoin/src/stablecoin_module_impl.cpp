@@ -28,15 +28,6 @@ namespace {
 using json = nlohmann::json;
 
 constexpr char STABLECOIN_PROGRAM_BIN_ENV[] = "STABLECOIN_PROGRAM_BIN";
-// LEZ v0.2.5 made public transactions charge a fee, and the wallet FFI grew a
-// `payer_account_id_hex` parameter for it. Empty means "no explicit payer": the
-// module passes a null payer through to wallet-ffi, which falls back to the
-// wallet's own selection -- the transaction's first signing account self-pays.
-// That is the pre-fee behaviour, so these call sites keep it. Note the payer must
-// hold a balance, so a UI flow whose signer is an unfunded account needs a real
-// payer threaded down to here rather than this default.
-constexpr char FEE_PAYER_SELF[] = "";
-
 constexpr char STABLECOIN_PROGRAM_ID_ENV[] = "STABLECOIN_PROGRAM_ID";
 std::mutex programInfoMutex;
 
@@ -681,12 +672,16 @@ LogosMap StablecoinModuleImpl::unfreeze(const LogosMap& request) {
 
 LogosMap StablecoinModuleImpl::freezeAuthorityPlanAndSubmit(StablecoinOperation planner,
                                                           const LogosMap& request) {
-    if (!request.is_object() || !hasString(request, "freezeAuthorityId")) return publicError("bad_request");
+    if (!request.is_object() || !hasString(request, "freezeAuthorityId")
+        || !hasString(request, "feePayerId")) return publicError("bad_request");
     std::string error;
     const json info = stablecoinProgramInfo(error);
     if (!info.is_object()) return publicError(error.empty() ? "backend_error" : error);
     const std::string authority = normalizeAccountId(jsonString(request, "freezeAuthorityId"));
     if (authority.empty()) return publicError("invalid_account_id");
+    // LEZ v0.2.5 charges public transactions; the payer is always explicit.
+    const std::string fee_payer = normalizeAccountId(jsonString(request, "feePayerId"));
+    if (fee_payer.empty()) return publicError("invalid_fee_payer");
     if (!requireWalletCaller(authority, error)) return publicError(error);
     const std::string parameters_id = jsonString(info, "protocolParametersIdHex");
     const json parameters = readPublicAccount(parameters_id);
@@ -706,7 +701,7 @@ LogosMap StablecoinModuleImpl::freezeAuthorityPlanAndSubmit(StablecoinOperation 
         if (!(*account_ids)[index].is_string()
             || (*account_ids)[index].get<std::string>() != expected[index]) return publicError("backend_error");
     }
-    return submitPlan(planned.value, expected.size());
+    return submitPlan(planned.value, fee_payer, expected.size());
 }
 
 LogosMap StablecoinModuleImpl::setStabilityFeePerMillisecond(const LogosMap& request) {
@@ -766,12 +761,16 @@ LogosMap StablecoinModuleImpl::adminPlanAndSubmit(StablecoinOperation planner,
                                                  const LogosMap& request,
                                                  const std::string& new_oracle_id,
                                                  bool accrue_fee) {
-    if (!request.is_object() || !hasString(request, "adminId")) return publicError("bad_request");
+    if (!request.is_object() || !hasString(request, "adminId")
+        || !hasString(request, "feePayerId")) return publicError("bad_request");
     std::string error;
     const json info = stablecoinProgramInfo(error);
     if (!info.is_object()) return publicError(error.empty() ? "backend_error" : error);
     const std::string admin = normalizeAccountId(jsonString(request, "adminId"));
     if (admin.empty()) return publicError("invalid_account_id");
+    // LEZ v0.2.5 charges public transactions; the payer is always explicit.
+    const std::string fee_payer = normalizeAccountId(jsonString(request, "feePayerId"));
+    if (fee_payer.empty()) return publicError("invalid_fee_payer");
     if (!requireWalletCaller(admin, error)) return publicError(error);
     const std::string parameters_id = jsonString(info, "protocolParametersIdHex");
     const json parameters = readPublicAccount(parameters_id);
@@ -820,13 +819,13 @@ LogosMap StablecoinModuleImpl::adminPlanAndSubmit(StablecoinOperation planner,
         if (!(*account_ids)[index].is_string()
             || (*account_ids)[index].get<std::string>() != expected[index]) return publicError("backend_error");
     }
-    return submitPlan(planned.value, expected.size());
+    return submitPlan(planned.value, fee_payer, expected.size());
 }
 
 LogosMap StablecoinModuleImpl::closePosition(const LogosMap& request) {
     return guarded([&]() -> LogosMap {
         if (!request.is_object() || !hasString(request, "ownerId")
-            || !hasString(request, "positionNonce")) {
+            || !hasString(request, "positionNonce") || !hasString(request, "feePayerId")) {
             return publicError("bad_request");
         }
         std::string error;
@@ -834,6 +833,9 @@ LogosMap StablecoinModuleImpl::closePosition(const LogosMap& request) {
         if (!info.is_object()) return publicError(error.empty() ? "backend_error" : error);
         const std::string owner = normalizeAccountId(jsonString(request, "ownerId"));
         if (owner.empty()) return publicError("invalid_account_id");
+        // LEZ v0.2.5 charges public transactions; the payer is always explicit.
+        const std::string fee_payer = normalizeAccountId(jsonString(request, "feePayerId"));
+        if (fee_payer.empty()) return publicError("invalid_fee_payer");
         if (!requireWalletCaller(owner, error)) return publicError(error);
         const FfiResult addresses = callStablecoin(stablecoin_position_addresses, {
             {"stablecoinProgramId", info["programIdHex"]}, {"ownerId", owner},
@@ -879,7 +881,7 @@ LogosMap StablecoinModuleImpl::closePosition(const LogosMap& request) {
                 return publicError("backend_error");
             }
         }
-        return submitPlan(planned.value, expected.size());
+        return submitPlan(planned.value, fee_payer, expected.size());
     });
 }
 
@@ -887,6 +889,7 @@ LogosMap StablecoinModuleImpl::generateDebt(const LogosMap& request) {
     return guarded([&]() -> LogosMap {
         if (!request.is_object() || !hasString(request, "ownerId")
             || !hasString(request, "positionNonce") || !hasString(request, "userStablecoinHoldingId")
+            || !hasString(request, "feePayerId")
             || request.find("amount") == request.end()) return publicError("bad_request");
         std::string error;
         const json info = stablecoinProgramInfo(error);
@@ -894,6 +897,9 @@ LogosMap StablecoinModuleImpl::generateDebt(const LogosMap& request) {
         const std::string owner = normalizeAccountId(jsonString(request, "ownerId"));
         const std::string destination_id = normalizeAccountId(jsonString(request, "userStablecoinHoldingId"));
         if (owner.empty() || destination_id.empty()) return publicError("invalid_account_id");
+        // LEZ v0.2.5 charges public transactions; the payer is always explicit.
+        const std::string fee_payer = normalizeAccountId(jsonString(request, "feePayerId"));
+        if (fee_payer.empty()) return publicError("invalid_fee_payer");
         if (!requireWalletCaller(owner, error)) return publicError(error);
         const FfiResult addresses = callStablecoin(stablecoin_position_addresses, {
             {"stablecoinProgramId", info["programIdHex"]}, {"ownerId", owner},
@@ -948,7 +954,7 @@ LogosMap StablecoinModuleImpl::generateDebt(const LogosMap& request) {
         for (std::size_t index = 0; index < expected.size(); ++index) {
             if (!(*account_ids)[index].is_string() || (*account_ids)[index].get<std::string>() != expected[index]) return publicError("backend_error");
         }
-        return submitPlan(planned.value, expected.size());
+        return submitPlan(planned.value, fee_payer, expected.size());
     });
 }
 
@@ -957,6 +963,7 @@ LogosMap StablecoinModuleImpl::withdrawCollateral(const LogosMap& request) {
         if (!request.is_object() || !hasString(request, "ownerId")
             || !hasString(request, "positionNonce")
             || !hasString(request, "userCollateralHoldingId")
+            || !hasString(request, "feePayerId")
             || request.find("amount") == request.end()) {
             return publicError("bad_request");
         }
@@ -966,6 +973,9 @@ LogosMap StablecoinModuleImpl::withdrawCollateral(const LogosMap& request) {
         const std::string owner = normalizeAccountId(jsonString(request, "ownerId"));
         const std::string destination_id = normalizeAccountId(jsonString(request, "userCollateralHoldingId"));
         if (owner.empty() || destination_id.empty()) return publicError("invalid_account_id");
+        // LEZ v0.2.5 charges public transactions; the payer is always explicit.
+        const std::string fee_payer = normalizeAccountId(jsonString(request, "feePayerId"));
+        if (fee_payer.empty()) return publicError("invalid_fee_payer");
         if (!requireWalletCaller(owner, error)) return publicError(error);
         const FfiResult addresses = callStablecoin(stablecoin_position_addresses, {
             {"stablecoinProgramId", info["programIdHex"]}, {"ownerId", owner},
@@ -1016,7 +1026,7 @@ LogosMap StablecoinModuleImpl::withdrawCollateral(const LogosMap& request) {
                 return publicError("backend_error");
             }
         }
-        return submitPlan(planned.value, expected.size());
+        return submitPlan(planned.value, fee_payer, expected.size());
     });
 }
 
@@ -1026,6 +1036,7 @@ LogosMap StablecoinModuleImpl::repayDebt(const LogosMap& request) {
             || !hasString(request, "ownerId")
             || !hasString(request, "positionNonce")
             || !hasString(request, "userStablecoinHoldingId")
+            || !hasString(request, "feePayerId")
             || request.find("amount") == request.end()) {
             return publicError("bad_request");
         }
@@ -1038,6 +1049,9 @@ LogosMap StablecoinModuleImpl::repayDebt(const LogosMap& request) {
         const std::string holding_id =
             normalizeAccountId(jsonString(request, "userStablecoinHoldingId"));
         if (owner.empty() || holding_id.empty()) return publicError("invalid_account_id");
+        // LEZ v0.2.5 charges public transactions; the payer is always explicit.
+        const std::string fee_payer = normalizeAccountId(jsonString(request, "feePayerId"));
+        if (fee_payer.empty()) return publicError("invalid_fee_payer");
         if (!requireWalletSigners({owner, holding_id}, error)) return publicError(error);
 
         const FfiResult addresses = callStablecoin(stablecoin_position_addresses, {
@@ -1127,11 +1141,12 @@ LogosMap StablecoinModuleImpl::repayDebt(const LogosMap& request) {
                 return publicError("backend_error");
             }
         }
-        return submitPlan(planned.value, expected_account_ids.size(), {0, 3});
+        return submitPlan(planned.value, fee_payer, expected_account_ids.size(), {0, 3});
     });
 }
 
-LogosMap StablecoinModuleImpl::accrueStabilityFee(const std::string& caller_id) {
+LogosMap StablecoinModuleImpl::accrueStabilityFee(const std::string& caller_id,
+                                                  const std::string& fee_payer_id) {
     return guarded([&]() -> LogosMap {
         std::string error;
         const json info = stablecoinProgramInfo(error);
@@ -1139,6 +1154,9 @@ LogosMap StablecoinModuleImpl::accrueStabilityFee(const std::string& caller_id) 
 
         const std::string caller = normalizeAccountId(caller_id);
         if (caller.empty()) return publicError("invalid_account_id");
+        // LEZ v0.2.5 charges public transactions; the payer is always explicit.
+        const std::string fee_payer = normalizeAccountId(fee_payer_id);
+        if (fee_payer.empty()) return publicError("invalid_fee_payer");
         if (!requireWalletCaller(caller, error)) return publicError(error);
 
         const json parameters = readPublicAccount(jsonString(info, "protocolParametersIdHex"));
@@ -1165,11 +1183,13 @@ LogosMap StablecoinModuleImpl::accrueStabilityFee(const std::string& caller_id) 
                 {"clock", clock},
             },
             jsonString(info, "programIdHex"),
+            fee_payer,
             4);
     });
 }
 
-LogosMap StablecoinModuleImpl::updateRedemptionRate(const std::string& caller_id) {
+LogosMap StablecoinModuleImpl::updateRedemptionRate(const std::string& caller_id,
+                                                    const std::string& fee_payer_id) {
     return guarded([&]() -> LogosMap {
         std::string error;
         const json info = stablecoinProgramInfo(error);
@@ -1177,6 +1197,9 @@ LogosMap StablecoinModuleImpl::updateRedemptionRate(const std::string& caller_id
 
         const std::string caller = normalizeAccountId(caller_id);
         if (caller.empty()) return publicError("invalid_account_id");
+        // LEZ v0.2.5 charges public transactions; the payer is always explicit.
+        const std::string fee_payer = normalizeAccountId(fee_payer_id);
+        if (fee_payer.empty()) return publicError("invalid_fee_payer");
         if (!requireWalletCaller(caller, error)) return publicError(error);
 
         const json parameters = readPublicAccount(jsonString(info, "protocolParametersIdHex"));
@@ -1223,11 +1246,13 @@ LogosMap StablecoinModuleImpl::updateRedemptionRate(const std::string& caller_id
                 {"clock", clock},
             },
             jsonString(info, "programIdHex"),
+            fee_payer,
             5);
     });
 }
 
-LogosMap StablecoinModuleImpl::refreshGlobals(const std::string& caller_id) {
+LogosMap StablecoinModuleImpl::refreshGlobals(const std::string& caller_id,
+                                              const std::string& fee_payer_id) {
     return guarded([&]() -> LogosMap {
         std::string error;
         const json info = stablecoinProgramInfo(error);
@@ -1235,6 +1260,9 @@ LogosMap StablecoinModuleImpl::refreshGlobals(const std::string& caller_id) {
 
         const std::string caller = normalizeAccountId(caller_id);
         if (caller.empty()) return publicError("invalid_account_id");
+        // LEZ v0.2.5 charges public transactions; the payer is always explicit.
+        const std::string fee_payer = normalizeAccountId(fee_payer_id);
+        if (fee_payer.empty()) return publicError("invalid_fee_payer");
         if (!requireWalletCaller(caller, error)) return publicError(error);
 
         const json parameters = readPublicAccount(jsonString(info, "protocolParametersIdHex"));
@@ -1286,6 +1314,7 @@ LogosMap StablecoinModuleImpl::refreshGlobals(const std::string& caller_id) {
                 {"clock", clock},
             },
             jsonString(info, "programIdHex"),
+            fee_payer,
             6);
     });
 }
@@ -1294,6 +1323,7 @@ LogosMap StablecoinModuleImpl::planAndSubmit(
     StablecoinOperation planner,
     const nlohmann::json& request,
     const std::string& expected_program_id,
+    const std::string& fee_payer,
     std::size_t expected_account_count,
     std::vector<std::size_t> expected_signer_indices) {
     const FfiResult planned = callStablecoin(planner, request);
@@ -1303,10 +1333,11 @@ LogosMap StablecoinModuleImpl::planAndSubmit(
     if (jsonString(planned.value, "programId") != expected_program_id) {
         return publicError("backend_error");
     }
-    return submitPlan(planned.value, expected_account_count, expected_signer_indices);
+    return submitPlan(planned.value, fee_payer, expected_account_count, expected_signer_indices);
 }
 
 LogosMap StablecoinModuleImpl::submitPlan(const nlohmann::json& plan,
+                                          const std::string& fee_payer,
                                           std::size_t expected_account_count,
                                           const std::vector<std::size_t>& expected_signer_indices) {
     const auto accounts_field = plan.find("accountIds");
@@ -1342,6 +1373,13 @@ LogosMap StablecoinModuleImpl::submitPlan(const nlohmann::json& plan,
         || instruction.empty()) {
         return publicError("backend_error");
     }
+    // The wallet rejects a payer that takes part in the transaction without signing.
+    if (fee_payer.empty()) return publicError("invalid_fee_payer");
+    for (std::size_t i = 0; i < account_ids.size(); ++i) {
+        if (account_ids[i] == fee_payer && !signing_requirements[i]) {
+            return publicError("invalid_fee_payer");
+        }
+    }
 
     logos::CallError call_error;
     const std::string raw = modules().lez_core.send_generic_public_transaction(
@@ -1349,7 +1387,7 @@ LogosMap StablecoinModuleImpl::submitPlan(const nlohmann::json& plan,
         signing_requirements,
         instruction,
         program_id,
-        FEE_PAYER_SELF,
+        fee_payer,
         &call_error);
     if (!call_error.ok()) {
         STABLECOIN_TRACE(
@@ -1373,6 +1411,7 @@ LogosMap StablecoinModuleImpl::initializeProgram(const LogosMap& request) {
                  "collateralDefinitionId",
                  "marketPriceOracleId",
                  "stablecoinName",
+                 "feePayerId",
              }) {
             if (!hasString(request, key)) return publicError("bad_request");
         }
@@ -1402,6 +1441,9 @@ LogosMap StablecoinModuleImpl::initializeProgram(const LogosMap& request) {
         if (admin.empty() || freeze_authority.empty() || collateral.empty() || oracle.empty()) {
             return publicError("invalid_account_id");
         }
+        // LEZ v0.2.5 charges public transactions; the payer is always explicit.
+        const std::string fee_payer = normalizeAccountId(jsonString(request, "feePayerId"));
+        if (fee_payer.empty()) return publicError("invalid_fee_payer");
 
         for (const char* key : {
                  "protocolParametersIdHex",
@@ -1442,7 +1484,7 @@ LogosMap StablecoinModuleImpl::initializeProgram(const LogosMap& request) {
              request["maximumOraclePriceAgeMilliseconds"]},
             {"initialRedemptionPrice", request["initialRedemptionPrice"]},
             {"stablecoinName", request["stablecoinName"]},
-        }, jsonString(info, "programIdHex"), 9);
+        }, jsonString(info, "programIdHex"), fee_payer, 9);
     });
 }
 
@@ -1452,7 +1494,8 @@ LogosMap StablecoinModuleImpl::openPosition(const LogosMap& request) {
             || !hasString(request, "ownerId")
             || !hasString(request, "positionNonce")
             || !hasString(request, "initialCollateralAmount")
-            || !hasString(request, "userCollateralHoldingId")) {
+            || !hasString(request, "userCollateralHoldingId")
+            || !hasString(request, "feePayerId")) {
             return publicError("bad_request");
         }
 
@@ -1464,6 +1507,9 @@ LogosMap StablecoinModuleImpl::openPosition(const LogosMap& request) {
         const std::string holding_id =
             normalizeAccountId(jsonString(request, "userCollateralHoldingId"));
         if (owner.empty() || holding_id.empty()) return publicError("invalid_account_id");
+        // LEZ v0.2.5 charges public transactions; the payer is always explicit.
+        const std::string fee_payer = normalizeAccountId(jsonString(request, "feePayerId"));
+        if (fee_payer.empty()) return publicError("invalid_fee_payer");
         if (!requireWalletSigners({owner, holding_id}, error)) return publicError(error);
 
         const json parameters = readPublicAccount(jsonString(info, "protocolParametersIdHex"));
@@ -1533,7 +1579,7 @@ LogosMap StablecoinModuleImpl::openPosition(const LogosMap& request) {
             return publicError(error);
         }
 
-        return submitPlan(planned.value, 7, {0, 3});
+        return submitPlan(planned.value, fee_payer, 7, {0, 3});
     });
 }
 
@@ -1543,6 +1589,7 @@ LogosMap StablecoinModuleImpl::depositCollateral(const LogosMap& request) {
             || !hasString(request, "ownerId")
             || !hasString(request, "positionNonce")
             || !hasString(request, "userCollateralHoldingId")
+            || !hasString(request, "feePayerId")
             || request.find("amount") == request.end()) {
             return publicError("bad_request");
         }
@@ -1555,6 +1602,9 @@ LogosMap StablecoinModuleImpl::depositCollateral(const LogosMap& request) {
         const std::string holding_id =
             normalizeAccountId(jsonString(request, "userCollateralHoldingId"));
         if (owner.empty() || holding_id.empty()) return publicError("invalid_account_id");
+        // LEZ v0.2.5 charges public transactions; the payer is always explicit.
+        const std::string fee_payer = normalizeAccountId(jsonString(request, "feePayerId"));
+        if (fee_payer.empty()) return publicError("invalid_fee_payer");
         if (!requireWalletSigners({owner, holding_id}, error)) return publicError(error);
 
         const FfiResult addresses = callStablecoin(stablecoin_position_addresses, {
@@ -1629,6 +1679,6 @@ LogosMap StablecoinModuleImpl::depositCollateral(const LogosMap& request) {
             }
         }
 
-        return submitPlan(planned.value, expected_account_ids.size(), {0, 3});
+        return submitPlan(planned.value, fee_payer, expected_account_ids.size(), {0, 3});
     });
 }

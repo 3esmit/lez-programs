@@ -26,6 +26,13 @@ Failure returns:
 { "status": "error", "error": "<stable_code>" }
 ```
 
+LEZ charges public transactions, so every method that submits one names its
+fee payer: the `feePayerId` request field, or the trailing `feePayerId`
+argument of the maintenance methods. It must be a funded public account in the
+connected wallet: one of the signers, or a separate account that co-signs the
+fee. A missing or invalid payer, or one that takes part in the transaction
+without signing, is rejected with `invalid_fee_payer` before submitting.
+
 ### `programInfo()`
 
 Returns the configured Stablecoin Program ID and the derived singleton account
@@ -159,8 +166,9 @@ reported in on-chain gate order. The frozen flag does not block this operation.
 
 ### Permissionless maintenance transactions
 
-`accrueStabilityFee(callerId)`, `updateRedemptionRate(callerId)`, and
-`refreshGlobals(callerId)` submit permissionless protocol-maintenance
+`accrueStabilityFee(callerId, feePayerId)`,
+`updateRedemptionRate(callerId, feePayerId)`, and
+`refreshGlobals(callerId, feePayerId)` submit permissionless protocol-maintenance
 transactions. `callerId` accepts base58 or 64-character hexadecimal form, must
 be a public account controlled by the connected wallet, and is the sole signer.
 Success adds `transactionId` to the standard response envelope.
@@ -200,10 +208,14 @@ Required request fields:
 | `maximumOraclePriceAgeMilliseconds` | exact `u64` decimal |
 | `initialRedemptionPrice` | exact `u128` decimal |
 | `stablecoinName` | string accepted by the Stablecoin Program |
+| `feePayerId` | funded public wallet account that pays the transaction fee |
 
 The module verifies all five derived target PDAs are uninitialized, validates
 the collateral definition, oracle asset pair, and clock accounts, then submits
-the exact nine-account instruction. Only `adminId` signs. Success adds
+the exact nine-account instruction. Only `adminId` signs. LEZ charges public
+transactions, so `feePayerId` must name a funded account in the connected
+wallet: the admin itself or a separate account, which co-signs the fee. A
+non-signing participant is rejected with `invalid_fee_payer`. Success adds
 `transactionId` to the response envelope.
 
 Pass numeric values as decimal strings. JSON integers are accepted when their
@@ -219,6 +231,7 @@ Opens a new collateral-only position with no debt. Required request fields:
 | `positionNonce` | exact `u64` decimal string |
 | `initialCollateralAmount` | exact `u128` decimal string |
 | `userCollateralHoldingId` | base58 or 64-character hexadecimal account ID |
+| `feePayerId` | funded public wallet account that pays the transaction fee |
 
 The module derives the Position and Vault PDAs from the configured Stablecoin
 Program ID, owner, and nonce. It reads and validates Protocol Parameters,
@@ -244,6 +257,7 @@ Deposits collateral into an existing Position. Required request fields:
 | `positionNonce` | exact `u64` decimal string |
 | `userCollateralHoldingId` | base58 or 64-character hexadecimal account ID |
 | `amount` | exact `u128` decimal string or lossless JSON integer |
+| `feePayerId` | funded public wallet account that pays the transaction fee |
 
 The module derives the Position and Vault PDAs from the configured Stablecoin
 Program ID, owner, and nonce. It reads Protocol Parameters, Position, Vault,
@@ -281,6 +295,7 @@ debt. Required request fields:
 | `positionNonce` | exact `u64` decimal string |
 | `userStablecoinHoldingId` | base58 or 64-character hexadecimal account ID |
 | `amount` | exact `u128` decimal string or lossless JSON integer |
+| `feePayerId` | funded public wallet account that pays the transaction fee |
 
 The module derives the Position and global account addresses from the configured
 program ID, reads current Protocol Parameters, Position, stablecoin definition,

@@ -270,6 +270,20 @@ QVariantList walletAccounts() {
     return {QVariant(owner), QVariant(holding)};
 }
 
+// LEZ v0.2.5 charges public transactions. These journeys pay each fee from the
+// request's primary signer, so the expected submissions name it as the payer.
+LogosMap withPayer(LogosMap request) {
+    if (!request.is_object() || request.contains("feePayerId")) return request;
+    for (const char* signer : {"adminId", "freezeAuthorityId", "ownerId"}) {
+        const auto field = request.find(signer);
+        if (field != request.end() && field->is_string()) {
+            request["feePayerId"] = *field;
+            break;
+        }
+    }
+    return request;
+}
+
 QVariantList submissionArguments(const std::vector<std::string>& account_ids,
                                  std::uint32_t instruction_word,
                                  const std::string& program_id) {
@@ -286,7 +300,7 @@ QVariantList submissionArguments(const std::vector<std::string>& account_ids,
         QVariant(signers),
         QVariant(instruction),
         QVariant(QString::fromStdString(program_id)),
-        QVariant(QString()),
+        QVariant(QString::fromStdString(account_ids.front())),
     };
 }
 
@@ -312,7 +326,7 @@ QVariantList submissionArguments(const json& plan,
         QVariant(signers),
         QVariant(instruction),
         QVariant(QString::fromStdString(program_id)),
-        QVariant(QString()),
+        QVariant(QString::fromStdString(account_ids.front())),
     };
 }
 
@@ -424,12 +438,12 @@ LOGOS_TEST(real_ffi_stability_fee_setter_pins_exact_rates_and_canonical_inputs_w
         previous_instruction = plan["instruction"];
         const int reads_before = context.moduleCallCount("lez_core", "get_account_public");
         // Caller-provided snapshots and alternate IDs never override live canonical state.
-        const LogosMap response = module.setStabilityFeePerMillisecond({
+        const LogosMap response = module.setStabilityFeePerMillisecond(withPayer({
             {"adminId", submissions % 2 == 0 ? CALLER_ID_HEX : admin_base58}, {"newRate", rate},
             {"stablecoinProgramId", idHex(99)}, {"protocolParameters", nullptr},
             {"stabilityFeeAccumulator", nullptr}, {"clock", nullptr},
             {"stabilityFeeAccumulatorId", idHex(99)}, {"clockId", idHex(99)}, {"timestamp", "0"},
-        });
+        }));
         assertOk(response);
         LOGOS_ASSERT_EQ(response["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
         LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), reads_before + 3);
@@ -453,7 +467,7 @@ LOGOS_TEST(real_ffi_stability_fee_setter_reuses_live_rates_and_admin_after_rotat
     context.mockModule("lez_core", "send_generic_public_transaction").returns(successfulTransaction());
     const LogosMap before = module.currentGlobalState(); assertOk(before);
     LOGOS_ASSERT_EQ(before["currentGlobalState"]["currentAccumulatedRate"], json("4000000000000000000000000000"));
-    assertOk(module.setStabilityFeePerMillisecond({{"adminId", CALLER_ID_HEX}, {"newRate", FIXED_ONE}}));
+    assertOk(module.setStabilityFeePerMillisecond(withPayer({{"adminId", CALLER_ID_HEX}, {"newRate", FIXED_ONE}})));
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
     // Simulate the native post-state, whose atomic old-rate accrual is tested in Rust.
     // The next live read must use the new rate and persisted accumulator together.
@@ -463,19 +477,19 @@ LOGOS_TEST(real_ffi_stability_fee_setter_reuses_live_rates_and_admin_after_rotat
     LOGOS_ASSERT_EQ(after["currentGlobalState"]["currentAccumulatedRate"], json("4000000000000000000000000000"));
     for (const auto now : {START + 4, START + 2, START + 1}) {
         expectRead(info["clockIdHex"].get<std::string>(), PROGRAM_OWNER_HEX, clockData(now));
-        assertOk(module.setStabilityFeePerMillisecond({{"adminId", CALLER_ID_HEX}, {"newRate", FIXED_ONE}}));
+        assertOk(module.setStabilityFeePerMillisecond(withPayer({{"adminId", CALLER_ID_HEX}, {"newRate", FIXED_ONE}})));
     }
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 4);
-    assertOk(module.setAdmin({{"adminId", CALLER_ID_HEX}, {"newAdminId", idHex(8)}}));
+    assertOk(module.setAdmin(withPayer({{"adminId", CALLER_ID_HEX}, {"newAdminId", idHex(8)}})));
     parameters.replace(0, 64, idHex(8));
     expectRead(info["protocolParametersIdHex"].get<std::string>(), PROGRAM_OWNER_HEX, parameters);
     const int reads_before = context.moduleCallCount("lez_core", "get_account_public");
-    const LogosMap old_admin = module.setStabilityFeePerMillisecond({{"adminId", CALLER_ID_HEX}, {"newRate", FIXED_ONE}});
+    const LogosMap old_admin = module.setStabilityFeePerMillisecond(withPayer({{"adminId", CALLER_ID_HEX}, {"newRate", FIXED_ONE}}));
     LOGOS_ASSERT_EQ(old_admin["error"].get<std::string>(), std::string("admin_mismatch"));
     LOGOS_ASSERT_TRUE(old_admin.find("transactionId") == old_admin.end());
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), reads_before + 1);
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 5);
-    assertOk(module.setStabilityFeePerMillisecond({{"adminId", idHex(8)}, {"newRate", FIXED_ONE}}));
+    assertOk(module.setStabilityFeePerMillisecond(withPayer({{"adminId", idHex(8)}, {"newRate", FIXED_ONE}})));
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 6);
 }
 
@@ -499,7 +513,7 @@ LOGOS_TEST(real_ffi_stability_fee_setter_rejects_invalid_numeric_values_without_
         {nullptr, "invalid_numeric_value"}, {json::object(), "invalid_numeric_value"},
     };
     for (const auto& [value, error] : invalid) {
-        const LogosMap result = module.setStabilityFeePerMillisecond({{"adminId", CALLER_ID_HEX}, {"newRate", value}});
+        const LogosMap result = module.setStabilityFeePerMillisecond(withPayer({{"adminId", CALLER_ID_HEX}, {"newRate", value}}));
         LOGOS_ASSERT_EQ(result["error"].get<std::string>(), error);
         LOGOS_ASSERT_TRUE(result.find("transactionId") == result.end());
         LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
@@ -519,7 +533,7 @@ LOGOS_TEST(real_ffi_stability_fee_setter_rejects_corrupt_accounts_and_old_rate_o
     // doubling exceeds u128, even though the requested replacement rate is 1x.
     const std::string anchor = "274877906944000000000000000000000000000";
     expectFeeReads(info, parameters, accumulatorData(anchor, START), START + 1);
-    const LogosMap overflow = module.setStabilityFeePerMillisecond(request);
+    const LogosMap overflow = module.setStabilityFeePerMillisecond(withPayer(request));
     LOGOS_ASSERT_EQ(overflow["error"].get<std::string>(), std::string("stability_fee_arithmetic_error"));
     LOGOS_ASSERT_TRUE(overflow.find("transactionId") == overflow.end());
     const std::vector<std::string> errors = {
@@ -533,12 +547,12 @@ LOGOS_TEST(real_ffi_stability_fee_setter_rejects_corrupt_accounts_and_old_rate_o
         if (mutation == 2) expectRead(info["stabilityFeeAccumulatorIdHex"], TOKEN_OWNER_HEX, accumulatorData(FIXED_ONE, START));
         if (mutation == 3) expectRead(info["stabilityFeeAccumulatorIdHex"], PROGRAM_OWNER_HEX, accumulatorData(FIXED_ONE, START) + "00");
         if (mutation == 4) expectRead(info["clockIdHex"], PROGRAM_OWNER_HEX, clockData(START) + "00");
-        const LogosMap response = module.setStabilityFeePerMillisecond(request);
+        const LogosMap response = module.setStabilityFeePerMillisecond(withPayer(request));
         LOGOS_ASSERT_EQ(response["error"].get<std::string>(), errors[mutation]);
         LOGOS_ASSERT_TRUE(response.find("transactionId") == response.end());
     }
     context.mockModule("lez_core", "account_id_from_base58").returns(std::string());
-    const LogosMap bad_id = module.setStabilityFeePerMillisecond({{"adminId", "invalid-id"}, {"newRate", FIXED_ONE}});
+    const LogosMap bad_id = module.setStabilityFeePerMillisecond(withPayer({{"adminId", "invalid-id"}, {"newRate", FIXED_ONE}}));
     LOGOS_ASSERT_EQ(bad_id["error"].get<std::string>(), std::string("invalid_account_id"));
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
 }
@@ -577,7 +591,7 @@ LOGOS_TEST(real_ffi_freeze_repeat_unfreeze_repeat_and_live_authority_rotation_us
         const int reads_before = context.moduleCallCount("lez_core", "get_account_public");
         const LogosMap request = {{"freezeAuthorityId", submissions % 2 == 0 ? CALLER_ID_HEX : base58},
             {"isFrozen", !frozen}, {"protocolParametersId", idHex(99)}};
-        const LogosMap response = frozen ? module.freeze(request) : module.unfreeze(request);
+        const LogosMap response = frozen ? module.freeze(withPayer(request)) : module.unfreeze(withPayer(request));
         assertOk(response); LOGOS_ASSERT_EQ(response["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
         LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), reads_before + 1);
         LOGOS_ASSERT_TRUE(context.moduleCalledWith("lez_core", "send_generic_public_transaction",
@@ -588,20 +602,20 @@ LOGOS_TEST(real_ffi_freeze_repeat_unfreeze_repeat_and_live_authority_rotation_us
         parameters.replace(parameters.size() - 2, 2, frozen ? "01" : "00");
         expectRead(protocol_id, PROGRAM_OWNER_HEX, parameters);
     }
-    const LogosMap admin_only = module.freeze({{"freezeAuthorityId", idHex(1)}});
+    const LogosMap admin_only = module.freeze(withPayer({{"freezeAuthorityId", idHex(1)}}));
     LOGOS_ASSERT_EQ(admin_only["error"].get<std::string>(), std::string("freeze_authority_mismatch"));
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 4);
-    assertOk(module.setFreezeAuthority({{"adminId", idHex(1)}, {"newFreezeAuthorityId", idHex(8)}}));
+    assertOk(module.setFreezeAuthority(withPayer({{"adminId", idHex(1)}, {"newFreezeAuthorityId", idHex(8)}})));
     parameters.replace(64, 64, idHex(8)); expectRead(protocol_id, PROGRAM_OWNER_HEX, parameters);
-    const LogosMap old_authority = module.freeze({{"freezeAuthorityId", CALLER_ID_HEX}});
+    const LogosMap old_authority = module.freeze(withPayer({{"freezeAuthorityId", CALLER_ID_HEX}}));
     LOGOS_ASSERT_EQ(old_authority["error"].get<std::string>(), std::string("freeze_authority_mismatch"));
     LOGOS_ASSERT_TRUE(old_authority.find("transactionId") == old_authority.end());
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 5);
-    assertOk(module.unfreeze({{"freezeAuthorityId", idHex(8)}}));
+    assertOk(module.unfreeze(withPayer({{"freezeAuthorityId", idHex(8)}})));
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 6);
-    assertOk(module.setFreezeAuthority({{"adminId", idHex(1)}, {"newFreezeAuthorityId", idHex(1)}}));
+    assertOk(module.setFreezeAuthority(withPayer({{"adminId", idHex(1)}, {"newFreezeAuthorityId", idHex(1)}})));
     parameters.replace(64, 64, idHex(1)); expectRead(protocol_id, PROGRAM_OWNER_HEX, parameters);
-    assertOk(module.freeze({{"freezeAuthorityId", idHex(1)}}));
+    assertOk(module.freeze(withPayer({{"freezeAuthorityId", idHex(1)}})));
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 8);
 }
 
@@ -651,22 +665,22 @@ LOGOS_TEST(real_ffi_freeze_blocks_risk_increases_but_recovery_and_pokes_work_and
         {"amount", "0"}, {"userCollateralHoldingId", idHex(8)}};
     const LogosMap debt = {{"ownerId", CALLER_ID_HEX}, {"positionNonce", "7"},
         {"amount", "0"}, {"userStablecoinHoldingId", idHex(9)}};
-    assertOk(module.freeze({{"freezeAuthorityId", CALLER_ID_HEX}}));
+    assertOk(module.freeze(withPayer({{"freezeAuthorityId", CALLER_ID_HEX}})));
     parameters.replace(parameters.size() - 2, 2, "01"); expectRead(protocol_id, PROGRAM_OWNER_HEX, parameters);
-    LOGOS_ASSERT_EQ(module.openPosition(open)["error"].get<std::string>(), std::string("protocol_frozen"));
-    LOGOS_ASSERT_EQ(module.withdrawCollateral(collateral)["error"].get<std::string>(), std::string("protocol_frozen"));
-    LOGOS_ASSERT_EQ(module.generateDebt(debt)["error"].get<std::string>(), std::string("protocol_frozen"));
+    LOGOS_ASSERT_EQ(module.openPosition(withPayer(open))["error"].get<std::string>(), std::string("protocol_frozen"));
+    LOGOS_ASSERT_EQ(module.withdrawCollateral(withPayer(collateral))["error"].get<std::string>(), std::string("protocol_frozen"));
+    LOGOS_ASSERT_EQ(module.generateDebt(withPayer(debt))["error"].get<std::string>(), std::string("protocol_frozen"));
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
-    assertOk(module.depositCollateral(collateral)); assertOk(module.repayDebt(debt));
-    assertOk(module.accrueStabilityFee(CALLER_ID_HEX)); assertOk(module.updateRedemptionRate(CALLER_ID_HEX));
-    assertOk(module.refreshGlobals(CALLER_ID_HEX));
+    assertOk(module.depositCollateral(withPayer(collateral))); assertOk(module.repayDebt(withPayer(debt)));
+    assertOk(module.accrueStabilityFee(CALLER_ID_HEX, CALLER_ID_HEX)); assertOk(module.updateRedemptionRate(CALLER_ID_HEX, CALLER_ID_HEX));
+    assertOk(module.refreshGlobals(CALLER_ID_HEX, CALLER_ID_HEX));
     // Close a distinct settled Position; restored borrowing/withdrawal uses
     // the still-open main Position, not the account whose data was cleared.
-    assertOk(module.closePosition({{"ownerId", CALLER_ID_HEX}, {"positionNonce", "6"}}));
+    assertOk(module.closePosition(withPayer({{"ownerId", CALLER_ID_HEX}, {"positionNonce", "6"}})));
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 7);
-    assertOk(module.unfreeze({{"freezeAuthorityId", CALLER_ID_HEX}}));
+    assertOk(module.unfreeze(withPayer({{"freezeAuthorityId", CALLER_ID_HEX}})));
     parameters.replace(parameters.size() - 2, 2, "00"); expectRead(protocol_id, PROGRAM_OWNER_HEX, parameters);
-    assertOk(module.openPosition(open)); assertOk(module.withdrawCollateral(collateral)); assertOk(module.generateDebt(debt));
+    assertOk(module.openPosition(withPayer(open))); assertOk(module.withdrawCollateral(withPayer(collateral))); assertOk(module.generateDebt(withPayer(debt)));
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 11);
 }
 
@@ -692,6 +706,7 @@ LOGOS_TEST(real_ffi_all_six_admin_setters_use_exact_plans_while_frozen_and_fail_
         context.mockModule("lez_core", "send_generic_public_transaction").returns(successfulTransaction());
         LogosMap request = setter.fields;
         request["adminId"] = CALLER_ID_HEX;
+        request["feePayerId"] = CALLER_ID_HEX;
         const LogosMap response = (module.*setter.method)(request);
         assertOk(response);
         LOGOS_ASSERT_EQ(response["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
@@ -744,16 +759,16 @@ LOGOS_TEST(real_ffi_admin_rotation_rereads_authority_on_the_same_module_and_free
     expectRead(protocol_id, PROGRAM_OWNER_HEX, parameters);
     context.mockModule("lez_core", "send_generic_public_transaction").returns(successfulTransaction());
     context.mockModule("lez_core", "list_accounts").returnsVariant(QVariant(singleWalletAccount(idHex(2))));
-    const LogosMap freeze_only = module.setFreezeAuthority({{"adminId", idHex(2)}, {"newFreezeAuthorityId", idHex(2)}});
+    const LogosMap freeze_only = module.setFreezeAuthority(withPayer({{"adminId", idHex(2)}, {"newFreezeAuthorityId", idHex(2)}}));
     LOGOS_ASSERT_EQ(freeze_only["error"].get<std::string>(), std::string("admin_mismatch"));
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
 
     context.mockModule("lez_core", "list_accounts").returnsVariant(QVariant(singleWalletAccount(CALLER_ID_HEX)));
-    const LogosMap old_success = module.setTimingParameters({{"adminId", CALLER_ID_HEX},
-        {"newMinimumMillisecondsBetweenRateUpdates", "1"}, {"newMaximumOraclePriceAgeMilliseconds", "86400000"}});
+    const LogosMap old_success = module.setTimingParameters(withPayer({{"adminId", CALLER_ID_HEX},
+        {"newMinimumMillisecondsBetweenRateUpdates", "1"}, {"newMaximumOraclePriceAgeMilliseconds", "86400000"}}));
     assertOk(old_success);
     // No wallet control or account read for the new holder is required here.
-    const LogosMap rotation = module.setAdmin({{"adminId", CALLER_ID_HEX}, {"newAdminId", idHex(8)}});
+    const LogosMap rotation = module.setAdmin(withPayer({{"adminId", CALLER_ID_HEX}, {"newAdminId", idHex(8)}}));
     assertOk(rotation);
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 2);
     // Feed the native SetAdmin field change into live RPC state, then make both
@@ -761,17 +776,17 @@ LOGOS_TEST(real_ffi_admin_rotation_rereads_authority_on_the_same_module_and_free
     parameters.replace(0, 64, idHex(8));
     expectRead(protocol_id, PROGRAM_OWNER_HEX, parameters);
     context.mockModule("lez_core", "list_accounts").returnsVariant(QVariant(walletAccounts()));
-    const LogosMap lost_authority = module.setControllerGains({{"adminId", CALLER_ID_HEX},
-        {"newProportionalGain", "-42"}, {"newIntegralGain", "7"}});
+    const LogosMap lost_authority = module.setControllerGains(withPayer({{"adminId", CALLER_ID_HEX},
+        {"newProportionalGain", "-42"}, {"newIntegralGain", "7"}}));
     LOGOS_ASSERT_EQ(lost_authority["error"].get<std::string>(), std::string("admin_mismatch"));
     LOGOS_ASSERT_TRUE(lost_authority.find("transactionId") == lost_authority.end());
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 2);
-    const LogosMap new_success = module.setControllerGains({{"adminId", idHex(8)},
-        {"newProportionalGain", "-42"}, {"newIntegralGain", "7"}});
+    const LogosMap new_success = module.setControllerGains(withPayer({{"adminId", idHex(8)},
+        {"newProportionalGain", "-42"}, {"newIntegralGain", "7"}}));
     assertOk(new_success);
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 3);
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 5);
-    const LogosMap freeze_disabled = module.setFreezeAuthority({{"adminId", idHex(8)}, {"newFreezeAuthorityId", std::string(64, '0')}});
+    const LogosMap freeze_disabled = module.setFreezeAuthority(withPayer({{"adminId", idHex(8)}, {"newFreezeAuthorityId", std::string(64, '0')}}));
     assertOk(freeze_disabled);
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 4);
 }
@@ -811,7 +826,7 @@ LOGOS_TEST(real_ffi_close_position_pins_submission_and_rejects_donations_and_rep
             .returnsVariant(QVariant(QVariantList{QVariant(owner)}));
         context.mockModule("lez_core", "send_generic_public_transaction").returns(successfulTransaction());
         LogosMap request = {{"ownerId", CALLER_ID_HEX}, {"positionNonce", "18446744073709551615"}};
-        const LogosMap donated = module.closePosition(request);
+        const LogosMap donated = module.closePosition(withPayer(request));
         LOGOS_ASSERT_EQ(donated["error"].get<std::string>(), std::string("vault_not_empty"));
         LOGOS_ASSERT_TRUE(donated.find("transactionId") == donated.end());
         LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
@@ -820,7 +835,7 @@ LOGOS_TEST(real_ffi_close_position_pins_submission_and_rejects_donations_and_rep
         // does not reconcile or withdraw the donation.
         const std::string vault = collateralHoldingData("0");
         expectRead(vault_id, TOKEN_OWNER_HEX, vault);
-        const LogosMap closed = module.closePosition(request);
+        const LogosMap closed = module.closePosition(withPayer(request));
         assertOk(closed);
         LOGOS_ASSERT_EQ(closed["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
         LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 6);
@@ -850,23 +865,23 @@ LOGOS_TEST(real_ffi_close_position_pins_submission_and_rejects_donations_and_rep
         MockStore::instance().when(QStringLiteral("lez_core"), QStringLiteral("get_account_public"))
             .withArgs(accountArgs(position_id))
             .thenReturn(QVariant(QString::fromStdString(cleared.dump())));
-        const LogosMap repeated = module.closePosition(request);
+        const LogosMap repeated = module.closePosition(withPayer(request));
         LOGOS_ASSERT_EQ(repeated["error"].get<std::string>(), std::string("invalid_position_data"));
         LOGOS_ASSERT_TRUE(repeated.find("transactionId") == repeated.end());
         LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
         request["positionNonce"] = 1.5;
-        LOGOS_ASSERT_EQ(module.closePosition(request)["error"].get<std::string>(), std::string("bad_request"));
+        LOGOS_ASSERT_EQ(module.closePosition(withPayer(request))["error"].get<std::string>(), std::string("bad_request"));
         request["positionNonce"] = "18446744073709551616";
-        LOGOS_ASSERT_EQ(module.closePosition(request)["error"].get<std::string>(), std::string("invalid_numeric_value"));
+        LOGOS_ASSERT_EQ(module.closePosition(withPayer(request))["error"].get<std::string>(), std::string("invalid_numeric_value"));
         LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
 
         expectRead(position_id, PROGRAM_OWNER_HEX, position);
         request["positionNonce"] = "18446744073709551615";
         expectMissing(vault_id);
-        LOGOS_ASSERT_EQ(module.closePosition(request)["error"].get<std::string>(), std::string("account_read_failed"));
+        LOGOS_ASSERT_EQ(module.closePosition(withPayer(request))["error"].get<std::string>(), std::string("account_read_failed"));
         expectRead(vault_id, TOKEN_OWNER_HEX, vault);
         expectMissing(position_id);
-        LOGOS_ASSERT_EQ(module.closePosition(request)["error"].get<std::string>(), std::string("account_read_failed"));
+        LOGOS_ASSERT_EQ(module.closePosition(withPayer(request))["error"].get<std::string>(), std::string("account_read_failed"));
         LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
     }
 }
@@ -947,7 +962,7 @@ LOGOS_TEST(real_ffi_journey_reads_quotes_submits_and_rereads_state) {
     LOGOS_ASSERT_EQ(quote["elapsedMilliseconds"].get<std::string>(), std::string("600000"));
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
 
-    const LogosMap accrued = module.accrueStabilityFee(CALLER_ID_HEX);
+    const LogosMap accrued = module.accrueStabilityFee(CALLER_ID_HEX, CALLER_ID_HEX);
     assertOk(accrued);
     LOGOS_ASSERT_EQ(accrued["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
     LOGOS_ASSERT_TRUE(context.moduleCalledWith(
@@ -969,7 +984,7 @@ LOGOS_TEST(real_ffi_journey_reads_quotes_submits_and_rereads_state) {
         persisted_accumulator["stabilityFeeAccumulator"]["lastAccruedAt"].get<std::string>(),
         std::string("601000"));
 
-    const LogosMap updated = module.updateRedemptionRate(CALLER_ID_HEX);
+    const LogosMap updated = module.updateRedemptionRate(CALLER_ID_HEX, CALLER_ID_HEX);
     assertOk(updated);
     LOGOS_ASSERT_EQ(updated["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
     LOGOS_ASSERT_TRUE(context.moduleCalledWith(
@@ -995,7 +1010,7 @@ LOGOS_TEST(real_ffi_journey_reads_quotes_submits_and_rereads_state) {
             .get<std::string>(),
         quote["nextRedemptionRatePerMillisecond"].get<std::string>());
 
-    const LogosMap refreshed = module.refreshGlobals(CALLER_ID_HEX);
+    const LogosMap refreshed = module.refreshGlobals(CALLER_ID_HEX, CALLER_ID_HEX);
     assertOk(refreshed);
     LOGOS_ASSERT_EQ(refreshed["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
     LOGOS_ASSERT_TRUE(context.moduleCalledWith(
@@ -1066,12 +1081,12 @@ LOGOS_TEST(real_ffi_journey_opens_position_with_two_wallet_signers) {
     context.mockModule("lez_core", "send_generic_public_transaction")
         .returns(successfulTransaction());
 
-    const LogosMap opened = module.openPosition({
+    const LogosMap opened = module.openPosition(withPayer({
         {"ownerId", CALLER_ID_HEX},
         {"positionNonce", position_nonce},
         {"initialCollateralAmount", collateral_amount},
         {"userCollateralHoldingId", holding_id},
-    });
+    }));
 
     assertOk(opened);
     LOGOS_ASSERT_EQ(opened["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
@@ -1114,7 +1129,7 @@ LOGOS_TEST(real_ffi_borrowing_rechecks_oracle_binding_and_preserves_full_width_a
     context.mockModule("lez_core","list_accounts").returnsVariant(QVariant(QVariantList{QVariant(owner)}));
     context.mockModule("lez_core","send_generic_public_transaction").returns(successfulTransaction());
     LogosMap request={{"ownerId",CALLER_ID_HEX},{"positionNonce",nonce},{"userStablecoinHoldingId",destination_id},{"amount","4"}};
-    const LogosMap borrowed=module.generateDebt(request);assertOk(borrowed);
+    const LogosMap borrowed=module.generateDebt(withPayer(request));assertOk(borrowed);
     LOGOS_ASSERT_EQ(borrowed["transactionId"].get<std::string>(),TRANSACTION_ID_HEX);
     const std::string planner_payload=json{
         {"stablecoinProgramId",PROGRAM_ID_HEX},{"ownerId",CALLER_ID_HEX},{"positionNonce",nonce},{"amount","4"},
@@ -1145,10 +1160,10 @@ LOGOS_TEST(real_ffi_borrowing_rechecks_oracle_binding_and_preserves_full_width_a
     expectRead(clock_id,PROGRAM_OWNER_HEX,clockData(DUE+900'001));
     expectRead(rotated_oracle_id,ORACLE_OWNER_HEX,stale);
     request["amount"]="1";
-    LOGOS_ASSERT_EQ(module.generateDebt(request)["error"].get<std::string>(),std::string("oracle_stale"));
+    LOGOS_ASSERT_EQ(module.generateDebt(withPayer(request))["error"].get<std::string>(),std::string("oracle_stale"));
     std::string future=oracleData("0",DUE+900'002);future.replace(0,64,definition_id);
     expectRead(rotated_oracle_id,ORACLE_OWNER_HEX,future);
-    LOGOS_ASSERT_EQ(module.generateDebt(request)["error"].get<std::string>(),std::string("oracle_future"));
+    LOGOS_ASSERT_EQ(module.generateDebt(withPayer(request))["error"].get<std::string>(),std::string("oracle_future"));
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","send_generic_public_transaction"),1);
 
     const std::uint64_t later=DUE+1'000'000;
@@ -1161,13 +1176,13 @@ LOGOS_TEST(real_ffi_borrowing_rechecks_oracle_binding_and_preserves_full_width_a
     expectRead(destination_id,TOKEN_OWNER_HEX,stablecoinHoldingData(definition_id,"0"));
     expectRead(accumulator_id,PROGRAM_OWNER_HEX,accumulatorData("1500000000000000000000000000",later));
     expectRead(redemption_id,PROGRAM_OWNER_HEX,redemptionData("500000000000000000000000000",FIXED_ONE,"0",later));
-    request["amount"]=maximum;assertOk(module.generateDebt(request));
+    request["amount"]=maximum;assertOk(module.generateDebt(withPayer(request)));
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","send_generic_public_transaction"),2);
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","get_account_public"),32);
     request["amount"]=1.5;
-    LOGOS_ASSERT_EQ(module.generateDebt(request)["error"].get<std::string>(),std::string("invalid_numeric_value"));
+    LOGOS_ASSERT_EQ(module.generateDebt(withPayer(request))["error"].get<std::string>(),std::string("invalid_numeric_value"));
     request["amount"]="340282366920938463463374607431768211456";
-    LOGOS_ASSERT_EQ(module.generateDebt(request)["error"].get<std::string>(),std::string("invalid_numeric_value"));
+    LOGOS_ASSERT_EQ(module.generateDebt(withPayer(request))["error"].get<std::string>(),std::string("invalid_numeric_value"));
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","send_generic_public_transaction"),2);
 }
 
@@ -1219,7 +1234,7 @@ LOGOS_TEST(real_ffi_withdrawal_rechecks_health_and_accepts_external_destination)
     LOGOS_ASSERT_TRUE(earlier_quote["isCollateralized"].get<bool>());
     LogosMap request = {{"ownerId", CALLER_ID_HEX}, {"positionNonce", nonce},
         {"userCollateralHoldingId", destination_id}, {"amount", "30"}};
-    const LogosMap withdrawn = module.withdrawCollateral(request);
+    const LogosMap withdrawn = module.withdrawCollateral(withPayer(request));
     assertOk(withdrawn);
     LOGOS_ASSERT_EQ(withdrawn["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
     const std::string planner_payload = json{
@@ -1245,7 +1260,7 @@ LOGOS_TEST(real_ffi_withdrawal_rechecks_health_and_accepts_external_destination)
     expectRead(destination_id,TOKEN_OWNER_HEX,collateralHoldingData("40"));
     expectRead(accumulator_id,PROGRAM_OWNER_HEX,accumulatorData("2000000000000000000000000000",DUE));
     request["amount"] = "1";
-    const LogosMap rejected = module.withdrawCollateral(request);
+    const LogosMap rejected = module.withdrawCollateral(withPayer(request));
     LOGOS_ASSERT_EQ(rejected["error"].get<std::string>(), std::string("position_undercollateralized"));
     LOGOS_ASSERT_TRUE(rejected.find("transactionId") == rejected.end());
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","send_generic_public_transaction"),1);
@@ -1258,13 +1273,13 @@ LOGOS_TEST(real_ffi_withdrawal_rechecks_health_and_accepts_external_destination)
     parameters.replace(320,32,u128Le("2000000000000000000000000000"));
     expectRead(protocol_id,PROGRAM_OWNER_HEX,parameters);
     request["amount"] = maximum;
-    assertOk(module.withdrawCollateral(request)); // Zero debt skips even enormous fee projections.
+    assertOk(module.withdrawCollateral(withPayer(request))); // Zero debt skips even enormous fee projections.
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","send_generic_public_transaction"),2);
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","get_account_public"),26);
     request["amount"] = 1.5;
-    LOGOS_ASSERT_EQ(module.withdrawCollateral(request)["error"].get<std::string>(),std::string("invalid_numeric_value"));
+    LOGOS_ASSERT_EQ(module.withdrawCollateral(withPayer(request))["error"].get<std::string>(),std::string("invalid_numeric_value"));
     request["amount"] = "340282366920938463463374607431768211456";
-    LOGOS_ASSERT_EQ(module.withdrawCollateral(request)["error"].get<std::string>(),std::string("invalid_numeric_value"));
+    LOGOS_ASSERT_EQ(module.withdrawCollateral(withPayer(request))["error"].get<std::string>(),std::string("invalid_numeric_value"));
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","send_generic_public_transaction"),2);
 }
 
@@ -1379,7 +1394,7 @@ LOGOS_TEST(real_ffi_repay_debt_preserves_large_amounts_and_frozen_preflight) {
 
     LogosMap request = {{"ownerId", CALLER_ID_HEX}, {"positionNonce", "7"},
                        {"userStablecoinHoldingId", holding_id}, {"amount", maximum}};
-    const LogosMap repaid = module.repayDebt(request);
+    const LogosMap repaid = module.repayDebt(withPayer(request));
     assertOk(repaid);
     LOGOS_ASSERT_EQ(repaid["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
     const json planner_request = {
@@ -1405,7 +1420,7 @@ LOGOS_TEST(real_ffi_repay_debt_preserves_large_amounts_and_frozen_preflight) {
     // the frozen protocol bypasses request parsing and preflight validation.
     for (const json& amount : {json(1.5), json(1.0), json(-1), json("340282366920938463463374607431768211456")}) {
         request["amount"] = amount;
-        const LogosMap rejected = module.repayDebt(request);
+        const LogosMap rejected = module.repayDebt(withPayer(request));
         LOGOS_ASSERT_EQ(rejected["error"].get<std::string>(), std::string("invalid_numeric_value"));
         LOGOS_ASSERT_TRUE(rejected.find("transactionId") == rejected.end());
     }
@@ -1455,12 +1470,12 @@ LOGOS_TEST(real_ffi_journey_deposit_collateral_reconciles_frozen_vault_donation)
     context.mockModule("lez_core", "send_generic_public_transaction")
         .returns(successfulTransaction());
 
-    const LogosMap deposited = module.depositCollateral({
+    const LogosMap deposited = module.depositCollateral(withPayer({
         {"ownerId", owner_id},
         {"positionNonce", position_nonce},
         {"userCollateralHoldingId", holding_id},
         {"amount", "0"},
-    });
+    }));
 
     assertOk(deposited);
     LOGOS_ASSERT_EQ(deposited["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
