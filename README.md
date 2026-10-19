@@ -114,20 +114,38 @@ Binaries are output to:
 
 ## Deployment
 
-```bash
-# Deploy a program binary to the sequencer
-wallet deploy-program <path-to-binary>
+Since LEZ v0.2.5 a program is deployed through the `program_loader`: its binary is
+uploaded as a chain of write-once segment accounts (one per 96 KiB chunk), and a header
+account points at that chain. The wallet never generates these accounts itself, so create
+them first. The header account's id is the program's address from then on.
 
-# Example
-wallet deploy-program programs/token/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token.bin
-wallet deploy-program programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin
-wallet deploy-program programs/ata/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/ata.bin
-wallet deploy-program programs/stablecoin/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/stablecoin.bin
-wallet deploy-program programs/twap_oracle/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/twap_oracle.bin
-wallet deploy-program programs/token_mint_authority/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token_mint_authority.bin
+```bash
+BIN=programs/token/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token.bin
+N=$(( ($(wc -c < "$BIN") + 98303) / 98304 ))   # 96 KiB segments; the count must match exactly
+
+# One header account and N segment accounts, all fresh
+wallet account new public --label token-header
+for i in $(seq 1 "$N"); do wallet account new public --label "token-seg-$i"; done
+
+# Header and segments start empty, so a separate funded public account pays the fees.
+# Accounts are labels or `Public/<base58-id>`; a bare id is mistaken for a label.
+wallet program-loader deploy \
+  --elf "$BIN" \
+  --header token-header \
+  --segments $(for i in $(seq 1 "$N"); do printf 'token-seg-%s ' "$i"; done) \
+  --payer <funded-account> \
+  --immutable   # optional: the program self-declares as immutable (not enforced)
+
+# The program's address
+wallet account id --account-id token-header
 ```
 
-To inspect the `ProgramId` of a built binary:
+Repeat with each program's binary and its own labels (`amm`, `ata`, `stablecoin`,
+`twap_oracle`, `token_mint_authority`). Segments are write-once: if a deploy fails
+partway, use fresh segment accounts for the next attempt.
+`apps/amm/tests/testnet/setup-amm-testnet.sh` scripts this flow for several programs.
+
+To inspect the ImageID of a built binary:
 
 ```bash
 spel inspect <path-to-binary>

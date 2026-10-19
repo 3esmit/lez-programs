@@ -73,8 +73,10 @@ deployment's binary + ProgramId.
 
 ```bash
 make build-programs                       # all guests → target/guest/<program>.bin
-wallet deploy-program target/guest/token.bin
 ```
+
+Then deploy `target/guest/token.bin` with `wallet program-loader deploy`, as described in
+the root [README](../../README.md#deployment). The program's address is the header account's id.
 
 Building a single guest directly (debug/iteration) puts the binary at
 `programs/token/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token.bin`:
