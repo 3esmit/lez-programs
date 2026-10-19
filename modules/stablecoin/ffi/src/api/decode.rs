@@ -1,29 +1,25 @@
+use lee_core::{account::AccountId, program::ProgramId};
 use serde_json::{json, Value};
 use stablecoin_core::{
-    compute_protocol_parameters_pda, compute_stability_fee_accumulator_pda, ProtocolParameters,
+    compute_protocol_parameters_pda, compute_redemption_price_state_pda,
+    compute_stability_fee_accumulator_pda, ProtocolParameters, RedemptionPriceState,
     StabilityFeeAccumulator,
 };
 
 use super::{
     parse_stablecoin_program_id, DecodeProtocolParametersRequest,
-    DecodeStabilityFeeAccumulatorRequest, StablecoinApiError, StablecoinResult,
+    DecodeRedemptionPriceStateRequest, DecodeStabilityFeeAccumulatorRequest, StablecoinApiError,
+    StablecoinResult,
 };
-use crate::account::{account_id_hex, decode_account};
+use crate::{
+    account::{account_id_hex, decode_account},
+    AccountRead,
+};
 
 pub fn decode_protocol_parameters(request: DecodeProtocolParametersRequest) -> StablecoinResult {
     let stablecoin_program_id = parse_stablecoin_program_id(&request.stablecoin_program_id)?;
-    let (account_id, account) = decode_account(&request.protocol_parameters)
-        .map_err(|_| StablecoinApiError::new("account_read_failed"))?;
-
-    if account_id != compute_protocol_parameters_pda(stablecoin_program_id) {
-        return Err(StablecoinApiError::new("protocol_parameters_pda_mismatch"));
-    }
-    if account.program_owner != stablecoin_program_id {
-        return Err(StablecoinApiError::new("stablecoin_program_mismatch"));
-    }
-
-    let parameters = ProtocolParameters::try_from(&account.data)
-        .map_err(|_| StablecoinApiError::new("invalid_protocol_parameters_data"))?;
+    let (account_id, parameters) =
+        validated_protocol_parameters(stablecoin_program_id, &request.protocol_parameters)?;
     Ok(parameters_value(account_id, &parameters))
 }
 
@@ -31,9 +27,45 @@ pub fn decode_stability_fee_accumulator(
     request: DecodeStabilityFeeAccumulatorRequest,
 ) -> StablecoinResult {
     let stablecoin_program_id = parse_stablecoin_program_id(&request.stablecoin_program_id)?;
-    let (account_id, account) = decode_account(&request.stability_fee_accumulator)
-        .map_err(|_| StablecoinApiError::new("account_read_failed"))?;
+    let (account_id, accumulator) = validated_stability_fee_accumulator(
+        stablecoin_program_id,
+        &request.stability_fee_accumulator,
+    )?;
+    Ok(stability_fee_accumulator_value(account_id, &accumulator))
+}
 
+pub fn decode_redemption_price_state(
+    request: DecodeRedemptionPriceStateRequest,
+) -> StablecoinResult {
+    let stablecoin_program_id = parse_stablecoin_program_id(&request.stablecoin_program_id)?;
+    let (account_id, state) =
+        validated_redemption_price_state(stablecoin_program_id, &request.redemption_price_state)?;
+    Ok(redemption_price_state_value(account_id, &state))
+}
+
+pub(super) fn validated_protocol_parameters(
+    stablecoin_program_id: ProgramId,
+    read: &AccountRead,
+) -> Result<(AccountId, ProtocolParameters), StablecoinApiError> {
+    let (account_id, account) =
+        decode_account(read).map_err(|_| StablecoinApiError::new("account_read_failed"))?;
+    if account_id != compute_protocol_parameters_pda(stablecoin_program_id) {
+        return Err(StablecoinApiError::new("protocol_parameters_pda_mismatch"));
+    }
+    if account.program_owner != stablecoin_program_id {
+        return Err(StablecoinApiError::new("stablecoin_program_mismatch"));
+    }
+    let parameters = ProtocolParameters::try_from(&account.data)
+        .map_err(|_| StablecoinApiError::new("invalid_protocol_parameters_data"))?;
+    Ok((account_id, parameters))
+}
+
+pub(super) fn validated_stability_fee_accumulator(
+    stablecoin_program_id: ProgramId,
+    read: &AccountRead,
+) -> Result<(AccountId, StabilityFeeAccumulator), StablecoinApiError> {
+    let (account_id, account) =
+        decode_account(read).map_err(|_| StablecoinApiError::new("account_read_failed"))?;
     if account_id != compute_stability_fee_accumulator_pda(stablecoin_program_id) {
         return Err(StablecoinApiError::new(
             "stability_fee_accumulator_pda_mismatch",
@@ -42,10 +74,28 @@ pub fn decode_stability_fee_accumulator(
     if account.program_owner != stablecoin_program_id {
         return Err(StablecoinApiError::new("stablecoin_program_mismatch"));
     }
-
     let accumulator = StabilityFeeAccumulator::try_from(&account.data)
         .map_err(|_| StablecoinApiError::new("invalid_stability_fee_accumulator_data"))?;
-    Ok(stability_fee_accumulator_value(account_id, &accumulator))
+    Ok((account_id, accumulator))
+}
+
+pub(super) fn validated_redemption_price_state(
+    stablecoin_program_id: ProgramId,
+    read: &AccountRead,
+) -> Result<(AccountId, RedemptionPriceState), StablecoinApiError> {
+    let (account_id, account) =
+        decode_account(read).map_err(|_| StablecoinApiError::new("account_read_failed"))?;
+    if account_id != compute_redemption_price_state_pda(stablecoin_program_id) {
+        return Err(StablecoinApiError::new(
+            "redemption_price_state_pda_mismatch",
+        ));
+    }
+    if account.program_owner != stablecoin_program_id {
+        return Err(StablecoinApiError::new("stablecoin_program_mismatch"));
+    }
+    let state = RedemptionPriceState::try_from(&account.data)
+        .map_err(|_| StablecoinApiError::new("invalid_redemption_price_state_data"))?;
+    Ok((account_id, state))
 }
 
 fn parameters_value(
@@ -87,5 +137,19 @@ fn stability_fee_accumulator_value(
         "accumulatedRateAtLastAccrual":
             accumulator.accumulated_rate_at_last_accrual.to_string(),
         "lastAccruedAt": accumulator.last_accrued_at.to_string(),
+    })
+}
+
+fn redemption_price_state_value(
+    account_id: lee_core::account::AccountId,
+    state: &RedemptionPriceState,
+) -> Value {
+    json!({
+        "accountId": account_id.to_string(),
+        "accountIdHex": account_id_hex(account_id),
+        "redemptionPriceAtLastUpdate": state.redemption_price_at_last_update.to_string(),
+        "redemptionRatePerMillisecond": state.redemption_rate_per_millisecond.to_string(),
+        "controllerIntegralTerm": state.controller_integral_term.to_string(),
+        "lastUpdatedAt": state.last_updated_at.to_string(),
     })
 }

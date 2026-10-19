@@ -55,12 +55,196 @@ char *stablecoin_position_info(const char *request_json);
 char *stablecoin_decode_position(const char *request_json);
 
 /**
+ * Decodes and validates the singleton `RedemptionPriceState` account.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_decode_redemption_price_state(const char *request_json);
+
+/**
+ * Validates stablecoin global accounts and projects their current values at `CLOCK_01`.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_current_global_state(const char *request_json);
+
+/**
+ * Quotes the next redemption-rate controller update without submitting it.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_redemption_rate_update_quote(const char *request_json);
+
+/**
+ * Builds the exact wallet submission plan for `AccrueStabilityFee`.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_accrue_stability_fee_plan(const char *request_json);
+
+/**
+ * Builds a preflighted wallet submission plan for `UpdateRedemptionRate`.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_update_redemption_rate_plan(const char *request_json);
+
+/**
+ * Builds the best-effort wallet submission plan for `RefreshGlobals`.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_refresh_globals_plan(const char *request_json);
+
+/**
  * Builds the exact wallet submission plan for `InitializeProgram`.
  *
  * # Safety
  * `request_json` must be null or point to a live NUL-terminated byte string.
  */
 char *stablecoin_initialize_program_plan(const char *request_json);
+
+/**
+ * Builds the exact wallet submission plan for `OpenPosition`.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_open_position_plan(const char *request_json);
+
+/**
+ * Derives a position and its collateral vault from owner and nonce.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_position_addresses(const char *request_json);
+
+/**
+ * Builds the exact wallet submission plan for `DepositCollateral`.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_deposit_collateral_plan(const char *request_json);
+
+/**
+ * Builds a preflighted wallet submission plan for `RepayDebt`.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_repay_debt_plan(const char *request_json);
+
+/**
+ * Quotes position health using validated live state and wide arithmetic.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_position_health(const char *request_json);
+
+/**
+ * Builds a preflighted owner-signed plan for `WithdrawCollateral`.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_withdraw_collateral_plan(const char *request_json);
+
+/**
+ * Builds a preflighted owner-signed plan for `GenerateDebt`.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_generate_debt_plan(const char *request_json);
+
+/**
+ * Builds an owner-signed, zero-argument plan for closing a settled Position.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_close_position_plan(const char *request_json);
+
+/**
+ * Builds the atomic old-rate accrual and replacement plan for the current admin.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_set_stability_fee_per_millisecond_plan(const char *request_json);
+
+/**
+ * Builds the current-admin plan for `SetMinimumCollateralizationRatio`.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_set_minimum_collateralization_ratio_plan(const char *request_json);
+
+/**
+ * Builds a paired signed-gain plan for `SetControllerGains`.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_set_controller_gains_plan(const char *request_json);
+
+/**
+ * Builds a paired timing plan for `SetTimingParameters`.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_set_timing_parameters_plan(const char *request_json);
+
+/**
+ * Builds a one-step plan for `SetAdmin`, without a new-admin signer.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_set_admin_plan(const char *request_json);
+
+/**
+ * Builds an admin-authorized plan for `SetFreezeAuthority`.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_set_freeze_authority_plan(const char *request_json);
+
+/**
+ * Builds a zero-argument oracle-replacement plan with the replacement as account three.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_set_market_price_oracle_plan(const char *request_json);
+
+/**
+ * Builds the idempotent, current-authority plan for the unit `Freeze` instruction.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_freeze_plan(const char *request_json);
+
+/**
+ * Builds the idempotent, current-authority plan for the unit `Unfreeze` instruction.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_unfreeze_plan(const char *request_json);
 
 /**
  * Releases a string returned by a `stablecoin_*` operation.

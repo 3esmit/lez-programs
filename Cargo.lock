@@ -7160,6 +7160,7 @@ dependencies = [
 name = "stablecoin_ffi"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "borsh",
  "cbindgen",
  "clock_core",
@@ -7171,7 +7172,9 @@ dependencies = [
  "serde_json",
  "stablecoin-methods",
  "stablecoin_core",
+ "stablecoin_program",
  "token_core",
+ "token_program",
  "twap_oracle_core",
 ]
 

@@ -43,8 +43,93 @@ extern "C" char* stablecoin_decode_position(const char*) {
     return copyMockResponse("stablecoin_decode_position");
 }
 
+extern "C" char* stablecoin_decode_redemption_price_state(const char*) {
+    return copyMockResponse("stablecoin_decode_redemption_price_state");
+}
+
+extern "C" char* stablecoin_current_global_state(const char*) {
+    return copyMockResponse("stablecoin_current_global_state");
+}
+
+extern "C" char* stablecoin_redemption_rate_update_quote(const char*) {
+    return copyMockResponse("stablecoin_redemption_rate_update_quote");
+}
+
+extern "C" char* stablecoin_accrue_stability_fee_plan(const char*) {
+    return copyMockResponse("stablecoin_accrue_stability_fee_plan");
+}
+
+extern "C" char* stablecoin_update_redemption_rate_plan(const char*) {
+    return copyMockResponse("stablecoin_update_redemption_rate_plan");
+}
+
+extern "C" char* stablecoin_refresh_globals_plan(const char*) {
+    return copyMockResponse("stablecoin_refresh_globals_plan");
+}
+
 extern "C" char* stablecoin_initialize_program_plan(const char*) {
     return copyMockResponse("stablecoin_initialize_program_plan");
+}
+
+extern "C" char* stablecoin_open_position_plan(const char*) {
+    return copyMockResponse("stablecoin_open_position_plan");
+}
+
+extern "C" char* stablecoin_position_addresses(const char*) {
+    return copyMockResponse("stablecoin_position_addresses");
+}
+
+extern "C" char* stablecoin_deposit_collateral_plan(const char*) {
+    return copyMockResponse("stablecoin_deposit_collateral_plan");
+}
+
+extern "C" char* stablecoin_repay_debt_plan(const char*) {
+    return copyMockResponse("stablecoin_repay_debt_plan");
+}
+
+extern "C" char* stablecoin_position_health(const char*) {
+    return copyMockResponse("stablecoin_position_health");
+}
+
+extern "C" char* stablecoin_withdraw_collateral_plan(const char*) {
+    return copyMockResponse("stablecoin_withdraw_collateral_plan");
+}
+
+extern "C" char* stablecoin_generate_debt_plan(const char*) {
+    return copyMockResponse("stablecoin_generate_debt_plan");
+}
+
+extern "C" char* stablecoin_close_position_plan(const char*) {
+    return copyMockResponse("stablecoin_close_position_plan");
+}
+
+extern "C" char* stablecoin_set_minimum_collateralization_ratio_plan(const char*) {
+    return copyMockResponse("stablecoin_set_minimum_collateralization_ratio_plan");
+}
+extern "C" char* stablecoin_set_stability_fee_per_millisecond_plan(const char*) {
+    return copyMockResponse("stablecoin_set_stability_fee_per_millisecond_plan");
+}
+extern "C" char* stablecoin_set_controller_gains_plan(const char*) {
+    return copyMockResponse("stablecoin_set_controller_gains_plan");
+}
+extern "C" char* stablecoin_set_timing_parameters_plan(const char*) {
+    return copyMockResponse("stablecoin_set_timing_parameters_plan");
+}
+extern "C" char* stablecoin_set_admin_plan(const char*) {
+    return copyMockResponse("stablecoin_set_admin_plan");
+}
+extern "C" char* stablecoin_set_freeze_authority_plan(const char*) {
+    return copyMockResponse("stablecoin_set_freeze_authority_plan");
+}
+extern "C" char* stablecoin_set_market_price_oracle_plan(const char*) {
+    return copyMockResponse("stablecoin_set_market_price_oracle_plan");
+}
+
+extern "C" char* stablecoin_freeze_plan(const char*) {
+    return copyMockResponse("stablecoin_freeze_plan");
+}
+extern "C" char* stablecoin_unfreeze_plan(const char*) {
+    return copyMockResponse("stablecoin_unfreeze_plan");
 }
 
 extern "C" void stablecoin_free(char* value) {

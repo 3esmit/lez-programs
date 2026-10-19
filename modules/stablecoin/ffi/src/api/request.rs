@@ -43,6 +43,79 @@ pub struct DecodePositionRequest {
     pub position: AccountRead,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DecodeRedemptionPriceStateRequest {
+    pub stablecoin_program_id: String,
+    pub redemption_price_state: AccountRead,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrentGlobalStateRequest {
+    pub stablecoin_program_id: String,
+    pub protocol_parameters: AccountRead,
+    pub stability_fee_accumulator: AccountRead,
+    pub redemption_price_state: AccountRead,
+    pub clock: AccountRead,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PositionHealthRequest {
+    pub stablecoin_program_id: String,
+    pub owner_id: String,
+    pub position_nonce: String,
+    pub position: AccountRead,
+    pub protocol_parameters: AccountRead,
+    pub stability_fee_accumulator: AccountRead,
+    pub redemption_price_state: AccountRead,
+    pub clock: AccountRead,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RedemptionRateUpdateQuoteRequest {
+    pub stablecoin_program_id: String,
+    pub protocol_parameters: AccountRead,
+    pub redemption_price_state: AccountRead,
+    pub market_price_oracle: AccountRead,
+    pub clock: AccountRead,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccrueStabilityFeePlanRequest {
+    pub stablecoin_program_id: String,
+    pub caller_id: String,
+    pub protocol_parameters: AccountRead,
+    pub stability_fee_accumulator: AccountRead,
+    pub clock: AccountRead,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateRedemptionRatePlanRequest {
+    pub stablecoin_program_id: String,
+    pub caller_id: String,
+    pub protocol_parameters: AccountRead,
+    pub redemption_price_state: AccountRead,
+    pub market_price_oracle: AccountRead,
+    pub clock: AccountRead,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshGlobalsPlanRequest {
+    pub stablecoin_program_id: String,
+    pub caller_id: String,
+    pub protocol_parameters: AccountRead,
+    pub stability_fee_accumulator: AccountRead,
+    pub redemption_price_state: AccountRead,
+    pub market_price_oracle: AccountRead,
+    pub clock: AccountRead,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct InitializeProgramPlanRequest {
@@ -60,4 +133,179 @@ pub struct InitializeProgramPlanRequest {
     pub maximum_oracle_price_age_milliseconds: Value,
     pub initial_redemption_price: Value,
     pub stablecoin_name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenPositionPlanRequest {
+    pub stablecoin_program_id: String,
+    pub owner_id: String,
+    pub position_nonce: String,
+    pub initial_collateral_amount: String,
+    pub user_collateral_holding_id: String,
+    pub user_collateral_holding: AccountRead,
+    pub collateral_definition: AccountRead,
+    pub protocol_parameters: AccountRead,
+    pub clock: AccountRead,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PositionAddressesRequest {
+    pub stablecoin_program_id: String,
+    pub owner_id: String,
+    pub position_nonce: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClosePositionPlanRequest {
+    pub stablecoin_program_id: String,
+    pub owner_id: String,
+    pub position_nonce: String,
+    pub position: AccountRead,
+    pub vault: AccountRead,
+    pub protocol_parameters: AccountRead,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminPlanContext {
+    pub stablecoin_program_id: String,
+    pub admin_id: String,
+    pub protocol_parameters: AccountRead,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FreezeAuthorityPlanRequest {
+    pub stablecoin_program_id: String,
+    pub freeze_authority_id: String,
+    pub protocol_parameters: AccountRead,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetStabilityFeePerMillisecondPlanRequest {
+    #[serde(flatten)]
+    pub context: AdminPlanContext,
+    pub new_rate: Value,
+    pub stability_fee_accumulator: AccountRead,
+    pub clock: AccountRead,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetMinimumCollateralizationRatioPlanRequest {
+    #[serde(flatten)]
+    pub context: AdminPlanContext,
+    pub new_ratio: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetControllerGainsPlanRequest {
+    #[serde(flatten)]
+    pub context: AdminPlanContext,
+    pub new_proportional_gain: Value,
+    pub new_integral_gain: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetTimingParametersPlanRequest {
+    #[serde(flatten)]
+    pub context: AdminPlanContext,
+    pub new_minimum_milliseconds_between_rate_updates: Value,
+    pub new_maximum_oracle_price_age_milliseconds: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetAdminPlanRequest {
+    #[serde(flatten)]
+    pub context: AdminPlanContext,
+    pub new_admin_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetFreezeAuthorityPlanRequest {
+    #[serde(flatten)]
+    pub context: AdminPlanContext,
+    pub new_freeze_authority_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetMarketPriceOraclePlanRequest {
+    #[serde(flatten)]
+    pub context: AdminPlanContext,
+    pub new_oracle_id: String,
+    pub new_oracle: AccountRead,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DepositCollateralPlanRequest {
+    pub stablecoin_program_id: String,
+    pub owner_id: String,
+    pub position_nonce: String,
+    pub amount: Value,
+    pub user_collateral_holding_id: String,
+    pub position: AccountRead,
+    pub vault: AccountRead,
+    pub user_collateral_holding: AccountRead,
+    pub protocol_parameters: AccountRead,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RepayDebtPlanRequest {
+    pub stablecoin_program_id: String,
+    pub owner_id: String,
+    pub position_nonce: String,
+    pub amount: Value,
+    pub user_stablecoin_holding_id: String,
+    pub position: AccountRead,
+    pub stablecoin_definition: AccountRead,
+    pub user_stablecoin_holding: AccountRead,
+    pub stability_fee_accumulator: AccountRead,
+    pub protocol_parameters: AccountRead,
+    pub clock: AccountRead,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WithdrawCollateralPlanRequest {
+    pub stablecoin_program_id: String,
+    pub owner_id: String,
+    pub position_nonce: String,
+    pub amount: Value,
+    pub user_collateral_holding_id: String,
+    pub position: AccountRead,
+    pub vault: AccountRead,
+    pub user_collateral_holding: AccountRead,
+    pub stability_fee_accumulator: AccountRead,
+    pub redemption_price_state: AccountRead,
+    pub protocol_parameters: AccountRead,
+    pub clock: AccountRead,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerateDebtPlanRequest {
+    pub stablecoin_program_id: String,
+    pub owner_id: String,
+    pub position_nonce: String,
+    pub amount: Value,
+    pub user_stablecoin_holding_id: String,
+    pub position: AccountRead,
+    pub stablecoin_definition: AccountRead,
+    pub user_stablecoin_holding: AccountRead,
+    pub stability_fee_accumulator: AccountRead,
+    pub redemption_price_state: AccountRead,
+    pub market_price_oracle: AccountRead,
+    pub protocol_parameters: AccountRead,
+    pub clock: AccountRead,
 }
