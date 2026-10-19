@@ -25,6 +25,8 @@ QVariant WalletAccountModel::data(const QModelIndex& index, int role) const
         return account.balance;
     case IsPublicRole:
         return account.isPublic;
+    case CanPayFeesRole:
+        return account.canPayFees;
     default:
         return {};
     }
@@ -37,6 +39,7 @@ QHash<int, QByteArray> WalletAccountModel::roleNames() const
         { AddressRole, "address" },
         { BalanceRole, "balance" },
         { IsPublicRole, "isPublic" },
+        { CanPayFeesRole, "canPayFees" },
     };
 }
 
@@ -53,6 +56,7 @@ void WalletAccountModel::replaceAccounts(const QVector<WalletAccount>& accounts)
             account.address,
             account.balance,
             account.isPublic,
+            canPayFees(account),
         });
     }
     endResetModel();

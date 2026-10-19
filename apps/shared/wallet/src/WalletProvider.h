@@ -44,6 +44,18 @@ struct WalletAccount {
     bool isPublic = true;
 };
 
+// The smallest fee reserve LEZ admits a wallet-built public transaction with:
+// the wallet's 2,000,000 gas limit and one data byte at the minimum base fees
+// (8). A balance below it can never pay; one above may still fall short when
+// base fees rise or a transaction carries more data.
+inline constexpr char MIN_FEE_RESERVE[] = "16000008";
+
+// Compares u128 decimal strings without narrowing them.
+bool balanceLess(QString left, QString right);
+
+// A public account whose balance covers MIN_FEE_RESERVE.
+bool canPayFees(const WalletAccount& account);
+
 struct WalletSnapshot {
     WalletFailure failure = WalletFailure::None;
     QVector<WalletAccount> accounts;

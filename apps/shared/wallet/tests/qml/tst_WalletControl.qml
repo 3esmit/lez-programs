@@ -122,8 +122,9 @@ Item {
             verify(backend, "Backend exists")
             const model = createTemporaryObject(modelComponent, root)
             verify(model, "Account model exists")
+            // canPayFees comes from the backend's fee-reserve check; default it off.
             for (const account of accounts || [])
-                model.append(account)
+                model.append(Object.assign({ canPayFees: false }, account))
             const control = createTemporaryObject(controlComponent, root, {
                 wallet: backend,
                 accountModel: model
@@ -253,16 +254,16 @@ Item {
 
         function test_selectsFundedFeePayer() {
             const fixture = createControl({ isWalletOpen: true, feePayerId: "a".repeat(64) }, [
-                { name: "One", address: "a".repeat(64), balance: "10", isPublic: true },
-                { name: "Two", address: "b".repeat(64), balance: "20", isPublic: false },
-                { name: "Three", address: "c".repeat(64), balance: "0", isPublic: true },
-                { name: "Four", address: "d".repeat(64), balance: "5", isPublic: true }
+                { name: "One", address: "a".repeat(64), balance: "1000000000", isPublic: true, canPayFees: true },
+                { name: "Two", address: "b".repeat(64), balance: "2000000000", isPublic: false },
+                { name: "Three", address: "c".repeat(64), balance: "1", isPublic: true },
+                { name: "Four", address: "d".repeat(64), balance: "500000000", isPublic: true, canPayFees: true }
             ])
             mouseClick(findChild(fixture.control, "walletAccountButton"))
             const label = findChild(fixture.control, "walletFeePayerLabel")
             tryVerify(function() { return label && label.visible })
             verify(label.text.indexOf("aaaaaa") === 0, label.text)
-            verify(label.text.indexOf("10") > 0, label.text)
+            verify(label.text.indexOf("1000000000") > 0, label.text)
 
             mouseClick(findChild(fixture.control, "walletChangeFeePayerButton"))
             const list = findChild(fixture.control, "walletFeePayerList")
@@ -270,7 +271,7 @@ Item {
             tryVerify(function() { return list.itemAtIndex(3) !== null })
             verify(list.itemAtIndex(0).visible)
             verify(!list.itemAtIndex(1).visible, "Private account cannot pay")
-            verify(!list.itemAtIndex(2).visible, "Unfunded account cannot pay")
+            verify(!list.itemAtIndex(2).visible, "Balance below the fee reserve cannot pay")
             verify(!findChild(fixture.control, "walletNoFeePayerLabel").visible)
 
             list.itemAtIndex(3).children[0].clicked()
@@ -281,7 +282,7 @@ Item {
 
         function test_warnsWithoutFundedFeePayer() {
             const fixture = createControl({ isWalletOpen: true }, [
-                { name: "One", address: "a".repeat(64), balance: "0", isPublic: true }
+                { name: "One", address: "a".repeat(64), balance: "1", isPublic: true }
             ])
             mouseClick(findChild(fixture.control, "walletAccountButton"))
             const label = findChild(fixture.control, "walletFeePayerLabel")

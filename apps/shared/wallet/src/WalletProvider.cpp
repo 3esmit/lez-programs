@@ -24,3 +24,23 @@ QString walletFailureCode(WalletFailure failure)
     }
     return QStringLiteral("wallet_unavailable");
 }
+
+bool balanceLess(QString left, QString right)
+{
+    while (left.size() > 1 && left.startsWith(QLatin1Char('0')))
+        left.remove(0, 1);
+    while (right.size() > 1 && right.startsWith(QLatin1Char('0')))
+        right.remove(0, 1);
+    return left.size() != right.size() ? left.size() < right.size() : left < right;
+}
+
+bool canPayFees(const WalletAccount& account)
+{
+    if (!account.isPublic || account.balance.isEmpty())
+        return false;
+    for (const QChar c : account.balance) {
+        if (!c.isDigit())
+            return false;
+    }
+    return !balanceLess(account.balance, QLatin1String(MIN_FEE_RESERVE));
+}

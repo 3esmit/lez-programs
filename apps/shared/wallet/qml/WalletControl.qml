@@ -39,15 +39,11 @@ Item {
             required property string name
             required property string balance
             required property bool isPublic
+            required property bool canPayFees
         }
         onCountChanged: root.clampSelection()
         onObjectAdded: root.accountsRevision++
         onObjectRemoved: root.accountsRevision++
-    }
-
-    // Only a public account with a balance can pay fees. Balances are u128 decimals.
-    function canPayFees(balance, isPublic) {
-        return isPublic === true && /[1-9]/.test(String(balance || ""))
     }
 
     function feePayerBalance() {
@@ -63,7 +59,7 @@ Item {
         let count = 0
         for (let i = 0; i < accounts.count; ++i) {
             const entry = accounts.objectAt(i)
-            if (entry && root.canPayFees(entry.balance, entry.isPublic))
+            if (entry && entry.canPayFees)
                 ++count
         }
         return count
@@ -512,7 +508,7 @@ Item {
                     objectName: "walletNoFeePayerLabel"
                     Layout.fillWidth: true
                     visible: { root.accountsRevision; return root.fundedAccountCount() === 0 }
-                    text: qsTr("No public account holds a balance. Fund one to submit transactions.")
+                    text: qsTr("No public account holds enough to pay transaction fees. Fund one to submit transactions.")
                     color: "#f59e0b"
                     wrapMode: Text.WordWrap
                 }
@@ -527,7 +523,7 @@ Item {
                     model: root.accountModel
                     ScrollIndicator.vertical: ScrollIndicator { }
 
-                    // Unfunded and private accounts cannot pay fees; they collapse to nothing.
+                    // Private accounts and balances below the fee reserve cannot pay; they collapse to nothing.
                     delegate: Item {
                         id: payerRow
                         required property int index
@@ -535,7 +531,8 @@ Item {
                         required property string address
                         required property string balance
                         required property bool isPublic
-                        readonly property bool eligible: root.canPayFees(payerRow.balance, payerRow.isPublic)
+                        required property bool canPayFees
+                        readonly property bool eligible: payerRow.canPayFees
 
                         width: ListView.view.width
                         height: payerRow.eligible ? payerDelegate.implicitHeight + 6 : 0

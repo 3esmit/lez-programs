@@ -20,30 +20,6 @@ const char DISCONNECTED_KEY[] = "disconnected";
 const char FEE_PAYER_KEY[] = "feePayer";
 const char WALLET_HOME_ENV[] = "LEE_WALLET_HOME_DIR";
 
-// A public account with a non-zero balance. Balances are u128 decimal strings.
-bool canPayFees(const WalletAccount& account)
-{
-    if (!account.isPublic || account.balance.isEmpty())
-        return false;
-    for (const QChar c : account.balance) {
-        if (!c.isDigit())
-            return false;
-        if (c != QLatin1Char('0'))
-            return true;
-    }
-    return false;
-}
-
-// Compares u128 decimal strings without narrowing them.
-bool balanceLess(QString left, QString right)
-{
-    while (left.size() > 1 && left.startsWith(QLatin1Char('0')))
-        left.remove(0, 1);
-    while (right.size() > 1 && right.startsWith(QLatin1Char('0')))
-        right.remove(0, 1);
-    return left.size() != right.size() ? left.size() < right.size() : left < right;
-}
-
 QString toLocalPath(const QString& path)
 {
     if (path.startsWith(QStringLiteral("file://")) || path.contains(QLatin1Char('/')))
@@ -252,8 +228,8 @@ bool WalletController::setFeePayer(const QString& accountId)
     return false;
 }
 
-// Keeps the persisted choice while it can still pay; otherwise defaults to the
-// best-funded public account, without persisting that default.
+// Keeps the persisted choice while it covers the minimum fee reserve; otherwise
+// defaults to the best-funded public account, without persisting that default.
 void WalletController::selectFeePayer(const QVector<WalletAccount>& accounts)
 {
     const QString saved = QSettings(SETTINGS_ORG, m_settingsApplication)

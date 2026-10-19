@@ -485,10 +485,11 @@ void LogosWalletProviderTest::controllerSelectsFundedFeePayer()
     QSettings settings(QStringLiteral("Logos"), settingsApplication);
     settings.clear();
 
-    // u128 balances beyond 64 bits, a private account, and an unfunded one.
+    // u128 balances beyond 64 bits, a private account, and one with a positive
+    // balance below the minimum fee reserve.
     FakeWalletProvider provider;
     provider.connectResult.snapshot.accounts = {
-        { ACCOUNT_A, QStringLiteral("0"), true },
+        { ACCOUNT_A, QStringLiteral("16000007"), true },
         { ACCOUNT_B, QStringLiteral("99999999999999999999"), true },
         { ACCOUNT_D, QStringLiteral("100000000000000000000"), true },
         { PROGRAM_ID, QStringLiteral("900000000000000000000"), false },
@@ -497,23 +498,42 @@ void LogosWalletProviderTest::controllerSelectsFundedFeePayer()
     QVERIFY(controller.open());
     QCOMPARE(controller.state().feePayerId, ACCOUNT_D);
 
+    // The account model exposes the same eligibility to the QML payer picker.
+    const WalletAccountModel* model = controller.accountModel();
+    const auto payable = [model](int row) {
+        return model->data(model->index(row), WalletAccountModel::CanPayFeesRole).toBool();
+    };
+    QVERIFY(!payable(0));
+    QVERIFY(payable(1));
+    QVERIFY(payable(2));
+    QVERIFY(!payable(3));
+
     QVERIFY(!controller.setFeePayer(ACCOUNT_A));
     QVERIFY(!controller.setFeePayer(PROGRAM_ID));
     QVERIFY(controller.setFeePayer(ACCOUNT_B.toUpper()));
     QCOMPARE(controller.state().feePayerId, ACCOUNT_B);
 
-    // The choice survives a restart, and falls back once it can no longer pay.
+    // The choice survives a restart. A saved payer with a positive balance below
+    // the fee reserve is passed over for a funded account, without forgetting it.
     WalletController restarted(provider, settingsApplication);
     QVERIFY(restarted.open());
     QCOMPARE(restarted.state().feePayerId, ACCOUNT_B);
     provider.snapshotResult.accounts = {
-        { ACCOUNT_B, QStringLiteral("0"), true },
-        { ACCOUNT_D, QStringLiteral("1"), true },
+        { ACCOUNT_B, QStringLiteral("1"), true },
+        { ACCOUNT_D, QStringLiteral("1000000000"), true },
     };
     restarted.refresh();
     QCOMPARE(restarted.state().feePayerId, ACCOUNT_D);
 
-    provider.snapshotResult.accounts = { { ACCOUNT_A, QStringLiteral("0"), true } };
+    // Exactly the reserve qualifies, so the saved choice comes back once refunded.
+    provider.snapshotResult.accounts = {
+        { ACCOUNT_B, QStringLiteral("16000008"), true },
+        { ACCOUNT_D, QStringLiteral("1000000000"), true },
+    };
+    restarted.refresh();
+    QCOMPARE(restarted.state().feePayerId, ACCOUNT_B);
+
+    provider.snapshotResult.accounts = { { ACCOUNT_A, QStringLiteral("16000007"), true } };
     restarted.refresh();
     QVERIFY(restarted.state().feePayerId.isEmpty());
 
