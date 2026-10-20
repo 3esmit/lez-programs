@@ -119,11 +119,7 @@ TEST_SEQ_POLL_TIMEOUT="${TEST_SEQ_POLL_TIMEOUT:-3s}"
 # faucet requires recipient != user_holding, hence two accounts.
 # `amm-owner` is a dedicated account that signs `initialize` — the AMM instance's
 # namespace owner. All three are appended last so the existing accounts keep their ids.
-# The stablecoin's four accounts are appended after them for the same reason:
-# collateral-def/-holding back a dedicated faucet-mintable collateral token,
-# stablecoin-admin signs initialize_program, and stablecoin-oracle-source signs
-# (and so owns) the market price oracle account.
-ACCOUNT_LABELS=(token-a-def token-a-holding token-b-def token-b-holding lp-holding token-c-def token-c-holding token-d-def token-d-holding holder2 holder2-a-holding amm-owner collateral-def collateral-holding stablecoin-admin stablecoin-oracle-source)
+ACCOUNT_LABELS=(token-a-def token-a-holding token-b-def token-b-holding lp-holding token-c-def token-c-holding token-d-def token-d-holding holder2 holder2-a-holding amm-owner)
 
 # --- Deploy accounts (LEZ v0.2.5) ---
 # `wallet deploy-program` is gone: a program is now a chain of write-once segment
@@ -136,7 +132,7 @@ ACCOUNT_LABELS=(token-a-def token-a-holding token-b-def token-b-holding lp-holdi
 # account id in this script deterministic even when a rebuild changes a binary's size.
 # Only the first N slots of each program are passed to the deploy. The protocol cap is
 # MAX_PROGRAM_SEGMENTS = 20; today's binaries need 3-6.
-DEPLOY_PROGRAMS=(token amm twap mint-authority)
+DEPLOY_PROGRAMS=(token amm twap mint-authority stablecoin)
 DEPLOY_SEGMENT_SLOTS=10
 
 for _prog in "${DEPLOY_PROGRAMS[@]}"; do
@@ -146,6 +142,12 @@ for _prog in "${DEPLOY_PROGRAMS[@]}"; do
   done
 done
 unset _prog _i
+
+# The stablecoin's accounts come last, so every label above keeps its id:
+# collateral-def/-holding back a dedicated faucet-mintable collateral token,
+# stablecoin-admin signs initialize_program, and stablecoin-oracle-source signs
+# (and so owns) the market price oracle account.
+ACCOUNT_LABELS+=(collateral-def collateral-holding stablecoin-admin stablecoin-oracle-source)
 
 ###############################################################################
 # CONFIG — non-account parameters (edit freely)
@@ -263,8 +265,6 @@ kv()  { printf '  %-22s %s\n' "$1" "$2" >&2; }
 die() { printf '%s\n' "${RED}✗ $*${RST}" >&2; exit 1; }
 
 require_cmd() { command -v "$1" >/dev/null 2>&1 || die "required command not found on PATH: $1"; }
-# Absolute form of a path that may be repo-relative (the bins are env-overridable).
-abs_path() { case "$1" in /*) printf '%s' "$1" ;; *) printf '%s' "$REPO_ROOT/$1" ;; esac; }
 require_file(){ [ -f "$1" ] || die "required file not found: $1 (cwd=$(pwd))"; }
 
 # Run a transaction command, streaming its output live, then assert the
@@ -610,6 +610,9 @@ deploy_program token          "$TOKEN_BIN"          >/dev/null
 deploy_program amm            "$AMM_BIN"            >/dev/null
 deploy_program twap           "$TWAP_BIN"           >/dev/null
 deploy_program mint-authority "$MINT_AUTHORITY_BIN" >/dev/null
+if [ "$DEPLOY_STABLECOIN" = "1" ]; then
+  deploy_program stablecoin "$STABLECOIN_BIN" >/dev/null
+fi
 
 ###############################################################################
 # 3. Program IDs
@@ -622,6 +625,9 @@ TOKEN_PID="$(acct_id token-header)";                     kv "token program id"  
 AMM_PID="$(acct_id amm-header)";                         kv "amm program id"            "$AMM_PID"
 TWAP_PID="$(acct_id twap-header)";                       kv "twap program id"           "$TWAP_PID"
 MINT_AUTHORITY_PID="$(acct_id mint-authority-header)";   kv "mint-authority program id" "$MINT_AUTHORITY_PID"
+if [ "$DEPLOY_STABLECOIN" = "1" ]; then
+  STABLECOIN_PID="$(acct_id stablecoin-header)";         kv "stablecoin program id"     "$STABLECOIN_PID"
+fi
 
 # The faucet's singleton mint-authority PDA is derived from the DEPLOYED faucet
 # binary's ImageID. Every faucet token's definition sets its mint_authority to this
@@ -976,8 +982,8 @@ kv "wrote" "$CUSTOM_TOKEN_MANIFEST_OUT"
 # Delegates to scripts/deploy-stablecoin.sh against the same isolated wallet
 # (LEE_WALLET_HOME_DIR is exported above). It creates the collateral token (or
 # reuses it on a re-run) with the faucet as mint authority, like the other test
-# tokens. The token and twap_oracle programs are already deployed in step 2, so
-# it skips both.
+# tokens. The token, twap_oracle and stablecoin programs are already deployed in
+# step 2, so it reuses all three, and the deploy payer pays its fees too.
 if [ "$DEPLOY_STABLECOIN" = "1" ]; then
   STABLECOIN_ADMIN="$STABLECOIN_ADMIN_ID" \
   STABLECOIN_ORACLE_SOURCE="$STABLECOIN_ORACLE_SOURCE_ID" \
@@ -986,14 +992,15 @@ if [ "$DEPLOY_STABLECOIN" = "1" ]; then
   COLLATERAL_NAME="$COLLATERAL_NAME" \
   COLLATERAL_SUPPLY="$COLLATERAL_SUPPLY" \
   COLLATERAL_MINT_AUTHORITY="$MINT_AUTHORITY_PDA" \
-  TOKEN_BIN="$TOKEN_BIN" \
   TOKEN_IDL="$TOKEN_IDL" \
-  SKIP_TOKEN_DEPLOY=1 \
+  TOKEN_PROGRAM_ID="$TOKEN_PID" \
   STABLECOIN_BIN="$STABLECOIN_BIN" \
   STABLECOIN_IDL="$STABLECOIN_IDL" \
-  TWAP_BIN="$TWAP_BIN" \
+  STABLECOIN_PROGRAM_ID="$STABLECOIN_PID" \
   TWAP_IDL="$TWAP_IDL" \
-  SKIP_TWAP_DEPLOY=1 \
+  TWAP_PROGRAM_ID="$TWAP_PID" \
+  FEE_PAYER="$DEPLOY_PAYER" \
+  WALLET_PASSWORD="$TEST_WALLET_PASSWORD" \
   CLOCK_ACCOUNT="$CLOCK_ACCOUNT" \
   STABLECOIN_MANIFEST_OUT="$STABLECOIN_MANIFEST_OUT" \
   REPO_ROOT="$REPO_ROOT" \
@@ -1009,6 +1016,7 @@ kv "mint-authority program id" "$MINT_AUTHORITY_PID"
 kv "faucet mint-authority PDA" "$MINT_AUTHORITY_PDA"
 kv "pool"                      "$POOL"
 if [ "$DEPLOY_STABLECOIN" = "1" ]; then
+  kv "stablecoin program id"   "$STABLECOIN_PID"
   kv "collateral definition"   "$COLLATERAL_DEF"
   kv "stablecoin manifest"     "$STABLECOIN_MANIFEST_OUT"
 fi
@@ -1052,5 +1060,5 @@ log "${DIM}LEE_WALLET_HOME_DIR=$TEST_WALLET_HOME${RST} in its environment (same 
 if [ "$DEPLOY_STABLECOIN" = "1" ]; then
   log ""
   log "Stablecoin: account ids and PDAs are in ${DIM}$STABLECOIN_MANIFEST_OUT${RST}. Point the"
-  log "stablecoin module at it with ${DIM}STABLECOIN_PROGRAM_BIN=$(abs_path "$STABLECOIN_BIN")${RST}."
+  log "stablecoin module at it with ${DIM}STABLECOIN_PROGRAM_ID=$STABLECOIN_PID${RST}."
 fi

@@ -32,7 +32,10 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.as_slice() {
         [stablecoin_s, mode] if mode == "globals" => {
-            print_globals(parse_account_id(stablecoin_s, "stablecoin program account id"));
+            print_globals(parse_account_id(
+                stablecoin_s,
+                "stablecoin program account id",
+            ));
         }
         [stablecoin_s, owner_s, nonce_s] => {
             let stablecoin = parse_account_id(stablecoin_s, "stablecoin program account id");

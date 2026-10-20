@@ -664,8 +664,11 @@ STABLECOIN_ADMIN=<ADMIN> STABLECOIN_ORACLE_SOURCE=<ORACLE_SOURCE> \
 
 - `COLLATERAL_HOLDING` set: creates the collateral token (or reuses it if it already
   exists). Omit it to use an existing collateral token.
-- `SKIP_TOKEN_DEPLOY=1` / `SKIP_TWAP_DEPLOY=1` / `SKIP_STABLECOIN_DEPLOY=1`: skip programs
-  that are already deployed.
+- `TOKEN_PROGRAM_ID` / `TWAP_PROGRAM_ID` / `STABLECOIN_PROGRAM_ID`: reuse programs that
+  are already deployed (their header account ids) instead of deploying them.
+- `FEE_PAYER`: the funded account that pays every fee; defaults to `STABLECOIN_ADMIN`.
+- The script targets LEZ v0.2.5 (`wallet program-loader`); the manual steps below are for
+  the pre-v0.2.5 testnet this runbook covers.
 - Writes every id and PDA to `target/stablecoin-deployment.json`.
 
 **Order matters.** `initialize_program` needs an oracle price account that already quotes
