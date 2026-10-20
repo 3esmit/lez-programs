@@ -15,6 +15,7 @@ public:
         AddressRole,
         BalanceRole,
         IsPublicRole,
+        CanPayFeesRole,
     };
     Q_ENUM(Role)
 
@@ -36,6 +37,7 @@ private:
         QString address;
         QString balance;
         bool isPublic = true;
+        bool canPayFees = false;
     };
 
     QVector<Entry> m_accounts;

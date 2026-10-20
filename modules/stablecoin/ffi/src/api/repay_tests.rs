@@ -1,10 +1,7 @@
 //! Repayment contract tests spanning plans, native execution, and chained burns.
 
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
-use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
-    program::ProgramId,
-};
+use lee_core::account::{Account, AccountId, AccountWithMetadata, Data, Nonce};
 use serde_json::{json, Value};
 use stablecoin_core::{
     compute_position_pda, compute_position_vault_pda, compute_protocol_parameters_pda,
@@ -13,14 +10,18 @@ use stablecoin_core::{
 };
 use token_core::{TokenDefinition, TokenHolding};
 
-use super::{repay_debt_plan, RepayDebtPlanRequest};
+use super::{
+    repay_debt_plan,
+    test_support::{chained_input, post_account},
+    RepayDebtPlanRequest,
+};
 use crate::{
-    account::{account_id_hex, account_read, decode_account, program_id_bytes},
+    account::{account_id_hex, account_read, decode_account},
     AccountRead,
 };
 
-const PROGRAM: ProgramId = [0x11; 8];
-const TOKEN_PROGRAM: ProgramId = [0x22; 8];
+const PROGRAM: AccountId = AccountId::new([0x11; 32]);
+const TOKEN_PROGRAM: AccountId = AccountId::new([0x22; 32]);
 const NOW: u64 = 1_000;
 const NONCE: u64 = u64::MAX;
 
@@ -28,7 +29,7 @@ fn id(seed: u8) -> AccountId {
     AccountId::new([seed; 32])
 }
 
-fn read(account_id: AccountId, owner: ProgramId, data: Data) -> AccountRead {
+fn read(account_id: AccountId, owner: AccountId, data: Data) -> AccountRead {
     account_read(
         account_id,
         &Account {
@@ -67,7 +68,7 @@ fn request(amount: Value) -> RepayDebtPlanRequest {
         is_frozen: true,
     };
     RepayDebtPlanRequest {
-        stablecoin_program_id: hex::encode(program_id_bytes(PROGRAM)),
+        stablecoin_program_id: account_id_hex(PROGRAM),
         owner_id: account_id_hex(owner),
         position_nonce: NONCE.to_string(),
         amount,
@@ -106,7 +107,7 @@ fn request(amount: Value) -> RepayDebtPlanRequest {
         ),
         clock: read(
             CLOCK_01_PROGRAM_ACCOUNT_ID,
-            [0x44; 8],
+            AccountId::new([0x44; 32]),
             Data::try_from(
                 ClockAccountData {
                     block_id: 1,
@@ -163,8 +164,8 @@ fn repay_plan_pins_instruction_pdas_signers_and_guest_idl() {
         plan["signingRequirements"],
         json!([true, false, false, true, false, false, false])
     );
-    let words: Vec<u32> = serde_json::from_value(plan["instruction"].clone()).expect("words");
-    let instruction: Instruction = risc0_zkvm::serde::from_slice(&words).expect("instruction");
+    let words: Vec<u8> = serde_json::from_value(plan["instruction"].clone()).expect("words");
+    let instruction: Instruction = borsh::from_slice(&words).expect("instruction");
     assert!(matches!(
         instruction,
         Instruction::RepayDebt { amount: 151 }
@@ -267,9 +268,8 @@ fn repay_plan_executes_exact_burn_and_floor_debt_change_while_frozen() {
             .collect();
         let [owner, position_input, definition, holding, accumulator, parameters, clock]: [_; 7] =
             inputs.try_into().expect("seven accounts");
-        let words: Vec<u32> = serde_json::from_value(plan["instruction"].clone()).expect("words");
-        let Instruction::RepayDebt { amount } =
-            risc0_zkvm::serde::from_slice(&words).expect("instruction")
+        let words: Vec<u8> = serde_json::from_value(plan["instruction"].clone()).expect("words");
+        let Instruction::RepayDebt { amount } = borsh::from_slice(&words).expect("instruction")
         else {
             panic!("expected repayment");
         };
@@ -284,36 +284,41 @@ fn repay_plan_executes_exact_burn_and_floor_debt_change_while_frozen() {
             PROGRAM,
             amount,
         );
-        let updated = Position::try_from(&posts.get(1).expect("position post").account().data)
-            .expect("position");
+        let updated =
+            Position::try_from(&post_account(posts.get(1).expect("position post"), PROGRAM).data)
+                .expect("position");
         let mut expected = position(&request);
         expected.normalized_debt_amount = remaining;
         assert_eq!(updated, expected);
         let [call] = calls.as_slice() else {
             panic!("one chained burn");
         };
-        assert_eq!(call.program_id, TOKEN_PROGRAM);
+        assert_eq!(call.program_account_id, TOKEN_PROGRAM);
         let token_core::Instruction::Burn { amount_to_burn } =
-            risc0_zkvm::serde::from_slice(&call.instruction_data).expect("burn instruction")
+            borsh::from_slice(&call.instruction_data).expect("burn instruction")
         else {
             panic!("expected burn");
         };
         assert_eq!(amount_to_burn, amount);
-        let [definition, holding] = call.pre_states.as_slice() else {
+        let [definition_id, holding_id] = call.pre_state_ids.as_slice() else {
             panic!("two burn accounts");
         };
         assert_eq!(
-            account_id_hex(definition.account_id),
+            account_id_hex(*definition_id),
             request.stablecoin_definition.id
         );
         assert_eq!(
-            account_id_hex(holding.account_id),
+            account_id_hex(*holding_id),
             request.user_stablecoin_holding.id
         );
-        assert!(holding.is_authorized);
+        // The holding stays authorized because the user signed the transaction.
+        let definition = chained_input(&posts, PROGRAM, *definition_id, false);
+        let holding = chained_input(&posts, PROGRAM, *holding_id, true);
         let burned = token_program::burn::burn(definition.clone(), holding.clone(), amount_to_burn);
-        let holding = TokenHolding::try_from(&burned.get(1).expect("holding post").account().data)
-            .expect("holding");
+        let holding = TokenHolding::try_from(
+            &post_account(burned.get(1).expect("holding post"), TOKEN_PROGRAM).data,
+        )
+        .expect("holding");
         assert_eq!(
             holding,
             TokenHolding::Fungible {
@@ -321,9 +326,10 @@ fn repay_plan_executes_exact_burn_and_floor_debt_change_while_frozen() {
                 balance: u128::MAX - amount,
             }
         );
-        let definition =
-            TokenDefinition::try_from(&burned.first().expect("definition post").account().data)
-                .expect("definition");
+        let definition = TokenDefinition::try_from(
+            &post_account(burned.first().expect("definition post"), TOKEN_PROGRAM).data,
+        )
+        .expect("definition");
         assert!(
             matches!(definition, TokenDefinition::Fungible { total_supply, .. } if total_supply == u128::MAX - amount)
         );
@@ -346,14 +352,13 @@ fn repay_plan_preserves_full_width_integers_and_rejects_lossy_values() {
             }),
         );
         let plan = repay_debt_plan(request).expect("full width amount");
-        let words: Vec<u32> = serde_json::from_value(plan["instruction"].clone()).expect("words");
+        let words: Vec<u8> = serde_json::from_value(plan["instruction"].clone()).expect("words");
         let expected_amount = if let Some(number) = amount.as_u64() {
             u128::from(number)
         } else {
             amount.as_str().expect("decimal").parse().expect("u128")
         };
-        let instruction =
-            risc0_zkvm::serde::from_slice::<Instruction, u32>(&words).expect("instruction");
+        let instruction = borsh::from_slice::<Instruction>(&words).expect("instruction");
         assert!(
             matches!(instruction, Instruction::RepayDebt { amount } if amount == expected_amount)
         );
@@ -434,7 +439,7 @@ fn repay_plan_validates_position_token_bindings_and_balance_even_at_zero() {
         .account
         .as_mut()
         .expect("account")
-        .program_owner = hex::encode(program_id_bytes(TOKEN_PROGRAM));
+        .program_owner = account_id_hex(TOKEN_PROGRAM);
     error(invalid, "stablecoin_program_mismatch");
     let mut invalid = base.clone();
     let mut state = position(&invalid);
@@ -458,7 +463,7 @@ fn repay_plan_validates_position_token_bindings_and_balance_even_at_zero() {
         .account
         .as_mut()
         .expect("account")
-        .program_owner = hex::encode(program_id_bytes(PROGRAM));
+        .program_owner = account_id_hex(PROGRAM);
     error(invalid, "token_program_mismatch");
     let mut invalid = base.clone();
     replace_data(

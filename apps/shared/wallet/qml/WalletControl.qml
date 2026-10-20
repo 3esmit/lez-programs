@@ -21,6 +21,12 @@ Item {
     readonly property string selectedName: root.accountAt(root.selectedIndex, "name")
     readonly property string selectedBalance: root.accountAt(root.selectedIndex, "balance")
     readonly property bool selectedIsPublic: root.accountAt(root.selectedIndex, "isPublic") === true
+    // The account paying transaction fees, chosen by the backend (LEZ charges public
+    // transactions). Empty when no public account is funded.
+    readonly property string feePayerId: root.wallet && root.wallet.feePayerId
+                                         ? String(root.wallet.feePayerId).toLowerCase() : ""
+    // Bumped whenever the account rows change, so bindings over them re-evaluate.
+    property int accountsRevision: 0
 
     implicitWidth: root.connected ? connectedButton.implicitWidth : connectButton.implicitWidth
     implicitHeight: 40
@@ -33,8 +39,47 @@ Item {
             required property string name
             required property string balance
             required property bool isPublic
+            required property bool canPayFees
         }
         onCountChanged: root.clampSelection()
+        onObjectAdded: root.accountsRevision++
+        onObjectRemoved: root.accountsRevision++
+    }
+
+    function feePayerBalance() {
+        for (let i = 0; i < accounts.count; ++i) {
+            const entry = accounts.objectAt(i)
+            if (entry && entry.address.toLowerCase() === root.feePayerId)
+                return entry.balance
+        }
+        return ""
+    }
+
+    function fundedAccountCount() {
+        let count = 0
+        for (let i = 0; i < accounts.count; ++i) {
+            const entry = accounts.objectAt(i)
+            if (entry && entry.canPayFees)
+                ++count
+        }
+        return count
+    }
+
+    function chooseFeePayer(address) {
+        if (!root.wallet || !root.wallet.setFeePayer || root.busy)
+            return
+        try {
+            root.watchResult(root.wallet.setFeePayer(address), function(ok) {
+                if (ok)
+                    walletStack.pop()
+                else
+                    root.showError(qsTr("This account cannot pay fees."))
+            }, function(error) {
+                root.showError(qsTr("Fee payer could not be changed: %1").arg(error))
+            })
+        } catch (error) {
+            root.showError(qsTr("Fee payer could not be changed: %1").arg(error))
+        }
     }
 
     function accountAt(index, field) {
@@ -106,9 +151,10 @@ Item {
     Connections {
         target: root.accountModel
         ignoreUnknownSignals: true
-        function onModelReset() { root.clampSelection() }
-        function onRowsInserted() { root.clampSelection() }
-        function onRowsRemoved() { root.clampSelection() }
+        function onModelReset() { root.clampSelection(); root.accountsRevision++ }
+        function onRowsInserted() { root.clampSelection(); root.accountsRevision++ }
+        function onRowsRemoved() { root.clampSelection(); root.accountsRevision++ }
+        function onDataChanged() { root.accountsRevision++ }
     }
 
     onConnectedChanged: {
@@ -282,6 +328,7 @@ Item {
 
         contentItem: StackView {
             id: walletStack
+            objectName: "walletStack"
             width: walletMenu.availableWidth
             height: walletMenu.availableHeight
             implicitWidth: walletMenu.availableWidth
@@ -292,86 +339,239 @@ Item {
         Component {
             id: walletOverview
 
+            // Scrolls when the window is too short for every card.
+            Flickable {
+                id: overview
+                objectName: "walletOverview"
+                implicitHeight: overviewColumn.implicitHeight
+                contentWidth: width
+                contentHeight: overviewColumn.implicitHeight
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+                ScrollIndicator.vertical: ScrollIndicator { }
+
+                ColumnLayout {
+                    id: overviewColumn
+                    width: overview.width
+                    spacing: 12
+
+                    RowLayout {
+                        Layout.fillWidth: true
+
+                        Item { Layout.fillWidth: true }
+
+                        WalletIconButton {
+                            objectName: "walletAccountsButton"
+                            iconSource: Qt.resolvedUrl("icons/account.svg")
+                            accessibleName: qsTr("Accounts")
+                            onClicked: walletStack.push(accountList)
+                        }
+
+                        WalletIconButton {
+                            objectName: "walletDisconnectButton"
+                            iconSource: Qt.resolvedUrl("icons/power.svg")
+                            accessibleName: qsTr("Disconnect")
+                            onClicked: {
+                                walletMenu.close()
+                                if (root.wallet)
+                                    root.wallet.disconnectWallet()
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: accountCard.implicitHeight + 24
+                        color: "#27272a"
+                        radius: 6
+
+                        ColumnLayout {
+                            id: accountCard
+                            anchors.fill: parent
+                            anchors.margins: 12
+                            spacing: 8
+
+                            RowLayout {
+                                Layout.fillWidth: true
+
+                                Label {
+                                    text: root.selectedName || qsTr("Account")
+                                    color: "#f4f4f5"
+                                    font.bold: true
+                                }
+
+                                Label {
+                                    text: root.selectedIsPublic ? qsTr("Public") : qsTr("Private")
+                                    color: "#a1a1aa"
+                                    font.pixelSize: 11
+                                }
+
+                                Item { Layout.fillWidth: true }
+
+                                Label {
+                                    text: root.selectedBalance || "-"
+                                    color: "#f4f4f5"
+                                    font.bold: true
+                                }
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 4
+
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: root.selectedAddress
+                                    color: "#a1a1aa"
+                                    font.family: "monospace"
+                                    font.pixelSize: 11
+                                    elide: Text.ElideMiddle
+                                }
+
+                                CopyButton {
+                                    visible: root.selectedAddress.length > 0
+                                    onCopyRequested: root.copyToClipboard(root.selectedAddress)
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        objectName: "walletFeePayerCard"
+                        Layout.fillWidth: true
+                        implicitHeight: feePayerRow.implicitHeight + 24
+                        color: "#27272a"
+                        radius: 6
+
+                        RowLayout {
+                            id: feePayerRow
+                            anchors.fill: parent
+                            anchors.margins: 12
+                            spacing: 8
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 2
+
+                                Label {
+                                    text: qsTr("Fee payer")
+                                    color: "#a1a1aa"
+                                    font.pixelSize: 11
+                                }
+
+                                Label {
+                                    objectName: "walletFeePayerLabel"
+                                    Layout.fillWidth: true
+                                    text: {
+                                        root.accountsRevision
+                                        if (!root.feePayerId)
+                                            return qsTr("No funded public account")
+                                        const balance = root.feePayerBalance()
+                                        return balance
+                                            ? qsTr("%1 · %2").arg(root.shortAddress(root.feePayerId)).arg(balance)
+                                            : root.shortAddress(root.feePayerId)
+                                    }
+                                    color: root.feePayerId ? "#f4f4f5" : "#f59e0b"
+                                    elide: Text.ElideRight
+                                }
+                            }
+
+                            Button {
+                                objectName: "walletChangeFeePayerButton"
+                                text: qsTr("Change")
+                                enabled: !root.busy
+                                onClicked: walletStack.push(feePayerList)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Component {
+            id: feePayerList
+
             ColumnLayout {
                 spacing: 12
 
                 RowLayout {
                     Layout.fillWidth: true
 
-                    Item { Layout.fillWidth: true }
-
                     WalletIconButton {
-                        objectName: "walletAccountsButton"
-                        iconSource: Qt.resolvedUrl("icons/account.svg")
-                        accessibleName: qsTr("Accounts")
-                        onClicked: walletStack.push(accountList)
+                        iconSource: Qt.resolvedUrl("icons/back.svg")
+                        accessibleName: qsTr("Back")
+                        onClicked: walletStack.pop()
                     }
 
-                    WalletIconButton {
-                        objectName: "walletDisconnectButton"
-                        iconSource: Qt.resolvedUrl("icons/power.svg")
-                        accessibleName: qsTr("Disconnect")
-                        onClicked: {
-                            walletMenu.close()
-                            if (root.wallet)
-                                root.wallet.disconnectWallet()
-                        }
+                    Label {
+                        Layout.fillWidth: true
+                        text: qsTr("Fee payer")
+                        color: "#f4f4f5"
+                        font.bold: true
                     }
                 }
 
-                Rectangle {
+                ListView {
+                    objectName: "walletFeePayerList"
                     Layout.fillWidth: true
-                    implicitHeight: accountCard.implicitHeight + 24
-                    color: "#27272a"
-                    radius: 6
+                    Layout.fillHeight: true
+                    Layout.minimumHeight: 0
+                    Layout.preferredHeight: Math.min(contentHeight, 260)
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
+                    model: root.accountModel
+                    ScrollIndicator.vertical: ScrollIndicator { }
 
-                    ColumnLayout {
-                        id: accountCard
-                        anchors.fill: parent
-                        anchors.margins: 12
-                        spacing: 8
+                    // Scrolls with the payers, so short windows keep room for the list.
+                    header: ColumnLayout {
+                        width: ListView.view.width
+                        spacing: 12
 
-                        RowLayout {
+                        Label {
                             Layout.fillWidth: true
-
-                            Label {
-                                text: root.selectedName || qsTr("Account")
-                                color: "#f4f4f5"
-                                font.bold: true
-                            }
-
-                            Label {
-                                text: root.selectedIsPublic ? qsTr("Public") : qsTr("Private")
-                                color: "#a1a1aa"
-                                font.pixelSize: 11
-                            }
-
-                            Item { Layout.fillWidth: true }
-
-                            Label {
-                                text: root.selectedBalance || "-"
-                                color: "#f4f4f5"
-                                font.bold: true
-                            }
+                            text: qsTr("Pays the network fee for every transaction this app submits.")
+                            color: "#a1a1aa"
+                            font.pixelSize: 11
+                            wrapMode: Text.WordWrap
                         }
 
-                        RowLayout {
+                        Label {
+                            objectName: "walletNoFeePayerLabel"
                             Layout.fillWidth: true
-                            spacing: 4
+                            Layout.bottomMargin: 6
+                            visible: { root.accountsRevision; return root.fundedAccountCount() === 0 }
+                            text: qsTr("No public account holds enough to pay transaction fees. Fund one to submit transactions.")
+                            color: "#f59e0b"
+                            wrapMode: Text.WordWrap
+                        }
+                    }
 
-                            Label {
-                                Layout.fillWidth: true
-                                text: root.selectedAddress
-                                color: "#a1a1aa"
-                                font.family: "monospace"
-                                font.pixelSize: 11
-                                elide: Text.ElideMiddle
-                            }
+                    // Private accounts and balances below the fee reserve cannot pay; they collapse to nothing.
+                    delegate: Item {
+                        id: payerRow
+                        required property int index
+                        required property string name
+                        required property string address
+                        required property string balance
+                        required property bool isPublic
+                        required property bool canPayFees
+                        readonly property bool eligible: payerRow.canPayFees
 
-                            CopyButton {
-                                visible: root.selectedAddress.length > 0
-                                onCopyRequested: root.copyToClipboard(root.selectedAddress)
-                            }
+                        width: ListView.view.width
+                        height: payerRow.eligible ? payerDelegate.implicitHeight + 6 : 0
+                        visible: payerRow.eligible
+
+                        AccountDelegate {
+                            id: payerDelegate
+                            width: parent.width
+                            index: payerRow.index
+                            name: payerRow.name
+                            address: payerRow.address
+                            balance: payerRow.balance
+                            isPublic: payerRow.isPublic
+                            highlighted: payerRow.address.toLowerCase() === root.feePayerId
+                            onClicked: root.chooseFeePayer(payerRow.address)
+                            onCopyRequested: function(text) { root.copyToClipboard(text) }
                         }
                     }
                 }

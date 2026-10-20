@@ -1,10 +1,7 @@
 use std::ffi::{c_char, CStr, CString};
 
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
-use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
-    program::ProgramId,
-};
+use lee_core::account::{Account, AccountId, AccountWithMetadata, Data, Nonce};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use stablecoin_core::{
@@ -16,11 +13,11 @@ use stablecoin_core::{
 use token_core::{TokenDefinition, TokenHolding};
 use twap_oracle_core::OraclePriceAccount;
 
-use super::*;
-use crate::account::{account_id_hex, account_read, program_id_bytes};
+use super::{test_support::post_account, *};
+use crate::account::{account_id_hex, account_read};
 
-const PROGRAM: ProgramId = [0x11; 8];
-const TOKEN_PROGRAM: ProgramId = [0x22; 8];
+const PROGRAM: AccountId = AccountId::new([0x11; 32]);
+const TOKEN_PROGRAM: AccountId = AccountId::new([0x22; 32]);
 fn id(seed: u8) -> AccountId {
     AccountId::new([seed; 32])
 }
@@ -53,7 +50,7 @@ fn parameters_account(parameters: &ProtocolParameters) -> Account {
 
 fn request(account: &Account, authority: AccountId) -> FreezeAuthorityPlanRequest {
     FreezeAuthorityPlanRequest {
-        stablecoin_program_id: hex::encode(program_id_bytes(PROGRAM)),
+        stablecoin_program_id: account_id_hex(PROGRAM),
         freeze_authority_id: account_id_hex(authority),
         protocol_parameters: account_read(compute_protocol_parameters_pda(PROGRAM), account),
     }
@@ -76,7 +73,7 @@ fn execute(account: Account, authority: AccountId, frozen: bool) -> Account {
         json!([account_id_hex(authority), request.protocol_parameters.id])
     );
     assert_eq!(plan["signingRequirements"], json!([true, false]));
-    let words: Vec<u32> = serde_json::from_value(plan["instruction"].clone()).expect("words");
+    let words: Vec<u8> = serde_json::from_value(plan["instruction"].clone()).expect("words");
     assert_eq!(words.len(), 1);
     let authority_account = Account {
         balance: 11,
@@ -91,30 +88,29 @@ fn execute(account: Account, authority: AccountId, frozen: bool) -> Account {
             compute_protocol_parameters_pda(PROGRAM),
         ),
     );
-    let (posts, calls) =
-        match risc0_zkvm::serde::from_slice::<Instruction, u32>(&words).expect("instruction") {
-            Instruction::Freeze => {
-                assert!(frozen);
-                stablecoin_program::freeze::freeze(inputs.0, inputs.1, PROGRAM)
-            }
-            Instruction::Unfreeze => {
-                assert!(!frozen);
-                stablecoin_program::freeze::unfreeze(inputs.0, inputs.1, PROGRAM)
-            }
-            instruction => panic!("unexpected operation {instruction:?}"),
-        };
+    let (posts, calls) = match borsh::from_slice::<Instruction>(&words).expect("instruction") {
+        Instruction::Freeze => {
+            assert!(frozen);
+            stablecoin_program::freeze::freeze(inputs.0, inputs.1, PROGRAM)
+        }
+        Instruction::Unfreeze => {
+            assert!(!frozen);
+            stablecoin_program::freeze::unfreeze(inputs.0, inputs.1, PROGRAM)
+        }
+        instruction => panic!("unexpected operation {instruction:?}"),
+    };
     assert!(calls.is_empty());
     assert_eq!(posts.len(), 2);
     assert_eq!(
-        posts.first().expect("authority post").account(),
-        &authority_account
+        post_account(posts.first().expect("authority post"), PROGRAM),
+        authority_account
     );
-    let post = posts.get(1).expect("parameters post").account();
+    let post = post_account(posts.get(1).expect("parameters post"), PROGRAM);
     let mut expected = ProtocolParameters::try_from(&account.data).expect("parameters");
     expected.is_frozen = frozen;
     assert_eq!(
         post,
-        &Account {
+        Account {
             data: Data::from(&expected),
             ..account
         }
@@ -144,7 +140,7 @@ fn both_unit_instructions_pin_current_guest_flags_pda_program_and_serialization(
         let plan = planner(frozen)(request(&account, id(2))).expect("plan");
         assert_eq!(
             plan["instruction"],
-            json!(risc0_zkvm::serde::to_vec(&instruction).expect("encode"))
+            json!(borsh::to_vec(&instruction).expect("encode"))
         );
         let entry = idl["instructions"]
             .as_array()
@@ -182,7 +178,7 @@ fn admin_alone_is_rejected_and_rotated_or_shared_authority_is_read_from_current_
         id(3),
     );
     assert!(calls.is_empty());
-    account = posts.get(1).expect("parameters post").account().clone();
+    account = post_account(posts.get(1).expect("parameters post"), PROGRAM);
     for frozen in [true, false] {
         assert_eq!(
             planner(frozen)(request(&account, id(2)))
@@ -199,7 +195,7 @@ fn admin_alone_is_rejected_and_rotated_or_shared_authority_is_read_from_current_
         id(1),
     );
     account = execute(
-        posts.get(1).expect("parameters post").account().clone(),
+        post_account(posts.get(1).expect("parameters post"), PROGRAM),
         id(1),
         true,
     );
@@ -229,7 +225,7 @@ fn repeats_still_reject_wrong_pda_owner_missing_and_inexact_data_and_malformed_i
                 0 => read.id = account_id_hex(id(99)),
                 1 => {
                     read.account.as_mut().expect("account").program_owner =
-                        hex::encode(program_id_bytes(TOKEN_PROGRAM))
+                        account_id_hex(TOKEN_PROGRAM)
                 }
                 2 => read.account.as_mut().expect("account").data.clear(),
                 3 => {
@@ -278,9 +274,9 @@ fn repeats_still_reject_wrong_pda_owner_missing_and_inexact_data_and_malformed_i
     }
 }
 
-fn read_value(account_id: AccountId, program: ProgramId, data: Data) -> Value {
+fn read_value(account_id: AccountId, program: AccountId, data: Data) -> Value {
     json!({"id": account_id_hex(account_id), "status": "ok", "account": {
-        "program_owner": hex::encode(program_id_bytes(program)), "balance": "00000000000000000000000000000000",
+        "program_owner": account_id_hex(program), "balance": "00000000000000000000000000000000",
         "nonce": "00000000000000000000000000000000", "data": hex::encode(data.as_ref()),
     }})
 }
@@ -303,7 +299,7 @@ fn related_plans(parameters: &ProtocolParameters) -> Vec<(&'static str, bool, St
         )
     };
     let common = json!({
-        "stablecoinProgramId": hex::encode(program_id_bytes(PROGRAM)), "ownerId": account_id_hex(id(20)),
+        "stablecoinProgramId": account_id_hex(PROGRAM), "ownerId": account_id_hex(id(20)),
         "callerId": account_id_hex(id(20)), "positionNonce": "7", "amount": "0", "initialCollateralAmount": "0",
         "protocolParameters": read_value(compute_protocol_parameters_pda(PROGRAM), PROGRAM, Data::from(parameters)),
         "position": read_value(position_id, PROGRAM, Data::from(&Position { owner_account_id: id(20), position_nonce: 7,
@@ -320,10 +316,10 @@ fn related_plans(parameters: &ProtocolParameters) -> Vec<(&'static str, bool, St
         "redemptionPriceState": read_value(compute_redemption_price_state_pda(PROGRAM), PROGRAM,
             Data::from(&RedemptionPriceState { redemption_price_at_last_update: FIXED_POINT_ONE,
                 redemption_rate_per_millisecond: FIXED_POINT_ONE, controller_integral_term: 0, last_updated_at: 1_000 })),
-        "marketPriceOracle": read_value(id(5), [0x33; 8], Data::from(&OraclePriceAccount {
+        "marketPriceOracle": read_value(id(5), AccountId::new([0x33; 32]), Data::from(&OraclePriceAccount {
             base_asset: definition_id, quote_asset: id(4), price: FIXED_POINT_ONE, timestamp: 1_500,
             source_id: id(6), confidence_interval: 0 })),
-        "clock": read_value(CLOCK_01_PROGRAM_ACCOUNT_ID, [0x44; 8], Data::try_from(
+        "clock": read_value(CLOCK_01_PROGRAM_ACCOUNT_ID, AccountId::new([0x44; 32]), Data::try_from(
             ClockAccountData { block_id: 1, timestamp: 1_500 }.to_bytes()).expect("clock fits")),
     });
     // Open uses a fresh nonce distinct from the settled Position used by the
@@ -378,7 +374,7 @@ fn c_boundaries_reject_bad_requests_and_never_use_a_caller_boolean_to_select_the
         ),
         (crate::ffi::stablecoin_unfreeze_plan, false),
     ] {
-        let payload = json!({"stablecoinProgramId": hex::encode(program_id_bytes(PROGRAM)),
+        let payload = json!({"stablecoinProgramId": account_id_hex(PROGRAM),
         "freezeAuthorityId": id(2).to_string(), "isFrozen": !frozen,
         "protocolParametersId": account_id_hex(id(99)), "protocolParameters": {
             "id": parameters_read.id, "status": "ok", "account": {"program_owner": source.program_owner,

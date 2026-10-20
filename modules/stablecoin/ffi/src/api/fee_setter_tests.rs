@@ -1,10 +1,7 @@
 use std::ffi::{CStr, CString};
 
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
-use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
-    program::ProgramId,
-};
+use lee_core::account::{Account, AccountId, AccountWithMetadata, Data, Nonce};
 use serde_json::{json, Value};
 use stablecoin_core::{
     compute_protocol_parameters_pda, compute_stability_fee_accumulator_pda,
@@ -14,17 +11,17 @@ use stablecoin_core::{
     Instruction, ProtocolParameters, RedemptionPriceState, StabilityFeeAccumulator,
 };
 
-use super::*;
-use crate::account::{account_id_hex, program_id_bytes};
+use super::{test_support::post_account, *};
+use crate::account::account_id_hex;
 
-const PROGRAM: ProgramId = [0x11; 8];
+const PROGRAM: AccountId = AccountId::new([0x11; 32]);
 const START: u64 = 1_000;
 
 fn id(seed: u8) -> AccountId {
     AccountId::new([seed; 32])
 }
 
-fn account(owner: ProgramId, data: Data) -> Account {
+fn account(owner: AccountId, data: Data) -> Account {
     Account {
         program_owner: owner,
         balance: 17,
@@ -35,7 +32,7 @@ fn account(owner: ProgramId, data: Data) -> Account {
 
 fn read_value(account_id: AccountId, source: &Account) -> Value {
     json!({"id": account_id_hex(account_id), "status": "ok", "account": {
-        "program_owner": hex::encode(program_id_bytes(source.program_owner)),
+        "program_owner": account_id_hex(source.program_owner),
         "balance": hex::encode(source.balance.to_le_bytes()),
         "nonce": hex::encode(source.nonce.0.to_le_bytes()), "data": hex::encode(source.data.as_ref()),
     }})
@@ -82,11 +79,11 @@ impl Fixture {
 
     fn accounts(&self) -> [Account; 4] {
         [
-            account([0; 8], Data::default()),
+            account(AccountId::new([0; 32]), Data::default()),
             account(PROGRAM, Data::from(&self.parameters)),
             account(PROGRAM, Data::from(&self.accumulator)),
             account(
-                [0; 8],
+                AccountId::new([0; 32]),
                 Data::try_from(
                     ClockAccountData {
                         block_id: 1,
@@ -102,7 +99,7 @@ impl Fixture {
     fn request(&self, new_rate: u128) -> Value {
         let accounts = self.accounts();
         json!({
-            "stablecoinProgramId": hex::encode(program_id_bytes(PROGRAM)),
+            "stablecoinProgramId": account_id_hex(PROGRAM),
             "adminId": account_id_hex(self.parameters.admin_account_id),
             "newRate": new_rate.to_string(),
             "protocolParameters": read_value(compute_protocol_parameters_pda(PROGRAM), &accounts[1]),
@@ -127,9 +124,9 @@ impl Fixture {
                 )
             })
             .collect();
-        let words: Vec<u32> =
+        let words: Vec<u8> =
             serde_json::from_value(response["instruction"].clone()).expect("instruction words");
-        let instruction: Instruction = risc0_zkvm::serde::from_slice(&words).expect("instruction");
+        let instruction: Instruction = borsh::from_slice(&words).expect("instruction");
         let (posts, calls) = match instruction {
             Instruction::SetStabilityFeePerMillisecond { new_rate } => {
                 stablecoin_program::admin::set_stability_fee_per_millisecond(
@@ -154,20 +151,27 @@ impl Fixture {
         };
         assert!(calls.is_empty());
         assert_eq!(posts.len(), 4);
-        assert_eq!(posts[0].account(), &before[0]);
-        assert_eq!(posts[3].account(), &before[3]);
+        assert_eq!(post_account(&posts[0], PROGRAM), before[0]);
+        assert_eq!(post_account(&posts[3], PROGRAM), before[3]);
         for index in [1, 2] {
-            assert_eq!(posts[index].account().balance, before[index].balance);
-            assert_eq!(posts[index].account().nonce, before[index].nonce);
             assert_eq!(
-                posts[index].account().program_owner,
+                post_account(&posts[index], PROGRAM).balance,
+                before[index].balance
+            );
+            assert_eq!(
+                post_account(&posts[index], PROGRAM).nonce,
+                before[index].nonce
+            );
+            assert_eq!(
+                post_account(&posts[index], PROGRAM).program_owner,
                 before[index].program_owner
             );
         }
-        self.parameters =
-            ProtocolParameters::try_from(&posts[1].account().data).expect("parameters post");
+        self.parameters = ProtocolParameters::try_from(&post_account(&posts[1], PROGRAM).data)
+            .expect("parameters post");
         self.accumulator =
-            StabilityFeeAccumulator::try_from(&posts[2].account().data).expect("accumulator post");
+            StabilityFeeAccumulator::try_from(&post_account(&posts[2], PROGRAM).data)
+                .expect("accumulator post");
     }
 }
 
@@ -203,12 +207,10 @@ fn fee_setter_pins_configured_program_ids_serialization_and_guest_account_contra
     );
     assert_eq!(
         result["instruction"],
-        json!(
-            risc0_zkvm::serde::to_vec(&Instruction::SetStabilityFeePerMillisecond {
-                new_rate: FIXED_POINT_ONE + 9_007_199_254_740_993
-            })
-            .expect("encode")
-        )
+        json!(borsh::to_vec(&Instruction::SetStabilityFeePerMillisecond {
+            new_rate: FIXED_POINT_ONE + 9_007_199_254_740_993
+        })
+        .expect("encode"))
     );
     let idl: Value =
         serde_json::from_str(include_str!("../../../../../artifacts/stablecoin-idl.json"))
@@ -232,9 +234,9 @@ fn fee_setter_pins_configured_program_ids_serialization_and_guest_account_contra
     let mut base58 = request.clone();
     base58["adminId"] = json!(fixture.parameters.admin_account_id.to_string());
     assert_eq!(plan(base58).expect("base58 admin"), result);
-    for program_id in [[0x11; 8], [0x42; 8]] {
+    for program_id in [AccountId::new([0x11; 32]), AccountId::new([0x42; 32])] {
         let mut configured = request.clone();
-        let program_hex = hex::encode(program_id_bytes(program_id));
+        let program_hex = account_id_hex(program_id);
         configured["stablecoinProgramId"] = json!(program_hex);
         for (field, derived) in [
             (
@@ -400,8 +402,8 @@ fn fee_setter_rechecks_current_admin_after_native_rotation() {
         id(6),
     );
     assert!(calls.is_empty());
-    fixture.parameters =
-        ProtocolParameters::try_from(&posts[1].account().data).expect("rotated parameters");
+    fixture.parameters = ProtocolParameters::try_from(&post_account(&posts[1], PROGRAM).data)
+        .expect("rotated parameters");
     let mut request = fixture.request(FIXED_POINT_ONE);
     request["adminId"] = json!(account_id_hex(old_admin));
     failure(request, "admin_mismatch");
@@ -455,7 +457,7 @@ fn fee_setter_validates_singletons_exact_data_clock_and_signer_before_planning()
     for field in ["protocolParameters", "stabilityFeeAccumulator"] {
         let mut request = fixture.request(FIXED_POINT_ONE);
         request[field]["account"]["program_owner"] =
-            json!(hex::encode(program_id_bytes([0x22; 8])));
+            json!(account_id_hex(AccountId::new([0x22; 32])));
         failure(request, "stablecoin_program_mismatch");
     }
     for (field, value, error) in [

@@ -7,10 +7,7 @@
 //! account data.
 
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
-use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
-    program::ProgramId,
-};
+use lee_core::account::{Account, AccountId, AccountWithMetadata, Data, Nonce};
 use serde_json::{json, Value};
 use stablecoin_core::{
     compute_protocol_parameters_pda, compute_redemption_price_state_pda,
@@ -27,20 +24,21 @@ use twap_oracle_core::OraclePriceAccount;
 use super::{
     accrue_stability_fee_plan, current_global_state, decode_protocol_parameters,
     decode_redemption_price_state, decode_stability_fee_accumulator, redemption_rate_update_quote,
-    refresh_globals_plan, update_redemption_rate_plan, AccrueStabilityFeePlanRequest,
-    CurrentGlobalStateRequest, DecodeProtocolParametersRequest, DecodeRedemptionPriceStateRequest,
-    DecodeStabilityFeeAccumulatorRequest, RedemptionRateUpdateQuoteRequest,
-    RefreshGlobalsPlanRequest, StablecoinResult, UpdateRedemptionRatePlanRequest,
+    refresh_globals_plan, test_support::post_account, update_redemption_rate_plan,
+    AccrueStabilityFeePlanRequest, CurrentGlobalStateRequest, DecodeProtocolParametersRequest,
+    DecodeRedemptionPriceStateRequest, DecodeStabilityFeeAccumulatorRequest,
+    RedemptionRateUpdateQuoteRequest, RefreshGlobalsPlanRequest, StablecoinResult,
+    UpdateRedemptionRatePlanRequest,
 };
 use crate::{
-    account::{account_id_hex, account_read, program_id_bytes},
+    account::{account_id_hex, account_read},
     AccountRead,
 };
 
-const STABLECOIN_PROGRAM_ID: ProgramId = [0x11_u32; 8];
-const TOKEN_PROGRAM_ID: ProgramId = [0x22_u32; 8];
-const ORACLE_PROGRAM_ID: ProgramId = [0x33_u32; 8];
-const CLOCK_PROGRAM_ID: ProgramId = [0x44_u32; 8];
+const STABLECOIN_PROGRAM_ID: AccountId = AccountId::new([0x11_u8; 32]);
+const TOKEN_PROGRAM_ID: AccountId = AccountId::new([0x22_u8; 32]);
+const ORACLE_PROGRAM_ID: AccountId = AccountId::new([0x33_u8; 32]);
+const CLOCK_PROGRAM_ID: AccountId = AccountId::new([0x44_u8; 32]);
 
 const START: u64 = 1_000;
 const DUE: u64 = START + 1_800_000;
@@ -54,10 +52,10 @@ fn id(seed: u8) -> AccountId {
 }
 
 fn program_id_hex() -> String {
-    hex::encode(program_id_bytes(STABLECOIN_PROGRAM_ID))
+    account_id_hex(STABLECOIN_PROGRAM_ID)
 }
 
-fn account(owner: ProgramId, data: Data) -> Account {
+fn account(owner: AccountId, data: Data) -> Account {
     Account {
         program_owner: owner,
         balance: 0,
@@ -82,9 +80,9 @@ fn expect_error(result: StablecoinResult, expected: &str) {
 }
 
 fn decode_instruction(value: &Value) -> Instruction {
-    let words: Vec<u32> = serde_json::from_value(value["instruction"].clone())
+    let words: Vec<u8> = serde_json::from_value(value["instruction"].clone())
         .expect("plan instruction must contain u32 words");
-    risc0_zkvm::serde::from_slice::<Instruction, u32>(&words).expect("plan instruction must decode")
+    borsh::from_slice::<Instruction>(&words).expect("plan instruction must decode")
 }
 
 fn assert_plan(plan: &Value, account_ids: &[AccountId], instruction_word: u32) {
@@ -330,7 +328,11 @@ impl JourneyState {
                 );
                 assert!(calls.is_empty());
                 self.accumulator = StabilityFeeAccumulator::try_from(
-                    &posts.get(2).expect("accrual post state").account().data,
+                    &post_account(
+                        posts.get(2).expect("accrual post state"),
+                        STABLECOIN_PROGRAM_ID,
+                    )
+                    .data,
                 )
                 .expect("accrual output must decode");
             }
@@ -345,7 +347,11 @@ impl JourneyState {
                 );
                 assert!(calls.is_empty());
                 self.redemption = RedemptionPriceState::try_from(
-                    &posts.get(2).expect("update post state").account().data,
+                    &post_account(
+                        posts.get(2).expect("update post state"),
+                        STABLECOIN_PROGRAM_ID,
+                    )
+                    .data,
                 )
                 .expect("update output must decode");
             }
@@ -361,19 +367,19 @@ impl JourneyState {
                 );
                 assert!(calls.is_empty());
                 self.accumulator = StabilityFeeAccumulator::try_from(
-                    &posts
-                        .get(2)
-                        .expect("refresh accumulator post state")
-                        .account()
-                        .data,
+                    &post_account(
+                        posts.get(2).expect("refresh accumulator post state"),
+                        STABLECOIN_PROGRAM_ID,
+                    )
+                    .data,
                 )
                 .expect("refresh accumulator output must decode");
                 self.redemption = RedemptionPriceState::try_from(
-                    &posts
-                        .get(3)
-                        .expect("refresh redemption post state")
-                        .account()
-                        .data,
+                    &post_account(
+                        posts.get(3).expect("refresh redemption post state"),
+                        STABLECOIN_PROGRAM_ID,
+                    )
+                    .data,
                 )
                 .expect("refresh redemption output must decode");
             }
@@ -852,7 +858,7 @@ fn journey_recovers_from_bad_callers_and_account_reads_without_retries() {
         .account
         .as_mut()
     {
-        account.program_owner = hex::encode(program_id_bytes(TOKEN_PROGRAM_ID));
+        account.program_owner = account_id_hex(TOKEN_PROGRAM_ID);
     }
     expect_error(
         accrue_stability_fee_plan(private_accumulator),

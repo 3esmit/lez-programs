@@ -17,6 +17,7 @@
 namespace {
 const char SETTINGS_ORG[] = "Logos";
 const char DISCONNECTED_KEY[] = "disconnected";
+const char FEE_PAYER_KEY[] = "feePayer";
 const char WALLET_HOME_ENV[] = "LEE_WALLET_HOME_DIR";
 
 QString toLocalPath(const QString& path)
@@ -166,6 +167,8 @@ void WalletController::disconnect()
 {
     m_wallet.disconnect();
     m_state.isWalletOpen = false;
+    m_state.feePayerId.clear();
+    m_accounts.clear();
     m_accountModel->replaceAccounts({});
     QSettings(SETTINGS_ORG, m_settingsApplication).setValue(DISCONNECTED_KEY, true);
     emit stateChanged();
@@ -209,8 +212,46 @@ QString WalletController::balance(const QString& accountId, bool isPublic)
     return {};
 }
 
+bool WalletController::setFeePayer(const QString& accountId)
+{
+    const QString id = accountId.trimmed().toLower();
+    for (const WalletAccount& account : m_accounts) {
+        if (account.address.toLower() != id || !canPayFees(account))
+            continue;
+        QSettings(SETTINGS_ORG, m_settingsApplication).setValue(FEE_PAYER_KEY, id);
+        if (m_state.feePayerId != id) {
+            m_state.feePayerId = id;
+            emit stateChanged();
+        }
+        return true;
+    }
+    return false;
+}
+
+// Keeps the persisted choice while it covers the minimum fee reserve; otherwise
+// defaults to the best-funded public account, without persisting that default.
+void WalletController::selectFeePayer(const QVector<WalletAccount>& accounts)
+{
+    const QString saved = QSettings(SETTINGS_ORG, m_settingsApplication)
+        .value(FEE_PAYER_KEY).toString();
+    const WalletAccount* best = nullptr;
+    for (const WalletAccount& account : accounts) {
+        if (!canPayFees(account))
+            continue;
+        if (account.address.toLower() == saved) {
+            m_state.feePayerId = saved;
+            return;
+        }
+        if (!best || balanceLess(best->balance, account.balance))
+            best = &account;
+    }
+    m_state.feePayerId = best ? best->address.toLower() : QString();
+}
+
 void WalletController::applySnapshot(const WalletSnapshot& snapshot)
 {
+    m_accounts = snapshot.accounts;
+    selectFeePayer(m_accounts);
     m_accountModel->replaceAccounts(snapshot.accounts);
     m_state.lastSyncedBlock = static_cast<int>(snapshot.lastSyncedBlock);
     m_state.currentBlockHeight = static_cast<int>(snapshot.currentBlockHeight);

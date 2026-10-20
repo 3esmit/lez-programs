@@ -99,8 +99,10 @@ That profile is part of program identity. After every release build, inspect the
 # Build all guest binaries with the shared BuildKit cache
 make build-programs
 
-# Deploy a program binary to the sequencer
-wallet deploy-program target/guest/<program>.bin
+# Deploy a program binary to the sequencer (LEZ v0.2.5: header + segment accounts;
+# see README.md "Deployment")
+wallet program-loader deploy --elf target/guest/<program>.bin --header <header> \
+  --segments <seg-1> ... <seg-N> --payer <funded-account>
 
 # Inspect the ProgramId of a built binary
 spel inspect target/guest/<program>.bin

@@ -26,9 +26,7 @@ use super::{
     RefreshGlobalsPlanRequest, RepayDebtPlanRequest, StablecoinApiError, StablecoinResult,
     UpdateRedemptionRatePlanRequest,
 };
-use crate::account::{
-    account_id_from_hex, account_id_hex, decode_account, program_id_bytes, AccountRead,
-};
+use crate::account::{account_id_from_hex, account_id_hex, decode_account, AccountRead};
 
 pub fn initialize_program_plan(request: InitializeProgramPlanRequest) -> StablecoinResult {
     let program_id = parse_stablecoin_program_id(&request.stablecoin_program_id)?;
@@ -550,15 +548,17 @@ pub(super) fn parse_i128(value: &Value) -> Result<i128, StablecoinApiError> {
 }
 
 pub(super) fn plan_response<const ACCOUNT_COUNT: usize>(
-    program_id: lee_core::program::ProgramId,
+    program_id: AccountId,
     account_ids: [AccountId; ACCOUNT_COUNT],
     signing_requirements: [bool; ACCOUNT_COUNT],
     instruction: Instruction,
 ) -> StablecoinResult {
-    let instruction = risc0_zkvm::serde::to_vec(&instruction)
-        .map_err(|_| StablecoinApiError::new("backend_error"))?;
+    // LEZ v0.2.5 decodes instruction data as Borsh, not RISC Zero's serde codec. The
+    // payload is therefore a byte array now, where it used to be an array of u32 words.
+    let instruction =
+        borsh::to_vec(&instruction).map_err(|_| StablecoinApiError::new("backend_error"))?;
     Ok(json!({
-        "programId": hex::encode(program_id_bytes(program_id)),
+        "programId": account_id_hex(program_id),
         "accountIds": account_ids.into_iter().map(account_id_hex).collect::<Vec<_>>(),
         "signingRequirements": signing_requirements.into_iter().collect::<Vec<_>>(),
         "instruction": instruction,

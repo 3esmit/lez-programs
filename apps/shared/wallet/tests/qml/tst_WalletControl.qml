@@ -19,6 +19,14 @@ Item {
             property int publicAccountCalls: 0
             property int privateAccountCalls: 0
             property int disconnectCalls: 0
+            property string feePayerId: ""
+            property int feePayerCalls: 0
+
+            function setFeePayer(accountId) {
+                feePayerCalls++
+                feePayerId = accountId
+                return true
+            }
 
             function openExisting() {
                 openCalls++
@@ -114,8 +122,9 @@ Item {
             verify(backend, "Backend exists")
             const model = createTemporaryObject(modelComponent, root)
             verify(model, "Account model exists")
+            // canPayFees comes from the backend's fee-reserve check; default it off.
             for (const account of accounts || [])
-                model.append(account)
+                model.append(Object.assign({ canPayFees: false }, account))
             const control = createTemporaryObject(controlComponent, root, {
                 wallet: backend,
                 accountModel: model
@@ -243,6 +252,47 @@ Item {
             compare(fixture.control.selectedAddress, "b".repeat(64))
         }
 
+        function test_selectsFundedFeePayer() {
+            const fixture = createControl({ isWalletOpen: true, feePayerId: "a".repeat(64) }, [
+                { name: "One", address: "a".repeat(64), balance: "1000000000", isPublic: true, canPayFees: true },
+                { name: "Two", address: "b".repeat(64), balance: "2000000000", isPublic: false },
+                { name: "Three", address: "c".repeat(64), balance: "1", isPublic: true },
+                { name: "Four", address: "d".repeat(64), balance: "500000000", isPublic: true, canPayFees: true }
+            ])
+            mouseClick(findChild(fixture.control, "walletAccountButton"))
+            const label = findChild(fixture.control, "walletFeePayerLabel")
+            tryVerify(function() { return label && label.visible })
+            verify(label.text.indexOf("aaaaaa") === 0, label.text)
+            verify(label.text.indexOf("1000000000") > 0, label.text)
+
+            mouseClick(findChild(fixture.control, "walletChangeFeePayerButton"))
+            const list = findChild(fixture.control, "walletFeePayerList")
+            tryCompare(list, "count", 4)
+            tryVerify(function() { return list.itemAtIndex(3) !== null })
+            verify(list.itemAtIndex(0).visible)
+            verify(!list.itemAtIndex(1).visible, "Private account cannot pay")
+            verify(!list.itemAtIndex(2).visible, "Balance below the fee reserve cannot pay")
+            verify(!findChild(fixture.control, "walletNoFeePayerLabel").visible)
+
+            list.itemAtIndex(3).children[0].clicked()
+            compare(fixture.backend.feePayerCalls, 1)
+            compare(fixture.backend.feePayerId, "d".repeat(64))
+            tryVerify(function() { return label.text.indexOf("dddddd") === 0 })
+        }
+
+        function test_warnsWithoutFundedFeePayer() {
+            const fixture = createControl({ isWalletOpen: true }, [
+                { name: "One", address: "a".repeat(64), balance: "1", isPublic: true }
+            ])
+            mouseClick(findChild(fixture.control, "walletAccountButton"))
+            const label = findChild(fixture.control, "walletFeePayerLabel")
+            tryVerify(function() { return label && label.visible })
+            compare(label.text, "No funded public account")
+            mouseClick(findChild(fixture.control, "walletChangeFeePayerButton"))
+            const warning = findChild(fixture.control, "walletNoFeePayerLabel")
+            tryVerify(function() { return warning && warning.visible })
+        }
+
         function test_createsAccount() {
             const fixture = createControl({ isWalletOpen: true }, [
                 { name: "One", address: "a".repeat(64), balance: "10", isPublic: true }
@@ -334,6 +384,73 @@ Item {
             verify(addPosition.y + addButton.height <= menu.y + menu.height,
                    "Add account bottom: " + (addPosition.y + addButton.height)
                    + ", menu bottom: " + (menu.y + menu.height))
+        }
+
+        // Asserts `item` lies inside the opened wallet menu, in window coordinates.
+        function verifyInsideMenu(window, menu, item, what) {
+            const position = item.mapToItem(window.contentItem, 0, 0)
+            const menuTop = menu.parent.mapToItem(window.contentItem, 0, menu.y).y
+            verify(position.y >= menuTop, what + " top: " + position.y + ", menu top: " + menuTop)
+            verify(position.y + item.height <= menuTop + menu.height,
+                   what + " bottom: " + (position.y + item.height)
+                   + ", menu bottom: " + (menuTop + menu.height))
+            verify(position.y + item.height <= window.height,
+                   what + " bottom: " + (position.y + item.height) + ", window: " + window.height)
+        }
+
+        function test_feePayerSelectorReachableInShortWindow() {
+            const backend = createTemporaryObject(backendComponent, root, {
+                isWalletOpen: true,
+                feePayerId: "0".repeat(64)
+            })
+            const model = createTemporaryObject(modelComponent, root)
+            verify(backend && model, "Wallet fixture exists")
+            for (let index = 0; index < 6; ++index) {
+                model.append({
+                    name: "Account " + index,
+                    address: String(index).repeat(64),
+                    balance: "1000000000",
+                    isPublic: true,
+                    canPayFees: true
+                })
+            }
+
+            // The smallest supported standalone window.
+            const window = createTemporaryObject(compactWindowComponent, root, { height: 222 })
+            verify(window, "Short window exists")
+            window.control.wallet = backend
+            window.control.accountModel = model
+            waitForRendering(window.contentItem)
+
+            mouseClick(findChild(window.control, "walletAccountButton"))
+            const menu = findChild(window.control, "walletMenu")
+            tryCompare(menu, "opened", true)
+
+            // The overview scrolls to the fee-payer card when it does not fit.
+            const overview = findChild(window.control, "walletOverview")
+            verify(overview, "Overview exists")
+            verify(overview.contentHeight > overview.height,
+                   "Overview content " + overview.contentHeight + " fits in " + overview.height)
+            overview.contentY = overview.contentHeight - overview.height
+            const changeButton = findChild(window.control, "walletChangeFeePayerButton")
+            tryVerify(function() { return changeButton.mapToItem(window.contentItem, 0, 0).y
+                                          + changeButton.height <= window.height })
+            verifyInsideMenu(window, menu, changeButton, "Change button")
+            mouseClick(changeButton)
+
+            // The stack ignores input until the push transition settles.
+            tryCompare(findChild(window.control, "walletStack"), "busy", false)
+            const list = findChild(window.control, "walletFeePayerList")
+            tryVerify(function() { return list && list.visible && list.height > 0 })
+            list.positionViewAtEnd()
+            tryVerify(function() { return list.itemAtIndex(5) !== null })
+            const lastPayer = list.itemAtIndex(5)
+            tryVerify(function() { return lastPayer.mapToItem(window.contentItem, 0, 0).y
+                                          + lastPayer.height <= window.height })
+            verifyInsideMenu(window, menu, lastPayer, "Last payer")
+            mouseClick(lastPayer)
+            compare(backend.feePayerCalls, 1)
+            compare(backend.feePayerId, "5".repeat(64))
         }
     }
 }

@@ -6,10 +6,7 @@
 //! means the two can't drift apart.
 
 use alloy_primitives::U512;
-use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, Data},
-    program::ProgramId,
-};
+use lee_core::account::{Account, AccountId, AccountWithMetadata, Data};
 use stablecoin_core::{
     collateralization::collateralization_values, math::FIXED_POINT_ONE, Position,
     ProtocolParameters,
@@ -157,7 +154,7 @@ pub(crate) fn assert_timing_milliseconds_in_band(milliseconds: u64, label: &str)
 pub(crate) fn decode_global(
     account: &AccountWithMetadata,
     expected_id: AccountId,
-    stablecoin_program_id: ProgramId,
+    stablecoin_program_id: AccountId,
     label: &str,
 ) -> Data {
     assert_ne!(

@@ -1,9 +1,6 @@
 use alloy_primitives::U512;
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
-use lee_core::{
-    account::{Account, AccountId, Data, Nonce},
-    program::ProgramId,
-};
+use lee_core::account::{Account, AccountId, Data, Nonce};
 use stablecoin_core::{
     compute_position_pda, compute_position_vault_pda, compute_protocol_parameters_pda,
     compute_redemption_price_state_pda, compute_stability_fee_accumulator_pda,
@@ -16,11 +13,11 @@ use stablecoin_core::{
 
 use super::{position_health, PositionHealthRequest};
 use crate::{
-    account::{account_id_hex, account_read, program_id_bytes},
+    account::{account_id_hex, account_read},
     AccountRead,
 };
 
-const PROGRAM: ProgramId = [0x11; 8];
+const PROGRAM: AccountId = AccountId::new([0x11; 32]);
 const START: u64 = 1_000;
 const NONCE: u64 = u64::MAX;
 
@@ -28,7 +25,7 @@ fn id(seed: u8) -> AccountId {
     AccountId::new([seed; 32])
 }
 
-fn read(account_id: AccountId, owner: ProgramId, data: Data) -> AccountRead {
+fn read(account_id: AccountId, owner: AccountId, data: Data) -> AccountRead {
     account_read(
         account_id,
         &Account {
@@ -90,7 +87,7 @@ impl Fixture {
 
     fn request(&self) -> PositionHealthRequest {
         PositionHealthRequest {
-            stablecoin_program_id: hex::encode(program_id_bytes(PROGRAM)),
+            stablecoin_program_id: account_id_hex(PROGRAM),
             owner_id: account_id_hex(id(20)),
             position_nonce: NONCE.to_string(),
             position: read(
@@ -115,7 +112,7 @@ impl Fixture {
             ),
             clock: read(
                 CLOCK_01_PROGRAM_ACCOUNT_ID,
-                [0x44; 8],
+                AccountId::new([0x44; 32]),
                 Data::try_from(
                     ClockAccountData {
                         block_id: 1,
@@ -441,7 +438,7 @@ fn health_validates_every_live_account_identity_owner_and_exact_data() {
                 }
                 _ => {
                     read.account.as_mut().expect("account").program_owner =
-                        hex::encode(program_id_bytes([0x99; 8]));
+                        account_id_hex(AccountId::new([0x99; 32]));
                     "stablecoin_program_mismatch"
                 }
             };

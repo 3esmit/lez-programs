@@ -1,8 +1,5 @@
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
-use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
-    program::ProgramId,
-};
+use lee_core::account::{Account, AccountId, AccountWithMetadata, Data, Nonce};
 use serde_json::{json, Value};
 use stablecoin_core::{
     compute_position_pda, compute_position_vault_pda, compute_protocol_parameters_pda,
@@ -20,21 +17,23 @@ use twap_oracle_core::OraclePriceAccount;
 
 use super::{
     debt::{checked_accumulator, checked_debt_delta},
-    generate_debt_plan, GenerateDebtPlanRequest,
+    generate_debt_plan,
+    test_support::{chained_input, post_account},
+    GenerateDebtPlanRequest,
 };
 use crate::{
-    account::{account_id_hex, account_read, decode_account, program_id_bytes},
+    account::{account_id_hex, account_read, decode_account},
     AccountRead,
 };
 
-const PROGRAM: ProgramId = [0x11; 8];
-const TOKEN_PROGRAM: ProgramId = [0x22; 8];
+const PROGRAM: AccountId = AccountId::new([0x11; 32]);
+const TOKEN_PROGRAM: AccountId = AccountId::new([0x22; 32]);
 const START: u64 = 1_000;
 const NONCE: u64 = u64::MAX;
 fn id(seed: u8) -> AccountId {
     AccountId::new([seed; 32])
 }
-fn read(account_id: AccountId, owner: ProgramId, data: Data) -> AccountRead {
+fn read(account_id: AccountId, owner: AccountId, data: Data) -> AccountRead {
     account_read(
         account_id,
         &Account {
@@ -108,7 +107,7 @@ impl Fixture {
     fn request(&self, amount: Value) -> GenerateDebtPlanRequest {
         let definition_id = compute_stablecoin_definition_pda(PROGRAM);
         GenerateDebtPlanRequest {
-            stablecoin_program_id: hex::encode(program_id_bytes(PROGRAM)),
+            stablecoin_program_id: account_id_hex(PROGRAM),
             owner_id: account_id_hex(id(20)),
             position_nonce: NONCE.to_string(),
             amount,
@@ -146,7 +145,7 @@ impl Fixture {
                 PROGRAM,
                 Data::from(&self.redemption),
             ),
-            market_price_oracle: read(id(5), [0x33; 8], Data::from(&self.oracle)),
+            market_price_oracle: read(id(5), AccountId::new([0x33; 32]), Data::from(&self.oracle)),
             protocol_parameters: read(
                 compute_protocol_parameters_pda(PROGRAM),
                 PROGRAM,
@@ -154,7 +153,7 @@ impl Fixture {
             ),
             clock: read(
                 CLOCK_01_PROGRAM_ACCOUNT_ID,
-                [0x44; 8],
+                AccountId::new([0x44; 32]),
                 Data::try_from(
                     ClockAccountData {
                         block_id: 1,
@@ -212,9 +211,8 @@ fn execute(fixture: &Fixture, amount: u128, expected_delta: u128) {
     let [owner,position,definition,destination,accumulator,redemption,oracle,parameters,clock]:[_;9]=inputs.try_into().expect("nine inputs");
     assert!(!definition.is_authorized);
     assert!(!destination.is_authorized);
-    let words: Vec<u32> = serde_json::from_value(plan["instruction"].clone()).expect("words");
-    let Instruction::GenerateDebt { amount } =
-        risc0_zkvm::serde::from_slice(&words).expect("instruction")
+    let words: Vec<u8> = serde_json::from_value(plan["instruction"].clone()).expect("words");
+    let Instruction::GenerateDebt { amount } = borsh::from_slice(&words).expect("instruction")
     else {
         panic!("expected borrowing");
     };
@@ -232,33 +230,32 @@ fn execute(fixture: &Fixture, amount: u128, expected_delta: u128) {
         amount,
     );
     let actual =
-        Position::try_from(&posts.get(1).expect("position post").account().data).expect("position");
+        Position::try_from(&post_account(posts.get(1).expect("position post"), PROGRAM).data)
+            .expect("position");
     let mut expected = fixture.position.clone();
     expected.normalized_debt_amount += expected_delta;
     assert_eq!(actual, expected);
     let [call] = calls.as_slice() else {
         panic!("one mint");
     };
-    assert_eq!(call.program_id, TOKEN_PROGRAM);
+    assert_eq!(call.program_account_id, TOKEN_PROGRAM);
     assert_eq!(
         call.pda_seeds,
         vec![compute_stablecoin_definition_pda_seed()]
     );
     let token_core::Instruction::Mint { amount_to_mint } =
-        risc0_zkvm::serde::from_slice(&call.instruction_data).expect("mint instruction")
+        borsh::from_slice(&call.instruction_data).expect("mint instruction")
     else {
         panic!("expected mint");
     };
     assert_eq!(amount_to_mint, amount);
-    let [definition, destination] = call.pre_states.as_slice() else {
+    let [definition_id, destination_id] = call.pre_state_ids.as_slice() else {
         panic!("two mint accounts");
     };
-    assert!(definition.is_authorized);
-    assert!(!destination.is_authorized);
-    assert_eq!(
-        definition.account_id,
-        compute_stablecoin_definition_pda(PROGRAM)
-    );
+    assert_eq!(*definition_id, compute_stablecoin_definition_pda(PROGRAM));
+    // The definition is authorized by the call's PDA seed, asserted above.
+    let definition = chained_input(&posts, PROGRAM, *definition_id, true);
+    let destination = chained_input(&posts, PROGRAM, *destination_id, false);
     let minted = token_program::mint::mint(
         definition.clone(),
         destination.clone(),
@@ -266,12 +263,14 @@ fn execute(fixture: &Fixture, amount: u128, expected_delta: u128) {
         TOKEN_PROGRAM,
     );
     assert!(
-        matches!(TokenDefinition::try_from(&minted.first().expect("definition post").account().data).expect("definition"),
+        matches!(TokenDefinition::try_from(&post_account(minted.first().expect("definition post"), TOKEN_PROGRAM).data).expect("definition"),
         TokenDefinition::Fungible{total_supply,..} if total_supply==fixture.supply+amount)
     );
     assert_eq!(
-        TokenHolding::try_from(&minted.get(1).expect("holding post").account().data)
-            .expect("holding"),
+        TokenHolding::try_from(
+            &post_account(minted.get(1).expect("holding post"), TOKEN_PROGRAM).data
+        )
+        .expect("holding"),
         TokenHolding::Fungible {
             definition_id: compute_stablecoin_definition_pda(PROGRAM),
             balance: fixture.balance + amount
@@ -409,7 +408,7 @@ fn oracle_freshness_is_inclusive_and_not_a_controller_quote_gate() {
         .account
         .as_mut()
         .expect("account")
-        .program_owner = hex::encode(program_id_bytes([0x99; 8]));
+        .program_owner = account_id_hex(AccountId::new([0x99; 32]));
     fixture.oracle.base_asset = id(90);
     fixture.oracle.quote_asset = id(91);
     request
@@ -497,9 +496,9 @@ fn borrowing_accepts_wide_redemption_projection_and_maximum_amounts_losslessly()
     request.owner_id = id(20).to_string();
     request.user_stablecoin_holding_id = id(21).to_string();
     let plan = generate_debt_plan(request).expect("lossless JSON integer/base58");
-    let words: Vec<u32> = serde_json::from_value(plan["instruction"].clone()).expect("words");
+    let words: Vec<u8> = serde_json::from_value(plan["instruction"].clone()).expect("words");
     assert!(
-        matches!(risc0_zkvm::serde::from_slice::<Instruction,u32>(&words).expect("instruction"),Instruction::GenerateDebt{amount} if amount==u128::from(u64::MAX))
+        matches!(borsh::from_slice::<Instruction>(&words).expect("instruction"),Instruction::GenerateDebt{amount} if amount==u128::from(u64::MAX))
     );
     for amount in [
         json!(1.5),
@@ -570,7 +569,7 @@ fn borrowing_validates_definition_authority_destination_and_position_identity() 
         .account
         .as_mut()
         .expect("account")
-        .program_owner = hex::encode(program_id_bytes(PROGRAM));
+        .program_owner = account_id_hex(PROGRAM);
     error(request, "token_program_mismatch");
     let mut request = fixture.request(json!("0"));
     request

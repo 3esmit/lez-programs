@@ -62,6 +62,7 @@ public:
         const std::vector<bool>& signing_requirements,
         const std::vector<std::uint8_t>& instruction,
         const std::string& program_id,
+        const std::string& payer_account_id,
         logos::CallError* error = nullptr) {
         QStringList qt_account_ids;
         qt_account_ids.reserve(static_cast<qsizetype>(account_ids.size()));
@@ -84,6 +85,7 @@ public:
                                        qt_signing_requirements,
                                        QVariant(qt_instruction),
                                        QString::fromStdString(program_id),
+                                       QString::fromStdString(payer_account_id),
                                        error)
                                        .toStdString();
         if (result == transportErrorSentinel() && error != nullptr) {

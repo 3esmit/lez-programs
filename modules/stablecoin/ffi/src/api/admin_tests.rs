@@ -1,9 +1,6 @@
 use std::ffi::{c_char, CStr, CString};
 
-use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
-    program::ProgramId,
-};
+use lee_core::account::{Account, AccountId, AccountWithMetadata, Data, Nonce};
 use serde_json::{json, Value};
 use stablecoin_core::{
     compute_protocol_parameters_pda, compute_redemption_price_state_pda,
@@ -12,22 +9,22 @@ use stablecoin_core::{
 };
 use twap_oracle_core::OraclePriceAccount;
 
-use super::*;
+use super::{test_support::post_account, *};
 use crate::{
-    account::{account_id_hex, decode_account, program_id_bytes},
+    account::{account_id_hex, decode_account},
     AccountRead,
 };
 
-const PROGRAM: ProgramId = [0x11; 8];
-const OTHER_PRODUCER: ProgramId = [0x99; 8];
+const PROGRAM: AccountId = AccountId::new([0x11; 32]);
+const OTHER_PRODUCER: AccountId = AccountId::new([0x99; 32]);
 
 fn id(seed: u8) -> AccountId {
     AccountId::new([seed; 32])
 }
 
-fn read_value(account_id: AccountId, owner: ProgramId, data: Data) -> Value {
+fn read_value(account_id: AccountId, owner: AccountId, data: Data) -> Value {
     json!({"id": account_id_hex(account_id), "status": "ok", "account": {
-        "program_owner": hex::encode(program_id_bytes(owner)),
+        "program_owner": account_id_hex(owner),
         "balance": hex::encode(17_u128.to_le_bytes()),
         "nonce": hex::encode(7_u128.to_le_bytes()), "data": hex::encode(data.as_ref()),
     }})
@@ -131,7 +128,7 @@ impl Fixture {
 
     fn request(&self, setter: Setter) -> Value {
         let mut request = json!({
-            "stablecoinProgramId": hex::encode(program_id_bytes(PROGRAM)),
+            "stablecoinProgramId": account_id_hex(PROGRAM),
             "adminId": account_id_hex(self.parameters.admin_account_id),
             "protocolParameters": read_value(compute_protocol_parameters_pda(PROGRAM), PROGRAM, Data::from(&self.parameters)),
         });
@@ -189,8 +186,8 @@ fn native_execute(plan: &Value, request: &Value) -> Account {
         signs[1],
         compute_protocol_parameters_pda(PROGRAM),
     );
-    let words: Vec<u32> = serde_json::from_value(plan["instruction"].clone()).expect("words");
-    let instruction: Instruction = risc0_zkvm::serde::from_slice(&words).expect("instruction");
+    let words: Vec<u8> = serde_json::from_value(plan["instruction"].clone()).expect("words");
+    let instruction: Instruction = borsh::from_slice(&words).expect("instruction");
     let (posts, calls) = match instruction {
         Instruction::SetMinimumCollateralizationRatio { new_ratio } => {
             stablecoin_program::admin::set_minimum_collateralization_ratio(
@@ -239,15 +236,21 @@ fn native_execute(plan: &Value, request: &Value) -> Account {
                 AccountWithMetadata::new(oracle.clone(), signs[2], oracle_id),
                 PROGRAM,
             );
-            assert_eq!(result.0.get(2).expect("oracle post").account(), &oracle);
+            assert_eq!(
+                post_account(result.0.get(2).expect("oracle post"), PROGRAM),
+                oracle
+            );
             result
         }
         other => panic!("unexpected setter {other:?}"),
     };
     assert!(calls.is_empty());
     assert_eq!(posts.len(), ids.len());
-    assert_eq!(posts.first().expect("admin post").account(), &owner);
-    let updated = posts.get(1).expect("parameters post").account();
+    assert_eq!(
+        post_account(posts.first().expect("admin post"), PROGRAM),
+        owner
+    );
+    let updated = post_account(posts.get(1).expect("parameters post"), PROGRAM);
     assert_eq!(updated.program_owner, old_parameters.program_owner);
     assert_eq!(updated.nonce, old_parameters.nonce);
     assert_eq!(updated.balance, old_parameters.balance);
@@ -292,7 +295,7 @@ fn all_setters_pin_arguments_account_order_and_guest_flags_and_match_native_muta
                 .find(|entry| entry["name"] == setter.name())
                 .expect("setter IDL");
             assert_eq!(entry["accounts"], flags);
-            let words: Vec<u32> =
+            let words: Vec<u8> =
                 serde_json::from_value(plan["instruction"].clone()).expect("words");
             let mut expected = fixture.parameters.clone();
             let instruction = match setter {
@@ -337,10 +340,7 @@ fn all_setters_pin_arguments_account_order_and_guest_flags_and_match_native_muta
                     Instruction::SetMarketPriceOracle
                 }
             };
-            assert_eq!(
-                words,
-                risc0_zkvm::serde::to_vec(&instruction).expect("encode")
-            );
+            assert_eq!(words, borsh::to_vec(&instruction).expect("encode"));
             let updated = native_execute(&plan, &request);
             assert_eq!(
                 ProtocolParameters::try_from(&updated.data).expect("updated"),
@@ -488,10 +488,7 @@ fn all_setters_validate_current_admin_and_exact_parameter_pda_ownership_and_read
             let read = &mut request["protocolParameters"];
             match mutation {
                 0 => read["id"] = json!(account_id_hex(id(99))),
-                1 => {
-                    read["account"]["program_owner"] =
-                        json!(hex::encode(program_id_bytes(OTHER_PRODUCER)))
-                }
+                1 => read["account"]["program_owner"] = json!(account_id_hex(OTHER_PRODUCER)),
                 2 => read["account"]["data"] = json!(""),
                 3 => {
                     let data = read["account"]["data"].as_str().expect("data");

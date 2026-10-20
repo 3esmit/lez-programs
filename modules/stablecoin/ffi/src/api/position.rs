@@ -1,4 +1,4 @@
-use lee_core::{account::AccountId, program::ProgramId};
+use lee_core::account::AccountId;
 use serde_json::{json, Value};
 use stablecoin_core::{compute_position_pda, compute_position_vault_pda, Position};
 
@@ -68,7 +68,7 @@ pub fn decode_position(request: DecodePositionRequest) -> StablecoinResult {
 }
 
 pub(super) fn validated_position(
-    program_id: ProgramId,
+    program_id: AccountId,
     owner: AccountId,
     nonce: u64,
     read: &AccountRead,

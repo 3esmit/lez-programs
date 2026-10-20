@@ -1,8 +1,5 @@
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
-use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
-    program::ProgramId,
-};
+use lee_core::account::{Account, AccountId, AccountWithMetadata, Data, Nonce};
 use serde_json::{json, Value};
 use stablecoin_core::{
     compute_position_pda, compute_position_vault_pda, compute_protocol_parameters_pda,
@@ -11,20 +8,20 @@ use stablecoin_core::{
 };
 use token_core::{TokenDefinition, TokenHolding};
 
-use super::{close_position_plan, ClosePositionPlanRequest};
+use super::{close_position_plan, test_support::post_account, ClosePositionPlanRequest};
 use crate::{
-    account::{account_id_hex, account_read, decode_account, program_id_bytes},
+    account::{account_id_hex, account_read, decode_account},
     AccountRead,
 };
 
-const PROGRAM: ProgramId = [0x11; 8];
-const TOKEN_PROGRAM: ProgramId = [0x22; 8];
+const PROGRAM: AccountId = AccountId::new([0x11; 32]);
+const TOKEN_PROGRAM: AccountId = AccountId::new([0x22; 32]);
 
 fn id(seed: u8) -> AccountId {
     AccountId::new([seed; 32])
 }
 
-fn read(account_id: AccountId, owner: ProgramId, data: Data) -> AccountRead {
+fn read(account_id: AccountId, owner: AccountId, data: Data) -> AccountRead {
     account_read(
         account_id,
         &Account {
@@ -72,7 +69,7 @@ impl Fixture {
 
     fn request(&self) -> ClosePositionPlanRequest {
         ClosePositionPlanRequest {
-            stablecoin_program_id: hex::encode(program_id_bytes(PROGRAM)),
+            stablecoin_program_id: account_id_hex(PROGRAM),
             owner_id: account_id_hex(id(20)),
             position_nonce: self.position.position_nonce.to_string(),
             position: read(
@@ -124,14 +121,14 @@ fn close_pins_zero_argument_serialization_pdas_and_guest_account_flags() {
         plan["signingRequirements"],
         json!([true, false, false, false])
     );
-    let words: Vec<u32> = serde_json::from_value(plan["instruction"].clone()).expect("words");
+    let words: Vec<u8> = serde_json::from_value(plan["instruction"].clone()).expect("words");
     assert_eq!(
         words,
-        risc0_zkvm::serde::to_vec(&Instruction::ClosePosition).expect("encode")
+        borsh::to_vec(&Instruction::ClosePosition).expect("encode")
     );
     assert_eq!(words.len(), 1);
     assert!(matches!(
-        risc0_zkvm::serde::from_slice::<Instruction, u32>(&words).expect("decode"),
+        borsh::from_slice::<Instruction>(&words).expect("decode"),
         Instruction::ClosePosition
     ));
 
@@ -197,9 +194,9 @@ fn planned_close_preserves_accounts_and_cannot_release_or_reopen_the_pda() {
         let old_position = position.account.clone();
         let old_vault = vault.account.clone();
         let old_parameters = parameters.account.clone();
-        let words: Vec<u32> = serde_json::from_value(plan["instruction"].clone()).expect("words");
+        let words: Vec<u8> = serde_json::from_value(plan["instruction"].clone()).expect("words");
         assert!(matches!(
-            risc0_zkvm::serde::from_slice::<Instruction, u32>(&words).expect("decode"),
+            borsh::from_slice::<Instruction>(&words).expect("decode"),
             Instruction::ClosePosition
         ));
         let (posts, calls) = stablecoin_program::close_position::close_position(
@@ -211,23 +208,29 @@ fn planned_close_preserves_accounts_and_cannot_release_or_reopen_the_pda() {
         );
         assert!(calls.is_empty());
         assert_eq!(posts.len(), 4);
-        assert_eq!(posts.first().expect("owner post").account(), &owner_account);
-        let closed = posts.get(1).expect("position post").account();
+        assert_eq!(
+            post_account(posts.first().expect("owner post"), PROGRAM),
+            owner_account
+        );
+        let closed = post_account(posts.get(1).expect("position post"), PROGRAM);
         assert_eq!(
             closed,
-            &Account {
+            Account {
                 data: Data::default(),
                 ..old_position
             }
         );
         assert_eq!(closed.program_owner, PROGRAM);
         assert_eq!(closed.nonce, Nonce(7));
-        assert_eq!(posts.get(2).expect("vault post").account(), &old_vault);
         assert_eq!(
-            posts.get(3).expect("parameters post").account(),
-            &old_parameters
+            post_account(posts.get(2).expect("vault post"), PROGRAM),
+            old_vault
         );
-        request.position = account_read(compute_position_pda(PROGRAM, id(20), u64::MAX), closed);
+        assert_eq!(
+            post_account(posts.get(3).expect("parameters post"), PROGRAM),
+            old_parameters
+        );
+        request.position = account_read(compute_position_pda(PROGRAM, id(20), u64::MAX), &closed);
         error(request, "invalid_position_data");
 
         // Deliberately attempt to violate the fresh-position invariant with the
@@ -338,7 +341,10 @@ fn debt_recorded_collateral_and_actual_vault_balance_block_independently() {
         AccountWithMetadata::new(vault, false, vault_id),
         1,
     );
-    request.vault = account_read(vault_id, posts.get(1).expect("donated vault").account());
+    request.vault = account_read(
+        vault_id,
+        &post_account(posts.get(1).expect("donated vault"), PROGRAM),
+    );
     assert_eq!(fixture.position.collateral_amount, 0);
     error(request, "vault_not_empty");
 }
@@ -356,7 +362,7 @@ fn close_validates_pdas_owners_and_stored_position_identity() {
         .account
         .as_mut()
         .expect("position")
-        .program_owner = hex::encode(program_id_bytes(TOKEN_PROGRAM));
+        .program_owner = account_id_hex(TOKEN_PROGRAM);
     error(wrong, "stablecoin_program_mismatch");
     let mut wrong = request.clone();
     wrong.protocol_parameters.id = account_id_hex(id(99));
@@ -367,7 +373,7 @@ fn close_validates_pdas_owners_and_stored_position_identity() {
         .account
         .as_mut()
         .expect("parameters")
-        .program_owner = hex::encode(program_id_bytes(TOKEN_PROGRAM));
+        .program_owner = account_id_hex(TOKEN_PROGRAM);
     error(wrong, "stablecoin_program_mismatch");
     let mut wrong = request.clone();
     wrong.vault.id = account_id_hex(id(99));

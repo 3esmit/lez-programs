@@ -120,10 +120,7 @@ fn blocker(code: &'static str, details: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
-    use lee_core::{
-        account::{Account, AccountId, Data, Nonce},
-        program::ProgramId,
-    };
+    use lee_core::account::{Account, AccountId, Data, Nonce};
     use stablecoin_core::{
         compute_protocol_parameters_pda, compute_redemption_price_state_pda,
         math::{FIXED_POINT_ONE, MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS},
@@ -131,17 +128,17 @@ mod tests {
     };
 
     use super::*;
-    use crate::account::{account_id_hex, account_read, program_id_bytes};
+    use crate::account::{account_id_hex, account_read};
 
-    const STABLECOIN_PROGRAM_ID: ProgramId = [0x11_u32; 8];
-    const ORACLE_PROGRAM_ID: ProgramId = [0x22_u32; 8];
-    const CLOCK_PROGRAM_ID: ProgramId = [0x33_u32; 8];
+    const STABLECOIN_PROGRAM_ID: AccountId = AccountId::new([0x11_u8; 32]);
+    const ORACLE_PROGRAM_ID: AccountId = AccountId::new([0x22_u8; 32]);
+    const CLOCK_PROGRAM_ID: AccountId = AccountId::new([0x33_u8; 32]);
 
     fn id(seed: u8) -> AccountId {
         AccountId::new([seed; 32])
     }
 
-    fn account(owner: ProgramId, data: Data) -> Account {
+    fn account(owner: AccountId, data: Data) -> Account {
         Account {
             program_owner: owner,
             balance: 0,
@@ -204,7 +201,7 @@ mod tests {
             timestamp: now,
         };
         RedemptionRateUpdateQuoteRequest {
-            stablecoin_program_id: hex::encode(program_id_bytes(STABLECOIN_PROGRAM_ID)),
+            stablecoin_program_id: account_id_hex(STABLECOIN_PROGRAM_ID),
             protocol_parameters: account_read(
                 compute_protocol_parameters_pda(STABLECOIN_PROGRAM_ID),
                 &account(STABLECOIN_PROGRAM_ID, Data::from(parameters)),
@@ -557,7 +554,7 @@ mod tests {
             .account
             .as_mut()
             .expect("account exists")
-            .program_owner = hex::encode(program_id_bytes(ORACLE_PROGRAM_ID));
+            .program_owner = account_id_hex(ORACLE_PROGRAM_ID);
         assert_error(wrong_parameters_owner, "stablecoin_program_mismatch");
 
         let mut malformed_parameters = base.clone();
@@ -579,7 +576,7 @@ mod tests {
             .account
             .as_mut()
             .expect("account exists")
-            .program_owner = hex::encode(program_id_bytes(ORACLE_PROGRAM_ID));
+            .program_owner = account_id_hex(ORACLE_PROGRAM_ID);
         assert_error(wrong_redemption_owner, "stablecoin_program_mismatch");
 
         let mut malformed_redemption = base.clone();
@@ -629,7 +626,7 @@ mod tests {
         let params = parameters(oracle_id);
         let state = redemption(FIXED_POINT_ONE, 0, 0);
         let mut observation = oracle(oracle_id, FIXED_POINT_ONE, 1);
-        observation.1.program_owner = [0xFF_u32; 8];
+        observation.1.program_owner = AccountId::new([0xFF; 32]);
 
         let quoted = value(request(&params, &state, &observation, 1));
         assert_eq!(quoted["canSubmit"], true);

@@ -173,6 +173,7 @@ LogosMap openPositionRequest() {
         {"positionNonce", "7"},
         {"initialCollateralAmount", "125"},
         {"userCollateralHoldingId", OTHER_CALLER_ID_HEX},
+        {"feePayerId", CALLER_ID_HEX},
     };
 }
 
@@ -205,6 +206,7 @@ LogosMap depositCollateralRequest() {
         {"positionNonce", "7"},
         {"userCollateralHoldingId", OTHER_CALLER_ID_HEX},
         {"amount", "125"},
+        {"feePayerId", CALLER_ID_HEX},
     };
 }
 
@@ -238,7 +240,8 @@ std::vector<std::string> repayDebtAccounts() {
 
 LogosMap repayDebtRequest() {
     return {{"ownerId", CALLER_ID_HEX}, {"positionNonce", "7"},
-            {"userStablecoinHoldingId", OTHER_CALLER_ID_HEX}, {"amount", "125"}};
+            {"userStablecoinHoldingId", OTHER_CALLER_ID_HEX}, {"amount", "125"},
+            {"feePayerId", CALLER_ID_HEX}};
 }
 
 struct RepayReadMocks {
@@ -298,23 +301,22 @@ QVariantList submissionArguments(const std::vector<std::string>& account_ids,
         qt_account_ids.push_back(QString::fromStdString(account_ids[index]));
         signing_requirements.push_back(index == 0);
     }
-    const QByteArray instruction(
-        1,
-        static_cast<char>(instruction_word));
-    QByteArray instruction_le = instruction;
-    instruction_le.append(3, '\0');
+    // A unit instruction variant is its one-byte Borsh tag.
+    const QByteArray instruction(1, static_cast<char>(instruction_word));
     return {
         QVariant(qt_account_ids),
         QVariant(signing_requirements),
-        QVariant(instruction_le),
+        QVariant(instruction),
         QVariant(QString::fromStdString(PROGRAM_ID_HEX)),
+        QVariant(QString::fromStdString(account_ids.front())),
     };
 }
 
 QVariantList submissionArguments(const std::vector<std::string>& account_ids,
                                  const std::vector<std::size_t>& signer_indices,
                                  const std::string& program_id,
-                                 std::uint32_t instruction_word = 11) {
+                                 std::uint32_t instruction_word = 11,
+                                 const std::string& fee_payer = {}) {
     QStringList qt_account_ids;
     QVariantList signing_requirements;
     for (std::size_t index = 0; index < account_ids.size(); ++index) {
@@ -323,13 +325,12 @@ QVariantList submissionArguments(const std::vector<std::string>& account_ids,
             std::find(signer_indices.begin(), signer_indices.end(), index) != signer_indices.end());
     }
     const QByteArray instruction(1, static_cast<char>(instruction_word));
-    QByteArray instruction_le = instruction;
-    instruction_le.append(3, '\0');
     return {
         QVariant(qt_account_ids),
         QVariant(signing_requirements),
-        QVariant(instruction_le),
+        QVariant(instruction),
         QVariant(QString::fromStdString(program_id)),
+        QVariant(QString::fromStdString(fee_payer.empty() ? account_ids.front() : fee_payer)),
     };
 }
 
@@ -1011,7 +1012,7 @@ LOGOS_TEST(poke_methods_validate_caller_wallet_ownership_before_reads) {
         const std::string program_info_response = successEnvelope(programInfoValue());
         context.mockCFunction("stablecoin_program_info").returns(program_info_response);
 
-        assertError(module.accrueStabilityFee("not-an-account"), "invalid_account_id");
+        assertError(module.accrueStabilityFee("not-an-account", CALLER_ID_HEX), "invalid_account_id");
         LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "list_accounts"), 0);
         LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 0);
         LOGOS_ASSERT_EQ(
@@ -1028,7 +1029,7 @@ LOGOS_TEST(poke_methods_validate_caller_wallet_ownership_before_reads) {
         context.mockModule("lez_core", "list_accounts")
             .returnsVariant(QVariant(walletAccounts(OTHER_CALLER_ID_HEX)));
 
-        assertError(module.accrueStabilityFee(CALLER_ID_HEX), "account_read_failed");
+        assertError(module.accrueStabilityFee(CALLER_ID_HEX, CALLER_ID_HEX), "account_read_failed");
         LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "list_accounts"), 1);
         LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 0);
         LOGOS_ASSERT_EQ(
@@ -1048,7 +1049,7 @@ LOGOS_TEST(poke_methods_validate_caller_wallet_ownership_before_reads) {
                     UniversalLezCore::transportErrorSentinel())),
             }));
 
-        assertError(module.accrueStabilityFee(CALLER_ID_HEX), "backend_error");
+        assertError(module.accrueStabilityFee(CALLER_ID_HEX, CALLER_ID_HEX), "backend_error");
         LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "list_accounts"), 1);
         LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 0);
         LOGOS_ASSERT_EQ(
@@ -1163,6 +1164,74 @@ LOGOS_TEST(open_position_maps_planner_gates_and_checks_derived_accounts) {
 
         assertError(module.openPosition(openPositionRequest()), "already_initialized");
         LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_open_position_plan"), 1);
+        LOGOS_ASSERT_EQ(
+            context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+    }
+}
+
+LOGOS_TEST(deposit_collateral_passes_a_separate_fee_payer_to_the_wallet) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module");
+    LogosModules modules(context.api());
+    StablecoinModuleImpl module;
+    attachModules(module, modules);
+
+    // A payer outside the transaction co-signs only the fee.
+    const std::string fee_payer(64, 'e');
+    const std::string addresses = successEnvelope(
+        {{"positionIdHex", std::string(64, 'c')}, {"vaultIdHex", std::string(64, 'd')}});
+    const std::string plan =
+        successEnvelope(depositCollateralPlan(depositCollateralAccounts(), 11));
+    const std::string program_info_response = successEnvelope(programInfoValue());
+    context.mockCFunction("stablecoin_program_info").returns(program_info_response);
+    context.mockCFunction("stablecoin_position_addresses").returns(addresses);
+    context.mockCFunction("stablecoin_deposit_collateral_plan").returns(plan);
+    context.mockModule("lez_core", "list_accounts")
+        .returnsVariant(QVariant(walletAccounts(
+            std::vector<std::string>{CALLER_ID_HEX, OTHER_CALLER_ID_HEX})));
+    context.mockModule("lez_core", "get_account_public").returns(initializedAccount());
+    context.mockModule("lez_core", "send_generic_public_transaction")
+        .returns(successfulTransaction());
+
+    LogosMap request = depositCollateralRequest();
+    request["feePayerId"] = fee_payer;
+    const LogosMap response = module.depositCollateral(request);
+
+    LOGOS_ASSERT_EQ(response["status"].get<std::string>(), std::string("ok"));
+    LOGOS_ASSERT_TRUE(context.moduleCalledWith(
+        "lez_core",
+        "send_generic_public_transaction",
+        submissionArguments(depositCollateralAccounts(), {0, 3}, PROGRAM_ID_HEX, 11, fee_payer)));
+}
+
+LOGOS_TEST(deposit_collateral_rejects_a_missing_or_non_signing_fee_payer) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+
+    // The protocol parameters account takes part in the deposit without signing.
+    for (const std::string& fee_payer :
+         {std::string(), std::string(64, '0'), PROTOCOL_PARAMETERS_ID_HEX}) {
+        LogosTestContext context("stablecoin_module");
+        LogosModules modules(context.api());
+        StablecoinModuleImpl module;
+        attachModules(module, modules);
+        const std::string addresses = successEnvelope(
+            {{"positionIdHex", std::string(64, 'c')}, {"vaultIdHex", std::string(64, 'd')}});
+        const std::string plan =
+            successEnvelope(depositCollateralPlan(depositCollateralAccounts(), 11));
+        const std::string program_info_response = successEnvelope(programInfoValue());
+        context.mockCFunction("stablecoin_program_info").returns(program_info_response);
+        context.mockCFunction("stablecoin_position_addresses").returns(addresses);
+        context.mockCFunction("stablecoin_deposit_collateral_plan").returns(plan);
+        context.mockModule("lez_core", "list_accounts")
+            .returnsVariant(QVariant(walletAccounts(
+                std::vector<std::string>{CALLER_ID_HEX, OTHER_CALLER_ID_HEX})));
+        context.mockModule("lez_core", "get_account_public").returns(initializedAccount());
+
+        LogosMap request = depositCollateralRequest();
+        request["feePayerId"] = fee_payer;
+        assertError(module.depositCollateral(request), "invalid_fee_payer");
         LOGOS_ASSERT_EQ(
             context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
     }
@@ -1317,7 +1386,8 @@ std::vector<std::string> withdrawAccounts() {
 }
 LogosMap withdrawRequest() {
     return {{"ownerId", CALLER_ID_HEX}, {"positionNonce", "7"},
-        {"userCollateralHoldingId", OTHER_CALLER_ID_HEX}, {"amount", "20"}};
+        {"userCollateralHoldingId", OTHER_CALLER_ID_HEX}, {"amount", "20"},
+        {"feePayerId", CALLER_ID_HEX}};
 }
 struct WithdrawReadMocks {
     const std::string info = successEnvelope(programInfoValue());
@@ -1337,7 +1407,7 @@ std::vector<std::string> generateAccounts() {
         ACCUMULATOR_ID_HEX,REDEMPTION_STATE_ID_HEX,ORACLE_ID_HEX,PROTOCOL_PARAMETERS_ID_HEX,CLOCK_ID_HEX};
 }
 LogosMap generateRequest() {
-    return {{"ownerId",CALLER_ID_HEX},{"positionNonce","7"},{"userStablecoinHoldingId",OTHER_CALLER_ID_HEX},{"amount","1"}};
+    return {{"ownerId",CALLER_ID_HEX},{"positionNonce","7"},{"userStablecoinHoldingId",OTHER_CALLER_ID_HEX},{"amount","1"},{"feePayerId",CALLER_ID_HEX}};
 }
 struct GenerateReadMocks {
     const std::string info=successEnvelope(programInfoValue());
@@ -1358,7 +1428,8 @@ std::vector<std::string> closeAccounts() {
     return {CALLER_ID_HEX, std::string(64, 'c'), std::string(64, 'd'), PROTOCOL_PARAMETERS_ID_HEX};
 }
 LogosMap closeRequest() {
-    return {{"ownerId", CALLER_ID_HEX}, {"positionNonce", "18446744073709551615"}};
+    return {{"ownerId", CALLER_ID_HEX}, {"positionNonce", "18446744073709551615"},
+            {"feePayerId", CALLER_ID_HEX}};
 }
 struct CloseReadMocks {
     // C mocks retain pointers; these buffers must outlive every module call.
@@ -1407,6 +1478,7 @@ std::vector<AdminSetterCase> adminSetterCases() {
 LogosMap adminRequest(const AdminSetterCase& setter) {
     LogosMap request = setter.fields;
     request["adminId"] = CALLER_ID_HEX;
+    request["feePayerId"] = CALLER_ID_HEX;
     return request;
 }
 std::vector<std::string> adminAccounts(const AdminSetterCase& setter) {
@@ -1446,7 +1518,7 @@ struct FreezeReadMocks {
     }
 };
 std::vector<std::string> freezeAccounts() { return {CALLER_ID_HEX, PROTOCOL_PARAMETERS_ID_HEX}; }
-LogosMap freezeRequest() { return {{"freezeAuthorityId", CALLER_ID_HEX}}; }
+LogosMap freezeRequest() { return {{"freezeAuthorityId", CALLER_ID_HEX}, {"feePayerId", CALLER_ID_HEX}}; }
 }  // namespace
 
 LOGOS_TEST(freeze_and_unfreeze_repeat_submit_once_each_and_only_read_canonical_parameters) {
@@ -1513,12 +1585,12 @@ LOGOS_TEST(freeze_operations_normalize_base58_and_reject_malformed_or_zero_ids) 
         context.mockCFunction(operation.planner).returns(plan);
         context.mockModule("lez_core", "account_id_from_base58").returns(CALLER_ID_HEX);
         context.mockModule("lez_core", "send_generic_public_transaction").returns(successfulTransaction());
-        const LogosMap response = (module.*operation.method)({{"freezeAuthorityId", "authority-base58"}});
+        const LogosMap response = (module.*operation.method)({{"freezeAuthorityId", "authority-base58"}, {"feePayerId", CALLER_ID_HEX}});
         LOGOS_ASSERT_EQ(response["status"].get<std::string>(), std::string("ok"));
         LOGOS_ASSERT_TRUE(context.moduleCalledWith("lez_core", "send_generic_public_transaction", submissionArguments(freezeAccounts(), 29)));
         context.mockModule("lez_core", "account_id_from_base58").returns(std::string());
         for (const std::string& invalid : {std::string("invalid-id"), std::string(64, '0')}) {
-            assertError((module.*operation.method)({{"freezeAuthorityId", invalid}}), "invalid_account_id");
+            assertError((module.*operation.method)({{"freezeAuthorityId", invalid}, {"feePayerId", CALLER_ID_HEX}}), "invalid_account_id");
         }
         LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
     }
@@ -1752,7 +1824,7 @@ LOGOS_TEST(stability_fee_setter_uses_canonical_live_reads_and_submits_repeated_r
     context.mockModule("lez_core", "send_generic_public_transaction").returns(successfulTransaction());
     const LogosMap request = {
         {"adminId", CALLER_ID_HEX}, {"newRate", "1000000000000000000000000000"},
-        {"stablecoinProgramId", OTHER_CALLER_ID_HEX},
+        {"feePayerId", CALLER_ID_HEX}, {"stablecoinProgramId", OTHER_CALLER_ID_HEX},
         {"protocolParameters", nullptr}, {"stabilityFeeAccumulator", nullptr}, {"clock", nullptr},
         {"stabilityFeeAccumulatorId", OTHER_CALLER_ID_HEX}, {"clockId", OTHER_CALLER_ID_HEX},
     };
@@ -1783,7 +1855,7 @@ LOGOS_TEST(stability_fee_setter_rejects_missing_or_unreadable_fee_state_before_p
                 .withArgs(QVariantList{QVariant(QString::fromStdString(id))})
                 .thenReturn(QVariant(QString::fromStdString(read)));
             assertError(module.setStabilityFeePerMillisecond({{"adminId", CALLER_ID_HEX},
-                {"newRate", "1000000000000000000000000000"}}),
+                {"newRate", "1000000000000000000000000000"}, {"feePayerId", CALLER_ID_HEX}}),
                 id == ACCUMULATOR_ID_HEX && read.empty() ? "not_initialized" : "account_read_failed");
             LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_set_stability_fee_per_millisecond_plan"), 0);
             LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
@@ -1794,7 +1866,8 @@ LOGOS_TEST(stability_fee_setter_rejects_missing_or_unreadable_fee_state_before_p
 LOGOS_TEST(stability_fee_setter_preserves_fee_errors_and_rejects_replaced_accumulator_or_clock_in_plan) {
     ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
     ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
-    const LogosMap request = {{"adminId", CALLER_ID_HEX}, {"newRate", "1000000000000000000000000000"}};
+    const LogosMap request = {{"adminId", CALLER_ID_HEX}, {"newRate", "1000000000000000000000000000"},
+                              {"feePayerId", CALLER_ID_HEX}};
     for (const std::string& error : {"stability_fee_arithmetic_error", "invalid_clock",
         "invalid_stability_fee_accumulator_data", "stability_fee_accumulator_pda_mismatch"}) {
         LogosTestContext context("stablecoin_module"); LogosModules modules(context.api());
@@ -2399,9 +2472,9 @@ LOGOS_TEST(poke_methods_submit_exact_plans_while_protocol_is_frozen) {
     context.mockModule("lez_core", "send_generic_public_transaction")
         .returns(transaction_response);
 
-    const LogosMap accrued = module.accrueStabilityFee(CALLER_ID_HEX);
-    const LogosMap updated = module.updateRedemptionRate(CALLER_ID_HEX);
-    const LogosMap refreshed = module.refreshGlobals(CALLER_ID_HEX);
+    const LogosMap accrued = module.accrueStabilityFee(CALLER_ID_HEX, CALLER_ID_HEX);
+    const LogosMap updated = module.updateRedemptionRate(CALLER_ID_HEX, CALLER_ID_HEX);
+    const LogosMap refreshed = module.refreshGlobals(CALLER_ID_HEX, CALLER_ID_HEX);
 
     for (const LogosMap* response : {&accrued, &updated, &refreshed}) {
         LOGOS_ASSERT_EQ((*response)["status"].get<std::string>(), std::string("ok"));
@@ -2455,7 +2528,7 @@ LOGOS_TEST(update_redemption_rate_blocks_each_ordered_quote_gate_without_submit)
             .returnsVariant(QVariant(walletAccounts(CALLER_ID_HEX)));
         context.mockModule("lez_core", "get_account_public").returns(account_response);
 
-        assertError(module.updateRedemptionRate(CALLER_ID_HEX), blocker);
+        assertError(module.updateRedemptionRate(CALLER_ID_HEX, CALLER_ID_HEX), blocker);
         LOGOS_ASSERT_EQ(
             context.cFunctionCallCount("stablecoin_update_redemption_rate_plan"), 1);
         LOGOS_ASSERT_EQ(
@@ -2478,7 +2551,7 @@ LOGOS_TEST(poke_methods_map_missing_globals_and_oracle_mismatch) {
             .returnsVariant(QVariant(walletAccounts(CALLER_ID_HEX)));
         context.mockModule("lez_core", "get_account_public").returns("");
 
-        assertError(module.accrueStabilityFee(CALLER_ID_HEX), "not_initialized");
+        assertError(module.accrueStabilityFee(CALLER_ID_HEX, CALLER_ID_HEX), "not_initialized");
         LOGOS_ASSERT_EQ(
             context.cFunctionCallCount("stablecoin_accrue_stability_fee_plan"), 0);
         LOGOS_ASSERT_EQ(
@@ -2505,7 +2578,7 @@ LOGOS_TEST(poke_methods_map_missing_globals_and_oracle_mismatch) {
         context.mockModule("lez_core", "get_account_public").returns(account_response);
 
         assertError(
-            module.refreshGlobals(CALLER_ID_HEX), "market_price_oracle_mismatch");
+            module.refreshGlobals(CALLER_ID_HEX, CALLER_ID_HEX), "market_price_oracle_mismatch");
         LOGOS_ASSERT_EQ(
             context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
     }
@@ -2538,7 +2611,7 @@ LOGOS_TEST(poke_submission_maps_wallet_rejection_and_transport_failure) {
             .returns(wallet_response);
 
         assertError(
-            module.accrueStabilityFee(CALLER_ID_HEX), "wallet_submission_failed");
+            module.accrueStabilityFee(CALLER_ID_HEX, CALLER_ID_HEX), "wallet_submission_failed");
         LOGOS_ASSERT_EQ(
             context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
     }
