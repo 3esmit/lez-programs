@@ -34,3 +34,7 @@ tests/testnet/faucet.json
 
 # Token D's definition id, written by the setup script for tests/custom-token.mjs.
 tests/testnet/custom-token-manifest.json
+
+# Stablecoin deployment manifest written by scripts/deploy-stablecoin.sh when the
+# setup script deploys the stablecoin. Regenerated on every setup run.
+tests/testnet/stablecoin.json

@@ -145,10 +145,11 @@ Repeat with each program's binary and its own labels (`amm`, `ata`, `stablecoin`
 partway, use fresh segment accounts for the next attempt.
 `apps/amm/tests/testnet/setup-amm-testnet.sh` scripts this flow for several programs.
 
-To inspect the ImageID of a built binary:
+To print the ImageID of a built binary (it identifies the code, but is not the program's
+address):
 
 ```bash
-spel inspect <path-to-binary>
+spel -- program-id <path-to-binary>
 ```
 
 ## Interacting with Programs via `spel`
@@ -178,13 +179,24 @@ Generated IDL files are committed under `artifacts/`. CI will fail if a program'
 
 ### Invoke Instructions
 
-Use `spel --idl <IDL> <INSTRUCTION> [ARGS...]` to call a deployed program instruction:
+Use `spel --idl <IDL> --program <PROGRAM_ID> --fee-payer <FEE_PAYER> -- <INSTRUCTION> [ARGS...]`
+to call a deployed program instruction:
 
 ```bash
-spel --idl artifacts/token-idl.json <instruction> [args...]
-spel --idl artifacts/amm-idl.json <instruction> [args...]
-spel --idl artifacts/ata-idl.json <instruction> [args...]
-spel --idl artifacts/stablecoin-idl.json <instruction> [args...]
-spel --idl artifacts/twap_oracle-idl.json <instruction> [args...]
-spel --idl artifacts/token_mint_authority-idl.json <instruction> [args...]
+spel --idl artifacts/token-idl.json --program <TOKEN_PROGRAM_ID> --fee-payer <FEE_PAYER> -- <instruction> [args...]
+spel --idl artifacts/amm-idl.json --program <AMM_PROGRAM_ID> --fee-payer <FEE_PAYER> -- <instruction> [args...]
+spel --idl artifacts/ata-idl.json --program <ATA_PROGRAM_ID> --fee-payer <FEE_PAYER> -- <instruction> [args...]
+spel --idl artifacts/stablecoin-idl.json --program <STABLECOIN_PROGRAM_ID> --fee-payer <FEE_PAYER> -- <instruction> [args...]
+spel --idl artifacts/twap_oracle-idl.json --program <TWAP_PROGRAM_ID> --fee-payer <FEE_PAYER> -- <instruction> [args...]
+spel --idl artifacts/token_mint_authority-idl.json --program <FAUCET_PROGRAM_ID> --fee-payer <FEE_PAYER> -- <instruction> [args...]
 ```
+
+- `--program` is the program's header account id (see [Deployment](#deployment)); spel
+  rejects a binary path.
+- `--fee-payer` is a funded account your wallet holds. Without it the first signer pays,
+  which fails when the signers are fresh accounts, and instructions with no signers are
+  refused.
+- spel reports `Transaction confirmed` even when the program rejected the instruction, so
+  check the result with `spel --idl <IDL> inspect <ACCOUNT_ID> --type <TYPE>`.
+
+See [docs/testnet-runbook.md](docs/testnet-runbook.md) for complete, ordered examples.

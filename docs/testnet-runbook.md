@@ -3,16 +3,18 @@
 End-to-end steps to deploy the programs, initialize the AMM, and create a pool using
 `spel`, in the order they must happen. Follow top to bottom; nothing here can be skipped.
 
-> **Live addresses.** The current testnet deployment's ProgramIds, PDAs, token
-> definitions, and the faucet mint-authority PDA are recorded in
-> [DEPLOYMENTS.md](../DEPLOYMENTS.md) — use those when interacting with the live
-> instance instead of re-deriving.
+> **LEZ version.** This runbook targets **LEZ v0.2.5** (programs deployed through the
+> `program_loader`, fees on every transaction). The live `testnet-legacy` sequencer in
+> [DEPLOYMENTS.md](../DEPLOYMENTS.md) still runs **v0.2.4**, and its addresses are
+> ImageID-based; for that network use the v0.2.4 runbook from git history
+> (`git log -- docs/testnet-runbook.md`).
 
-> **Golden rule:** every time you **recompile** a guest, its **ProgramId changes**, and
-> **every PDA derived from that ProgramId changes too** (config, pool, vaults, LP def, lp
-> lock, current tick). If you rebuild the AMM, you must recompute all AMM PDAs and
-> re-run `initialize`. Treat ProgramIds and PDAs as deployment-specific — re-derive them,
-> never reuse old values.
+> **Golden rule:** a program's id is the **header account** it was deployed to, and
+> **every PDA is derived from that id** (config, pool, vaults, LP def, lp lock, current
+> tick, …). Recompiling a guest does not change the id of an already-deployed program, but
+> every **redeploy** goes to a fresh header — a new id, so new PDAs. After a redeploy,
+> recompute that program's PDAs and re-run its initialization (e.g. the AMM's
+> `initialize`). Treat program ids and PDAs as deployment-specific — never reuse old values.
 
 ---
 
@@ -20,8 +22,9 @@ End-to-end steps to deploy the programs, initialize the AMM, and create a pool u
 
 - [0. Prerequisites](#0-prerequisites)
   - [Argument formats](#argument-formats-used-throughout)
+  - [Fees](#fees-used-throughout)
 - [1. Build & deploy the programs](#1-build--deploy-the-programs)
-  - [Record the ProgramIds](#record-the-programids)
+  - [Record the program ids](#record-the-program-ids)
 - [2. Wallet CLI basics](#2-wallet-cli-basics)
 - [3. Create two token definitions](#3-create-two-token-definitions)
   - [(Optional) Transfer tokens](#optional-transfer-tokens)
@@ -37,6 +40,7 @@ End-to-end steps to deploy the programs, initialize the AMM, and create a pool u
 - [12. Publish a price](#12-publish-a-price)
 - [13. (Admin) Withdraw protocol fees](#13-admin-withdraw-protocol-fees)
 - [14. Faucet: mint additional tokens](#14-faucet-mint-additional-tokens-token-mint-authority)
+- [15. Stablecoin](#15-stablecoin)
 - [Gotchas](#gotchas-we-hit-and-how-to-avoid-them)
 
 ---
@@ -64,13 +68,27 @@ End-to-end steps to deploy the programs, initialize the AMM, and create a pool u
   ```
   Use a dedicated wallet home per network: synced block state from one sequencer does not
   carry over to another.
+- A **funded public account** to pay fees, `<FEE_PAYER>` below. Every transaction is
+  charged, and the sequencer reserves the worst-case fee up front (at the wallet's default
+  2,000,000 gas limit and the minimum base fees that is ~16,000,008 units), so the payer
+  needs at least that much on top of what it spends.
 
 ### Argument formats (used throughout)
 
 | Kind | Accepted forms |
 |---|---|
 | **account id** (PDAs, holdings, authority) | base58 (e.g. `9qbX…`) **or** `0x`-prefixed 32-byte hex. **No** `account_id( … )` wrapper. |
-| **program id** | 8 comma-separated u32 limbs, a bare 64-char ImageID hex, a `0x`-prefixed ImageID hex, **or** a base58 ImageID. (`spel program-id` prints the limbs and the bare hex; base58 is computed by the `*_pdas` helpers / yourself.) |
+| **program id** | The base58 id of the program's **header account** (step 1) — an ordinary account id. `spel --program` rejects a binary path: the id cannot be derived from the binary. |
+| **wallet account** (`wallet … --header/--segments/--payer`, `wallet account get -a`) | A label, or `Public/<base58-id>`. A bare id is taken as a label. |
+
+### Fees (used throughout)
+
+Every `spel` transaction below passes `--fee-payer <FEE_PAYER>`. Without it, spel makes the
+**first signer** pay — which fails whenever the signers are freshly created accounts that
+hold nothing (definition targets, holdings, PDAs-to-be). Instructions with **no** signers
+(e.g. `create-price-observations`, `record-tick`, `publish-price`) need `--fee-payer`, or
+spel refuses to build them. The fee payer joins the transaction's signers, so your wallet
+must hold its key.
 
 ---
 
@@ -84,29 +102,57 @@ but you need all three before initializing the AMM):
 ```bash
 # repeat for: token, twap_oracle, amm
 cargo risczero build --manifest-path programs/<prog>/methods/guest/Cargo.toml
-wallet deploy-program programs/<prog>/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/<prog>.bin
 ```
 
 Binary path convention: `programs/<prog>/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/<prog>.bin`
 
-### Record the ProgramIds
+A program is deployed through the `program_loader`: the binary is uploaded as a chain of
+write-once **segment** accounts (one per 96 KiB chunk), and a **header** account points at
+that chain. The wallet does not create these accounts itself, so create them first — all
+fresh. Header and segments start empty, so `<FEE_PAYER>` pays every deploy transaction:
 
 ```bash
-spel -- program-id programs/<prog>/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/<prog>.bin
+PROG=token   # repeat for: token, twap_oracle, amm
+BIN=programs/$PROG/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/$PROG.bin
+N=$(( ($(wc -c < "$BIN") + 98303) / 98304 ))   # 96 KiB segments; the count must match exactly
+
+wallet account new public --label "$PROG-header"
+for i in $(seq 1 "$N"); do wallet account new public --label "$PROG-seg-$i"; done
+
+wallet program-loader deploy \
+  --elf "$BIN" \
+  --header "$PROG-header" \
+  --segments $(for i in $(seq 1 "$N"); do printf '%s-seg-%s ' "$PROG" "$i"; done) \
+  --payer <FEE_PAYER>
 ```
 
-Record each ProgramId in whatever form you'll pass it — the forms are interchangeable
-(see the arg-format table above). `spel program-id` prints both the **decimal limbs** and
-the **64-char ImageID hex**; both are accepted by spel and the `*_pdas` helpers, and the
-ImageID hex is usually the easiest to copy. **base58 is also accepted as input**, but
-nothing in the toolchain prints it — base58-encode the 32 ImageID bytes yourself if you
-want that form. Fill in:
+- `--header`, `--segments` and `--payer` take a wallet **label** or `Public/<base58-id>`; a
+  bare id is mistaken for a label.
+- Segments are write-once: if a deploy fails partway, use **fresh** segment accounts (and a
+  fresh header) for the next attempt.
+- `--immutable` makes the program self-declare as immutable (not protocol-enforced).
+- `apps/amm/tests/testnet/setup-amm-testnet.sh` scripts this flow for every program.
 
-| program | ProgramId (limbs, ImageID hex, or base58) |
+### Record the program ids
+
+The program's id is its **header account's** id:
+
+```bash
+wallet account id --account-id "$PROG-header"
+```
+
+It is a plain base58 account id: pass it to `spel --program`, to the `*_pdas` helpers, and
+wherever an instruction takes another program's id (e.g. the AMM's `--token-program-id`).
+Fill in:
+
+| program | program id (base58 header account id) |
 |---|---|
 | token | `<TOKEN_PROGRAM_ID>` |
 | twap_oracle | `<TWAP_PROGRAM_ID>` |
 | amm | `<AMM_PROGRAM_ID>` |
+
+(`spel -- program-id <bin>` still prints a binary's ImageID, which identifies the code but
+is no longer an address.)
 
 ## 2. Wallet CLI basics
 
@@ -154,7 +200,9 @@ Next, create the token definitions and holdings:
 
 ```bash
 spel --idl artifacts/token-idl.json \
-     --program programs/token/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token.bin \
+     --program <TOKEN_PROGRAM_ID> \
+     --fee-payer <FEE_PAYER> \
+     --fee-payer <FEE_PAYER> \
      -- new-fungible-definition \
      --name "Token A" --total-supply 1000000000000000000000 \
      --definition-target-account <DEF_A> \
@@ -185,7 +233,9 @@ with `initialize-account` (the new holding is a **signer** — your wallet must 
 
 ```bash
 spel --idl artifacts/token-idl.json \
-     --program programs/token/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token.bin \
+     --program <TOKEN_PROGRAM_ID> \
+     --fee-payer <FEE_PAYER> \
+     --fee-payer <FEE_PAYER> \
      -- initialize-account \
      --definition-account <DEF> \
      --account-to-initialize <NEW_HOLDING>
@@ -196,7 +246,9 @@ whole token at 18 decimals):
 
 ```bash
 spel --idl artifacts/token-idl.json \
-     --program programs/token/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token.bin \
+     --program <TOKEN_PROGRAM_ID> \
+     --fee-payer <FEE_PAYER> \
+     --fee-payer <FEE_PAYER> \
      -- transfer \
      --sender <SENDER_HOLDING> \
      --recipient <RECIPIENT_HOLDING> \
@@ -218,9 +270,8 @@ spel --idl artifacts/token-idl.json inspect <RECIPIENT_HOLDING> --type TokenHold
 Program PDAs use a **SHA-256 seed scheme** (in each `*_core`), which is **not** what
 `spel pda` computes (that pads raw bytes) — so `spel pda` will give wrong addresses. Each
 program ships a committed `examples/*_pdas` helper that derives its PDAs with its own
-`*_core` functions, guaranteeing they match the guest. They take ProgramIds as comma-
-separated u32 limbs, a 64-char ImageID hex, or a base58 ImageID (any form `spel program-id`
-prints, plus base58), and account ids as base58.
+`*_core` functions, guaranteeing they match the guest. They take program ids (header
+account ids, step 1) and account ids, all as base58.
 
 AMM instances are namespaced by `(owner, nonce)`, so pick the `<OWNER>` account that will
 sign `initialize` in step 5 now — the config PDA (and every pool PDA under it) depends on
@@ -245,7 +296,8 @@ The fixed **clock** account never changes: `4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4e
 | amm | `cargo run -q -p amm_program --example amm_pdas -- <amm_pid> <owner> [<twap_pid> <defA> <defB>]` | config; + pool, vault_a/b, pool_definition_lp, lp_lock_holding, current_tick_account, protocol_fee_a/b |
 | twap_oracle | `cargo run -q -p twap_oracle_program --example twap_oracle_pdas -- <oracle_pid> <price_source> [<window_duration>]` | current_tick_account; + price_observations, oracle_price_account (with a window) |
 | ata | `cargo run -q -p ata_program --example ata_pdas -- <ata_pid> <token_pid> <owner> <definition>` | the ATA address |
-| stablecoin | `cargo run -q -p stablecoin_program --example stablecoin_pdas -- <stablecoin_pid> <owner> <collateral_definition>` | position, position_vault |
+| stablecoin | `cargo run -q -p stablecoin_program --example stablecoin_pdas -- <stablecoin_pid> globals` | protocol_parameters, stability_fee_accumulator, redemption_price_state, stablecoin_definition, stablecoin_master_holding |
+| stablecoin | `cargo run -q -p stablecoin_program --example stablecoin_pdas -- <stablecoin_pid> <owner> <position_nonce>` | position, position_vault |
 
 (The token program has no PDAs.)
 
@@ -258,11 +310,13 @@ instance-wide `<SWAP_FEE_BPS>` (basis points, any value below 10000 = 100%; e.g.
 `<PROTOCOL_FEE_BPS>` (the fraction *of that swap fee* diverted to the protocol, in bps of
 the swap fee; `0` = none, up to `10000` = 100% of the swap fee). Both fees are set **once
 here** and apply to every pool in the namespace — they are no longer per-pool values.
-`config` is the PDA from step 4; `token`/`twap` are the ProgramIds from step 1.
+`config` is the PDA from step 4; `token`/`twap` are the program ids (header account ids)
+from step 1.
 
 ```bash
 spel --idl artifacts/amm-idl.json \
-     --program programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
+     --program <AMM_PROGRAM_ID> \
+     --fee-payer <FEE_PAYER> \
      -- initialize \
      --owner <OWNER> \
      --config <CONFIG_PDA> \
@@ -293,7 +347,8 @@ Amounts must satisfy `isqrt(token_a_amount * token_b_amount) > 1000` (MINIMUM_LI
 
 ```bash
 spel --idl artifacts/amm-idl.json \
-     --program programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
+     --program <AMM_PROGRAM_ID> \
+     --fee-payer <FEE_PAYER> \
      -- new-definition \
      --config <CONFIG_PDA> \
      --pool <POOL_PDA> \
@@ -313,7 +368,7 @@ spel --idl artifacts/amm-idl.json \
 
 > spel signs `user_holding_a`, `user_holding_b`, and `user_holding_lp` (the IDL `signer`
 > accounts) — your wallet must hold all three keys. No `--bin-*` is needed: the chained
-> token/oracle calls are resolved on-chain from the ProgramIds stored in `config`.
+> token/oracle calls are resolved on-chain from the program ids stored in `config`.
 > Pair `<DEF_A>` with `<USER_HOLDING_A>`/`<AMOUNT_A>` consistently (and B with B).
 
 ## 7. Verify
@@ -339,7 +394,8 @@ cargo run -q -p twap_oracle_program --example twap_oracle_pdas -- \
 
 ```bash
 spel --idl artifacts/amm-idl.json \
-     --program programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
+     --program <AMM_PROGRAM_ID> \
+     --fee-payer <FEE_PAYER> \
      -- create-price-observations \
      --config <CONFIG_PDA> \
      --pool <POOL_PDA> \
@@ -351,10 +407,10 @@ spel --idl artifacts/amm-idl.json \
 
 > **No signers** — this instruction is permissionless: the AMM authorizes the new
 > observations PDA via the pool's PDA seed in a chained call to the TWAP oracle, so spel
-> submits an empty witness set. Prereqs: the pool and its `current_tick_account` must
+> submits no signature besides the fee payer's. Prereqs: the pool and its `current_tick_account` must
 > already exist (the latter was created during `new_definition`); the oracle seeds the first
 > observation from `current_tick_account`, so the price can't be forged. No `--bin-*` needed
-> (the TWAP ProgramId is read from `config`). The `price_observations` PDA must not already
+> (the TWAP program id is read from `config`). The `price_observations` PDA must not already
 > exist (`init`).
 
 Verify:
@@ -370,7 +426,8 @@ holding's token definition and debits that side of the pool.
 
 ```bash
 spel --idl artifacts/amm-idl.json \
-     --program programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
+     --program <AMM_PROGRAM_ID> \
+     --fee-payer <FEE_PAYER> \
      -- swap-exact-input \
      --config <CONFIG_PDA> \
      --pool <POOL_PDA> \
@@ -408,14 +465,15 @@ spel --idl artifacts/amm-idl.json inspect <POOL_PDA> --type PoolDefinition
 
 `record_tick` appends an observation to a window's `price_observations` account from the
 current tick. It's a **direct TWAP oracle call** (not AMM-chained), so it uses the
-twap_oracle binary + IDL. **No signers** — it's permissionless: it reads
+twap_oracle program id + IDL. **No signers** — it's permissionless: it reads
 `current_tick_account` + `clock` and writes `price_observations`.
 
 Run a swap (step 9) first so `current_tick_account` holds a fresh tick, then:
 
 ```bash
 spel --idl artifacts/twap_oracle-idl.json \
-     --program programs/twap_oracle/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/twap_oracle.bin \
+     --program <TWAP_PROGRAM_ID> \
+     --fee-payer <FEE_PAYER> \
      -- record-tick \
      --price-observations <PRICE_OBSERVATIONS_PDA> \
      --current-tick-account <CURRENT_TICK_PDA> \
@@ -454,7 +512,8 @@ cargo run -q -p twap_oracle_program --example twap_oracle_pdas -- \
 
 ```bash
 spel --idl artifacts/amm-idl.json \
-     --program programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
+     --program <AMM_PROGRAM_ID> \
+     --fee-payer <FEE_PAYER> \
      -- create-oracle-price-account \
      --config <CONFIG_PDA> \
      --pool <POOL_PDA> \
@@ -478,7 +537,8 @@ tick) and writes it to the `oracle_price_account`. **Direct TWAP oracle call, pe
 
 ```bash
 spel --idl artifacts/twap_oracle-idl.json \
-     --program programs/twap_oracle/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/twap_oracle.bin \
+     --program <TWAP_PROGRAM_ID> \
+     --fee-payer <FEE_PAYER> \
      -- publish-price \
      --price-observations <PRICE_OBSERVATIONS_PDA> \
      --oracle-price-account <ORACLE_PRICE_ACCOUNT_PDA> \
@@ -515,7 +575,8 @@ Withdraw `<AMOUNT>` (raw base units) of that token to `<DESTINATION>` — an **a
 holding of the **same** token:
 ```bash
 spel --idl artifacts/amm-idl.json \
-     --program programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
+     --program <AMM_PROGRAM_ID> \
+     --fee-payer <FEE_PAYER> \
      -- withdraw-protocol-fees \
      --config <CONFIG_PDA> \
      --protocol-fee-holding <PROTOCOL_FEE_PDA> \
@@ -541,28 +602,24 @@ The **token-mint-authority** program is a permissionless faucet: once a token's
 that token to themselves — rate-limited to **once per 24h per `(recipient, token
 definition)`**. Use it to top up a test token after the initial supply is spent.
 
-> The live testnet faucet PDA, the deployed faucet ImageID, and the faucet-mintable token
-> definitions are in [DEPLOYMENTS.md](../DEPLOYMENTS.md). The steps below are the generic
-> flow; when using the live instance, take the concrete ids from there.
+> The steps below are the generic flow. [DEPLOYMENTS.md](../DEPLOYMENTS.md) lists the
+> faucet on the v0.2.4 `testnet-legacy` network, whose ImageID-based ids do not carry over to
+> a v0.2.5 deployment.
 
 ### 14.1 Deploy the faucet + derive its PDA
 
-Build and deploy like the other programs, then derive its mint-authority PDA **from the
-exact binary you deployed** (the PDA is a function of the ImageID):
+Build and deploy it like the other programs (step 1, with `PROG=token_mint_authority`);
+its header account id is `<FAUCET_PROGRAM_ID>`. Then derive its mint-authority PDA from
+that id:
 
 ```bash
-cargo risczero build --manifest-path programs/token_mint_authority/methods/guest/Cargo.toml
-wallet deploy-program programs/token_mint_authority/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token_mint_authority.bin
-
-cargo run -q -p token_mint_authority_program --example mint_authority -- \
-  programs/token_mint_authority/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token_mint_authority.bin
+cargo run -q -p token_mint_authority_program --example mint_authority -- <FAUCET_PROGRAM_ID>
 # prints the base58 <FAUCET_PDA>
 ```
 
-> **Build consistency.** Unlike `token`, the faucet's `target/guest` and docker builds have
-> **different** ImageIDs — so derive the PDA from, and deploy, the **same** binary, and set
-> the tokens' `mint_authority` to that PDA. A mismatch makes every FaucetMint fail. (The
-> live testnet faucet is the `target/guest` build — see DEPLOYMENTS.md.)
+The PDA depends only on the program id, so it changes when the faucet is redeployed (new
+header), not when it is rebuilt. Set the tokens' `mint_authority` to the PDA of the faucet
+you actually call; a mismatch makes every FaucetMint fail.
 
 ### 14.2 Make a token faucet-mintable (at creation)
 
@@ -572,6 +629,7 @@ was created (§3). Add `--mint-authority` to `new-fungible-definition`:
 ```bash
 spel --idl artifacts/token-idl.json \
      --program <TOKEN_PROGRAM_ID> \
+     --fee-payer <FEE_PAYER> \
      -- new-fungible-definition \
      --name "Token A" --total-supply 1000000000000000000000 \
      --definition-target-account <DEF_A> \
@@ -596,19 +654,12 @@ governs who can mint **more** later. (The live testnet tokens were already creat
 | `mint_authority` | `<FAUCET_PDA>`. |
 | `clock` | the canonical system clock `4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4eM9ZyRWNU`. |
 
-Submitting the transactions below needs only the **program id** — pass the ImageID hex
-(from [DEPLOYMENTS.md](../DEPLOYMENTS.md)) to `--program` and spel skips loading the
-binary (the program-id forms are listed in the [arg-format table](#argument-formats-used-throughout)).
-So `<FAUCET_PROGRAM_ID>` / `<TOKEN_PROGRAM_ID>` below are ImageIDs, not paths.
-
-The one step that still needs the faucet **binary** is deriving the per-`(recipient,
-definition)` `mint_allowance` PDA (the helper reads the bin to get its ImageID; it can't
-yet take an ImageID directly, so build it once with `make build-programs` if you don't have
-it):
+`<FAUCET_PROGRAM_ID>` / `<TOKEN_PROGRAM_ID>` below are header account ids (step 1); no
+binary is needed. Derive the per-`(recipient, definition)` `mint_allowance` PDA:
 
 ```bash
 cargo run -q -p token_mint_authority_program --example faucet_allowance -- \
-  <FAUCET_BIN> <RECIPIENT> <DEF_A>
+  <FAUCET_PROGRAM_ID> <RECIPIENT> <DEF_A>
 # prints the base58 <MINT_ALLOWANCE>
 ```
 
@@ -617,6 +668,7 @@ If the recipient's holding is fresh, initialize it first (the faucet won't):
 ```bash
 spel --idl artifacts/token-idl.json \
      --program <TOKEN_PROGRAM_ID> \
+     --fee-payer <FEE_PAYER> \
      -- initialize-account \
      --definition-account <DEF_A> \
      --account-to-initialize <USER_HOLDING>
@@ -627,6 +679,7 @@ Then mint:
 ```bash
 spel --idl artifacts/token_mint_authority-idl.json \
      --program <FAUCET_PROGRAM_ID> \
+     --fee-payer <FEE_PAYER> \
      -- faucet-mint \
      --recipient <RECIPIENT> \
      --mint-allowance <MINT_ALLOWANCE> \
@@ -649,12 +702,113 @@ spel --idl artifacts/token-idl.json inspect <USER_HOLDING> --type TokenHolding
 > just be a distinct, authorized account. A dedicated throwaway `recipient` keeps the
 > per-recipient cooldown bookkeeping clean.
 
+## 15. Stablecoin
+
+**One command:** `scripts/deploy-stablecoin.sh` does all of the steps below (options in its
+header):
+
+```bash
+STABLECOIN_ADMIN=<ADMIN> STABLECOIN_ORACLE_SOURCE=<ORACLE_SOURCE> \
+  COLLATERAL_DEFINITION=<COLLATERAL_DEF> COLLATERAL_HOLDING=<COLLATERAL_HOLDING> \
+  scripts/deploy-stablecoin.sh
+```
+
+- `COLLATERAL_HOLDING` set: creates the collateral token (or reuses it if it already
+  exists). Omit it to use an existing collateral token.
+- `TOKEN_PROGRAM_ID` / `TWAP_PROGRAM_ID` / `STABLECOIN_PROGRAM_ID`: reuse programs that
+  are already deployed (their header account ids) instead of deploying them.
+- `FEE_PAYER`: the funded account that pays every fee; defaults to `STABLECOIN_ADMIN`.
+- Writes every id and PDA to `target/stablecoin-deployment.json`.
+
+**Order matters.** `initialize_program` needs an oracle price account that already quotes
+the stablecoin definition as its base asset — but `initialize_program` is what creates that
+definition. Its address is a deterministic PDA, so derive it first.
+
+### 15.1 Deploy and derive
+
+Deploy `stablecoin` and `twap_oracle` (step 1), and have a fungible collateral token (step 3).
+Every stablecoin PDA derives from the stablecoin's header account id, so a redeploy means
+new PDAs and a fresh initialization. Then:
+
+```bash
+cargo run -q -p stablecoin_program --example stablecoin_pdas -- "<STABLECOIN_PROGRAM_ID>" globals
+# prints protocol_parameters, stability_fee_accumulator, redemption_price_state,
+#        stablecoin_definition, stablecoin_master_holding
+
+cargo run -q -p twap_oracle_program --example twap_oracle_pdas -- \
+  "<TWAP_PROGRAM_ID>" <ORACLE_SOURCE> <WINDOW_DURATION>
+# use oracle_price_account
+```
+
+`<ORACLE_SOURCE>` is a wallet account: it signs the next step and owns the price.
+
+### 15.2 Create the market price oracle account
+
+```bash
+spel --idl artifacts/twap_oracle-idl.json \
+     --program <TWAP_PROGRAM_ID> \
+     --fee-payer <FEE_PAYER> \
+     -- create-oracle-price-account \
+     --oracle-price-account <ORACLE_PRICE_ACCOUNT_PDA> \
+     --price-source <ORACLE_SOURCE> \
+     --clock 4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4eM9ZyRWNU \
+     --base-asset <STABLECOIN_DEFINITION_PDA> \
+     --quote-asset <COLLATERAL_DEF> \
+     --initial-price 1000000000000000000000000000 \
+     --window-duration <WINDOW_DURATION>
+```
+
+> `--initial-price` is **27-decimal fixed point** (`10^27` = 1.0 collateral per stablecoin),
+> the scale the stablecoin reads. `--window-duration` must be `>= 2048`.
+
+### 15.3 Initialize
+
+```bash
+spel --idl artifacts/stablecoin-idl.json \
+     --program <STABLECOIN_PROGRAM_ID> \
+     --fee-payer <FEE_PAYER> \
+     -- initialize-program \
+     --admin <ADMIN> \
+     --protocol-parameters <PROTOCOL_PARAMETERS_PDA> \
+     --stability-fee-accumulator <STABILITY_FEE_ACCUMULATOR_PDA> \
+     --redemption-price-state <REDEMPTION_PRICE_STATE_PDA> \
+     --stablecoin-definition <STABLECOIN_DEFINITION_PDA> \
+     --stablecoin-master-holding <STABLECOIN_MASTER_HOLDING_PDA> \
+     --collateral-definition <COLLATERAL_DEF> \
+     --market-price-oracle <ORACLE_PRICE_ACCOUNT_PDA> \
+     --clock 4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4eM9ZyRWNU \
+     --freeze-authority-account-id <FREEZE_AUTHORITY> \
+     --initial-stability-fee-per-millisecond 1000000000001500000000000000 \
+     --initial-controller-proportional-gain 1000000000 \
+     --initial-controller-integral-gain 0 \
+     --initial-minimum-collateralization-ratio 1500000000000000000000000000 \
+     --minimum-milliseconds-between-rate-updates 60000 \
+     --maximum-oracle-price-age-milliseconds 86400000 \
+     --initial-redemption-price 1000000000000000000000000000 \
+     --stablecoin-name "LEZ Stablecoin"
+```
+
+> Rates, ratios and prices are 27-decimal fixed point. The values above are the script's
+> defaults: ~5%/year fee, 150% ratio, 1.0 redemption price. `init`, so run it **once**.
+
 ---
 
 ## Gotchas we hit (and how to avoid them)
 
-- **Recompile ⇒ new ProgramId ⇒ new PDAs.** Redo steps 4–6 after any AMM rebuild. The
-  config/pool addresses are functions of the AMM ProgramId.
+- **Redeploy ⇒ new program id ⇒ new PDAs.** Each deploy goes to a fresh header account, so
+  redo steps 4–6 after redeploying the AMM: the config/pool addresses are functions of the
+  AMM's program id. (A rebuild alone changes nothing until you deploy it.)
+- **`--program` is a header account id, not a binary.** spel rejects a `.bin` path: since
+  v0.2.5 the id is chosen at deploy time and cannot be derived from the binary.
+- **Pass `--fee-payer`.** Otherwise the first signer pays, and freshly created signers hold
+  nothing; instructions without signers fail outright. The payer's balance must also cover
+  the up-front fee reserve (~16,000,008 at the wallet defaults), not just the fee charged.
+- **Deploy accounts are single-use.** Segments are write-once and the header must be
+  unclaimed: retry a failed `wallet program-loader deploy` with fresh accounts, and match the
+  segment count to the binary size (one per 96 KiB).
+- **"Confirmed" is not "succeeded".** spel prints `Transaction confirmed — included in a
+  block` even when the program rejected the instruction and nothing changed. Check the
+  result with `spel … inspect`.
 - **`account_id` args must be bare base58/`0x`-hex** — strip the wallet's `account_id( … )`
   display wrapper.
 - **`spel pda` does NOT match these PDAs.** It uses a padded-bytes seed scheme; the
@@ -672,3 +826,10 @@ spel --idl artifacts/token-idl.json inspect <USER_HOLDING> --type TokenHolding
   old pool's LP token.
 - **Same `LEE_WALLET_HOME_DIR` everywhere.** Deploying with one wallet home and running
   spel with another points them at different networks/keys.
+- **Stablecoin: oracle account before `initialize_program`.** Initialization rejects a
+  missing oracle account, or one whose base asset isn't the stablecoin definition PDA.
+- **Stablecoin: never `publish_price` into its oracle account.** The TWAP oracle writes
+  Q64.64 (`2^64` = 1.0); the stablecoin reads 27-decimal fixed point (`10^27` = 1.0), so a
+  published 1.0 reads as ~1.8e-8.
+- **Stablecoin: the oracle price goes stale.** `generate_debt` rejects it once it is older
+  than `maximum_oracle_price_age_milliseconds` (at most one day).

@@ -83,7 +83,9 @@ Generated IDL files live in `artifacts/`. CI checks that every program under `*/
 
 `wallet` and `spel` are CLI tools that ship with the [SPEL](https://github.com/logos-co/spel.git) toolchain. `wallet` requires `LEE_WALLET_HOME_DIR` to point to a directory containing the wallet config.
 
-**Note:** `spel` and `wallet` may use different versions of the wallet package. If `spel --idl <IDL> <PROGRAM_FUNCTION> ...` fails, ensure `seq_poll_timeout_millis` is set in the wallet config at `~/.nssa/wallet`.
+**Note:** `spel` and `wallet` may use different versions of the wallet package. If `spel --idl <IDL> --program <PROGRAM_ID> --fee-payer <FEE_PAYER> -- <INSTRUCTION> ...` fails, ensure `seq_poll_timeout` is set in `$LEE_WALLET_HOME_DIR/wallet_config.json`.
+
+Since LEZ v0.2.5, `--program` is the program's header account id (spel rejects a binary path), and every transaction is charged: pass `--fee-payer` with a funded wallet account, or the first signer pays. spel prints `Transaction confirmed` even when the program rejected the instruction, so verify the result with `spel --idl <IDL> inspect <ACCOUNT_ID> --type <TYPE>`. `docs/testnet-runbook.md` has complete examples.
 
 For testnet and mainnet deployments, build guest binaries with the release profile in each guest manifest:
 
@@ -93,7 +95,7 @@ debug = 0
 strip = "symbols"
 ```
 
-That profile is part of program identity. After every release build, inspect the binary and update every value that depends on the ImageID before submitting transactions: deployed program IDs, client/config files, PDA-derived account addresses, AMM `token_program_id` and `twap_oracle_program_id`, and ATA `token_program_id` inputs. Do not mix raw or old ImageIDs with release-profile binaries.
+That profile is part of the binary's ImageID. Since LEZ v0.2.5 the ImageID is not the program's address: a program is addressed by the header account it was deployed to, and every PDA derives from that id. Each deploy goes to a fresh header, so after every deploy update every value that depends on the program id before submitting transactions: client/config files, PDA-derived account addresses, AMM `token_program_id` and `twap_oracle_program_id`, and ATA `token_program_id` inputs. Do not mix ids from an old deployment with a new one.
 
 ```bash
 # Build all guest binaries with the shared BuildKit cache
@@ -104,8 +106,8 @@ make build-programs
 wallet program-loader deploy --elf target/guest/<program>.bin --header <header> \
   --segments <seg-1> ... <seg-N> --payer <funded-account>
 
-# Inspect the ProgramId of a built binary
-spel inspect target/guest/<program>.bin
+# Print the ImageID of a built binary (not its address: that is the header account id)
+spel -- program-id target/guest/<program>.bin
 ```
 
 ## Workspace Structure

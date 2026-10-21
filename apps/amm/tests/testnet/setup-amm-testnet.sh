@@ -4,7 +4,9 @@
 # --------------------
 # Deploy the token/amm/twap/token-mint-authority programs, mint four fungible
 # tokens, initialize the AMM, and create the A/B pool — from scratch — against
-# whatever sequencer your `wallet` / `spel` config points at. This is the
+# whatever sequencer your `wallet` / `spel` config points at. Then deploy and
+# initialize the stablecoin against a dedicated collateral token, via
+# scripts/deploy-stablecoin.sh (DEPLOY_STABLECOIN=0 skips it). This is the
 # prerequisite state the AMM UI tests exercise: swap.mjs swaps against the seeded
 # A/B pool, create-pool.mjs creates the (deliberately unseeded) A/C pool, and
 # custom-token.mjs adds token D by id. Run it once, then launch the UI / run the
@@ -48,13 +50,16 @@
 #     wallet's own root account (see DEPLOY_PAYER below); the chain's genesis must
 #     give it a supply.
 #   - `cargo` (to run the amm_pdas example)
-#   - the guest .bin files already built (`make build-programs`)
+#   - the guest .bin files already built (`make build-programs`, which writes
+#     target/guest/<program>.bin; older per-guest docker builds are used as a
+#     fallback)
 #   - the IDL files under artifacts/ (`make idl`)
 #
 # Usage (from anywhere in the repo):
 #   apps/amm/tests/testnet/setup-amm-testnet.sh
 #   TEST_SEQUENCER_ADDR=http://127.0.0.1:8080 apps/amm/tests/testnet/setup-amm-testnet.sh
 #   FORCE_BOOTSTRAP=1 ...        # re-restore the test wallet (rewrites its storage)
+#   DEPLOY_STABLECOIN=0 ...      # skip the stablecoin deployment
 #
 set -euo pipefail
 
@@ -127,7 +132,7 @@ ACCOUNT_LABELS=(token-a-def token-a-holding token-b-def token-b-holding lp-holdi
 # account id in this script deterministic even when a rebuild changes a binary's size.
 # Only the first N slots of each program are passed to the deploy. The protocol cap is
 # MAX_PROGRAM_SEGMENTS = 20; today's binaries need 3-6.
-DEPLOY_PROGRAMS=(token amm twap mint-authority)
+DEPLOY_PROGRAMS=(token amm twap mint-authority stablecoin)
 DEPLOY_SEGMENT_SLOTS=10
 
 for _prog in "${DEPLOY_PROGRAMS[@]}"; do
@@ -138,23 +143,41 @@ for _prog in "${DEPLOY_PROGRAMS[@]}"; do
 done
 unset _prog _i
 
+# The stablecoin's accounts come last, so every label above keeps its id:
+# collateral-def/-holding back a dedicated faucet-mintable collateral token,
+# stablecoin-admin signs initialize_program, and stablecoin-oracle-source signs
+# (and so owns) the market price oracle account.
+ACCOUNT_LABELS+=(collateral-def collateral-holding stablecoin-admin stablecoin-oracle-source)
+
 ###############################################################################
 # CONFIG — non-account parameters (edit freely)
 ###############################################################################
 
 # --- Program binaries (docker release builds; image ids must match deployment) ---
-TOKEN_BIN="programs/token/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token.bin"
-AMM_BIN="programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin"
-TWAP_BIN="programs/twap_oracle/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/twap_oracle.bin"
+# `make build-programs` writes target/guest/<program>.bin; older per-guest
+# `cargo risczero build` output lives under methods/guest/target/.../docker/.
+# Prefer the former, fall back to the latter. Each is overridable via env.
+guest_bin() {
+  local program="$1"
+  local shared="target/guest/$program.bin"
+  local legacy="programs/$program/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/$program.bin"
+  if [ -f "$shared" ] || [ ! -f "$legacy" ]; then printf '%s' "$shared"; else printf '%s' "$legacy"; fi
+}
+TOKEN_BIN="${TOKEN_BIN:-$(guest_bin token)}"
+AMM_BIN="${AMM_BIN:-$(guest_bin amm)}"
+TWAP_BIN="${TWAP_BIN:-$(guest_bin twap_oracle)}"
 # The faucet (token-mint-authority) binary. Its ImageID determines the mint-authority
 # PDA every test token is minted against, so it MUST be the exact bin deployed below.
-MINT_AUTHORITY_BIN="programs/token_mint_authority/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token_mint_authority.bin"
+MINT_AUTHORITY_BIN="${MINT_AUTHORITY_BIN:-$(guest_bin token_mint_authority)}"
+STABLECOIN_BIN="${STABLECOIN_BIN:-$(guest_bin stablecoin)}"
 
 # --- IDLs ---
 TOKEN_IDL="artifacts/token-idl.json"
 AMM_IDL="artifacts/amm-idl.json"
 # The faucet IDL — not used by this setup, but the follow-up faucet e2e test reads it.
 MINT_AUTHORITY_IDL="artifacts/token_mint_authority-idl.json"
+STABLECOIN_IDL="artifacts/stablecoin-idl.json"
+TWAP_IDL="artifacts/twap_oracle-idl.json"
 
 # --- Token metadata ---
 TOKEN_A_NAME="TOKEN A"; TOKEN_A_SYMBOL="TKA"; TOKEN_A_SUPPLY="1000000000000000000000"; TOKEN_A_DECIMALS=18
@@ -162,6 +185,13 @@ TOKEN_B_NAME="TOKEN B"; TOKEN_B_SYMBOL="TKB"; TOKEN_B_SUPPLY="100000000000000000
 TOKEN_C_NAME="TOKEN C"; TOKEN_C_SYMBOL="TKC"; TOKEN_C_SUPPLY="1000000000000000000000"; TOKEN_C_DECIMALS=18
 # Token D is the "custom" token: created on-chain but NOT written to the token config.
 TOKEN_D_NAME="TOKEN D"; TOKEN_D_SYMBOL="TKD"; TOKEN_D_SUPPLY="1000000000000000000000"; TOKEN_D_DECIMALS=18
+# The stablecoin's collateral. Dedicated rather than reusing A-D so the AMM tests'
+# balances are untouched; faucet-mintable like the others so any test account can
+# fund a position.
+COLLATERAL_NAME="COLLATERAL"; COLLATERAL_SUPPLY="1000000000000000000000"
+
+# --- Stablecoin ---
+DEPLOY_STABLECOIN="${DEPLOY_STABLECOIN:-1}"
 
 # --- Pool inputs ---
 CLOCK_ACCOUNT="4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4eM9ZyRWNU"  # canonical LEZ system clock
@@ -211,6 +241,12 @@ FAUCET_MANIFEST_OUT="apps/amm/tests/testnet/faucet.json"
 # The test reads the id from here rather than from a wallet label: labels are only
 # valid for the wallet that ran the setup (see restore_test_wallet).
 CUSTOM_TOKEN_MANIFEST_OUT="apps/amm/tests/testnet/custom-token-manifest.json"
+
+# Stablecoin deployment manifest (git-ignored, tests only): program id, the five
+# singleton PDAs, collateral definition and oracle account. Written by
+# scripts/deploy-stablecoin.sh.
+STABLECOIN_MANIFEST_OUT="apps/amm/tests/testnet/stablecoin.json"
+DEPLOY_STABLECOIN_SCRIPT="$REPO_ROOT/scripts/deploy-stablecoin.sh"
 
 ###############################################################################
 # Helpers
@@ -467,9 +503,13 @@ require_cmd spel
 require_cmd cargo
 require_file "$TOKEN_BIN"; require_file "$AMM_BIN"; require_file "$TWAP_BIN"; require_file "$MINT_AUTHORITY_BIN"
 require_file "$TOKEN_IDL"; require_file "$AMM_IDL"; require_file "$MINT_AUTHORITY_IDL"
+if [ "$DEPLOY_STABLECOIN" = "1" ]; then
+  require_file "$STABLECOIN_BIN"; require_file "$STABLECOIN_IDL"; require_file "$TWAP_IDL"
+fi
 kv "repo root"        "$REPO_ROOT"
 kv "token bin" "$TOKEN_BIN"; kv "amm bin" "$AMM_BIN"; kv "twap bin" "$TWAP_BIN"
 kv "mint-authority bin" "$MINT_AUTHORITY_BIN"
+if [ "$DEPLOY_STABLECOIN" = "1" ]; then kv "stablecoin bin" "$STABLECOIN_BIN"; fi
 
 # Decide whether keys need restoring from the key material (storage.json), NOT the
 # home dir — write_wallet_config below creates the dir, so a dir check would always
@@ -511,7 +551,11 @@ HOLDER2="$(acct_id holder2)"                 || die "holder2 not registered — 
 HOLDER2_A_HOLDING="$(acct_id holder2-a-holding)" || die "holder2-a-holding not registered"
 # `amm-owner` signs initialize — the AMM instance's namespace owner.
 AMM_OWNER="$(acct_id amm-owner)"            || die "amm-owner not registered"
-for v in TOKEN_A_DEF TOKEN_A_HOLDING TOKEN_B_DEF TOKEN_B_HOLDING USER_HOLDING_LP TOKEN_C_DEF TOKEN_C_HOLDING TOKEN_D_DEF TOKEN_D_HOLDING HOLDER2 HOLDER2_A_HOLDING AMM_OWNER; do
+COLLATERAL_DEF="$(acct_id collateral-def)"         || die "collateral-def not registered"
+COLLATERAL_HOLDING="$(acct_id collateral-holding)" || die "collateral-holding not registered"
+STABLECOIN_ADMIN_ID="$(acct_id stablecoin-admin)"  || die "stablecoin-admin not registered"
+STABLECOIN_ORACLE_SOURCE_ID="$(acct_id stablecoin-oracle-source)" || die "stablecoin-oracle-source not registered"
+for v in TOKEN_A_DEF TOKEN_A_HOLDING TOKEN_B_DEF TOKEN_B_HOLDING USER_HOLDING_LP TOKEN_C_DEF TOKEN_C_HOLDING TOKEN_D_DEF TOKEN_D_HOLDING HOLDER2 HOLDER2_A_HOLDING AMM_OWNER COLLATERAL_DEF COLLATERAL_HOLDING STABLECOIN_ADMIN_ID STABLECOIN_ORACLE_SOURCE_ID; do
   [ -n "${!v}" ] || die "failed to resolve account id for $v"
 done
 
@@ -537,6 +581,10 @@ kv "token-d-holding" "$TOKEN_D_HOLDING"
 kv "holder2"         "$HOLDER2"
 kv "holder2-a-holding" "$HOLDER2_A_HOLDING"
 kv "amm-owner"       "$AMM_OWNER"
+kv "collateral-def"  "$COLLATERAL_DEF"
+kv "collateral-holding" "$COLLATERAL_HOLDING"
+kv "stablecoin-admin" "$STABLECOIN_ADMIN_ID"
+kv "stablecoin-oracle-source" "$STABLECOIN_ORACLE_SOURCE_ID"
 
 ###############################################################################
 # 2. Deploy programs
@@ -562,6 +610,9 @@ deploy_program token          "$TOKEN_BIN"          >/dev/null
 deploy_program amm            "$AMM_BIN"            >/dev/null
 deploy_program twap           "$TWAP_BIN"           >/dev/null
 deploy_program mint-authority "$MINT_AUTHORITY_BIN" >/dev/null
+if [ "$DEPLOY_STABLECOIN" = "1" ]; then
+  deploy_program stablecoin "$STABLECOIN_BIN" >/dev/null
+fi
 
 ###############################################################################
 # 3. Program IDs
@@ -574,6 +625,9 @@ TOKEN_PID="$(acct_id token-header)";                     kv "token program id"  
 AMM_PID="$(acct_id amm-header)";                         kv "amm program id"            "$AMM_PID"
 TWAP_PID="$(acct_id twap-header)";                       kv "twap program id"           "$TWAP_PID"
 MINT_AUTHORITY_PID="$(acct_id mint-authority-header)";   kv "mint-authority program id" "$MINT_AUTHORITY_PID"
+if [ "$DEPLOY_STABLECOIN" = "1" ]; then
+  STABLECOIN_PID="$(acct_id stablecoin-header)";         kv "stablecoin program id"     "$STABLECOIN_PID"
+fi
 
 # The faucet's singleton mint-authority PDA is derived from the DEPLOYED faucet
 # binary's ImageID. Every faucet token's definition sets its mint_authority to this
@@ -922,6 +976,38 @@ cat > "$CUSTOM_TOKEN_MANIFEST_OUT" <<JSON
 JSON
 kv "wrote" "$CUSTOM_TOKEN_MANIFEST_OUT"
 
+###############################################################################
+# 14. Deploy and initialize the stablecoin
+###############################################################################
+# Delegates to scripts/deploy-stablecoin.sh against the same isolated wallet
+# (LEE_WALLET_HOME_DIR is exported above). It creates the collateral token (or
+# reuses it on a re-run) with the faucet as mint authority, like the other test
+# tokens. The token, twap_oracle and stablecoin programs are already deployed in
+# step 2, so it reuses all three, and the deploy payer pays its fees too.
+if [ "$DEPLOY_STABLECOIN" = "1" ]; then
+  STABLECOIN_ADMIN="$STABLECOIN_ADMIN_ID" \
+  STABLECOIN_ORACLE_SOURCE="$STABLECOIN_ORACLE_SOURCE_ID" \
+  COLLATERAL_DEFINITION="$COLLATERAL_DEF" \
+  COLLATERAL_HOLDING="$COLLATERAL_HOLDING" \
+  COLLATERAL_NAME="$COLLATERAL_NAME" \
+  COLLATERAL_SUPPLY="$COLLATERAL_SUPPLY" \
+  COLLATERAL_MINT_AUTHORITY="$MINT_AUTHORITY_PDA" \
+  TOKEN_IDL="$TOKEN_IDL" \
+  TOKEN_PROGRAM_ID="$TOKEN_PID" \
+  STABLECOIN_BIN="$STABLECOIN_BIN" \
+  STABLECOIN_IDL="$STABLECOIN_IDL" \
+  STABLECOIN_PROGRAM_ID="$STABLECOIN_PID" \
+  TWAP_IDL="$TWAP_IDL" \
+  TWAP_PROGRAM_ID="$TWAP_PID" \
+  FEE_PAYER="$DEPLOY_PAYER" \
+  WALLET_PASSWORD="$TEST_WALLET_PASSWORD" \
+  CLOCK_ACCOUNT="$CLOCK_ACCOUNT" \
+  STABLECOIN_MANIFEST_OUT="$STABLECOIN_MANIFEST_OUT" \
+  REPO_ROOT="$REPO_ROOT" \
+    "$DEPLOY_STABLECOIN_SCRIPT" \
+    || die "stablecoin deployment failed"
+fi
+
 sec "Done"
 log "${GRN}✅ Setup complete.${RST}"
 kv "AMM program id"            "$AMM_PID"
@@ -929,6 +1015,11 @@ kv "TWAP program id"           "$TWAP_PID"
 kv "mint-authority program id" "$MINT_AUTHORITY_PID"
 kv "faucet mint-authority PDA" "$MINT_AUTHORITY_PDA"
 kv "pool"                      "$POOL"
+if [ "$DEPLOY_STABLECOIN" = "1" ]; then
+  kv "stablecoin program id"   "$STABLECOIN_PID"
+  kv "collateral definition"   "$COLLATERAL_DEF"
+  kv "stablecoin manifest"     "$STABLECOIN_MANIFEST_OUT"
+fi
 log ""
 log "All test tokens' mint_authority is the faucet PDA above — mint more of any of"
 log "them through the token-mint-authority program (${DIM}FaucetMint${RST}). A brand-new account"
@@ -966,3 +1057,8 @@ log "                   or:     ${DIM}node apps/amm/tests/faucet-swap.mjs${RST} 
 log ""
 log "The faucet-swap test reads ${DIM}$FAUCET_MANIFEST_OUT${RST} and needs ${DIM}spel${RST} +"
 log "${DIM}LEE_WALLET_HOME_DIR=$TEST_WALLET_HOME${RST} in its environment (same isolated wallet)."
+if [ "$DEPLOY_STABLECOIN" = "1" ]; then
+  log ""
+  log "Stablecoin: account ids and PDAs are in ${DIM}$STABLECOIN_MANIFEST_OUT${RST}. Point the"
+  log "stablecoin module at it with ${DIM}STABLECOIN_PROGRAM_ID=$STABLECOIN_PID${RST}."
+fi
