@@ -11,16 +11,21 @@ else()
     find_package(Qt6 6.8 REQUIRED COMPONENTS Test)
 endif()
 
-qt_add_executable(amm_registry_loader_test
-    RegistryLoaderTest.cpp
-    ../../src/RegistryLoader.cpp
-    ../../src/RegistryLoader.h
-)
-target_compile_features(amm_registry_loader_test PRIVATE cxx_std_17)
-target_include_directories(amm_registry_loader_test PRIVATE ../../src)
-target_link_libraries(amm_registry_loader_test PRIVATE
-    Qt6::Core
-    Qt6::Network
-    Qt6::Test
-)
-add_test(NAME amm_registry_loader COMMAND amm_registry_loader_test)
+function(amm_registry_test name source)
+    qt_add_executable(${name}_test
+        ${source}
+        ../../src/RegistryLoader.cpp
+        ../../src/RegistryLoader.h
+    )
+    target_compile_features(${name}_test PRIVATE cxx_std_17)
+    target_include_directories(${name}_test PRIVATE ../../src)
+    target_link_libraries(${name}_test PRIVATE
+        Qt6::Core
+        Qt6::Network
+        Qt6::Test
+    )
+    add_test(NAME ${name} COMMAND ${name}_test)
+endfunction()
+
+amm_registry_test(amm_registry_loader RegistryLoaderTest.cpp)
+amm_registry_test(amm_registry_status RegistryStatusTest.cpp)
