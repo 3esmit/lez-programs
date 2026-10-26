@@ -194,6 +194,21 @@ pub const MAX_TICK_DELTA: i32 = 9_116;
 /// `< OBSERVATIONS_CAPACITY` ms shorter) — only resolution changes meaningfully.
 pub const OBSERVATIONS_CAPACITY: u32 = 2048;
 
+/// Maximum number of sampling intervals `PublishPrice` will extrapolate past the newest stored
+/// observation before refusing to publish.
+///
+/// `PublishPrice` projects the accumulator from the newest stored observation up to `now` and
+/// stamps the result `timestamp = now`. That timestamp is the only freshness signal consumers
+/// have, so without a bound an unattended feed publishes an average that is almost entirely
+/// extrapolation while still looking fresh — and `RecordTick` enforces only a *minimum* interval,
+/// nothing in the other direction.
+///
+/// Expressed in intervals rather than milliseconds so the bound scales with `window_duration`:
+/// extrapolation can never exceed `MAX_TAIL_INTERVALS / OBSERVATIONS_CAPACITY` of the window
+/// whatever window the feed serves. This is not a liveness lever — `RecordTick` is permissionless,
+/// so whoever wants to publish can record first in the same block.
+pub const MAX_TAIL_INTERVALS: u64 = 4;
+
 /// A single price entry written to a [`PriceObservations`].
 #[derive(
     Debug, Default, PartialEq, Eq, Clone, Serialize, Deserialize, BorshSerialize, BorshDeserialize,
@@ -228,11 +243,14 @@ pub struct PriceObservations {
     pub write_index: u32,
     /// Total entries ever appended (never resets; used to detect empty/partial-fill state).
     pub total_entries: u64,
-    /// The raw (untruncated) tick from the most recent `RecordTick` call.
+    /// The tick most recently *recorded* into the accumulator — the clamped value, not the
+    /// raw tick the price source reported.
     ///
     /// Used by `RecordTick` to compute the tick delta for the next observation:
-    /// `delta = current_tick - last_recorded_tick`. Stored as the actual tick, not the
-    /// clamped value, so that each successive delta is computed from the true price position.
+    /// `delta = current_tick - last_recorded_tick`. Storing the clamped value is what makes
+    /// [`MAX_TICK_DELTA`] a bound on the accumulator rather than a one-observation delay: the
+    /// recorded position walks toward the true price at `MAX_TICK_DELTA` per observation, so a
+    /// manipulated price only moves the average for as long as it is held.
     pub last_recorded_tick: i32,
     /// Circular price entries; always exactly `OBSERVATIONS_CAPACITY` elements.
     pub entries: Vec<ObservationEntry>,

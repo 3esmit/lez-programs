@@ -22,8 +22,9 @@ use twap_oracle_core::{
 /// caller-controlled clock could skew the TWAP arbitrarily; it must never be caller-supplied.
 ///
 /// Tick-delta truncation clamps the per-observation price move to [`MAX_TICK_DELTA`] before
-/// advancing the accumulator. `last_recorded_tick` is updated to the raw (untruncated) tick so
-/// the next delta is computed from the true price position.
+/// advancing the accumulator. `last_recorded_tick` is updated to the *clamped* tick, so the
+/// recorded position advances at most `MAX_TICK_DELTA` per observation and a manipulated price
+/// has to be sustained across many observations to move the average.
 ///
 /// # Panics
 /// Panics if:
@@ -114,6 +115,9 @@ pub fn record_tick(
 
     // Cap the per-observation tick move (anti-manipulation), then integrate the resulting *tick*
     // — not the delta — so a constant tick still accumulates `tick × dt` per the TWAP formula.
+    // `clamped_tick` also becomes the next observation's anchor (below): anchoring on the raw
+    // `current_tick` would let a single observation carry the whole move, since the following
+    // delta would be measured from the manipulated position rather than the recorded one.
     let current_tick = current_tick_data.tick;
     let delta = current_tick.saturating_sub(observations.last_recorded_tick);
     let clamped_delta = delta.clamp(-MAX_TICK_DELTA, MAX_TICK_DELTA);
@@ -147,7 +151,7 @@ pub fn record_tick(
         .total_entries
         .checked_add(1)
         .expect("total_entries does not overflow");
-    observations.last_recorded_tick = current_tick;
+    observations.last_recorded_tick = clamped_tick;
 
     vec![
         AccountStateDiff::new(
@@ -422,8 +426,9 @@ mod tests {
     }
 
     #[test]
-    fn last_recorded_tick_updated_to_untruncated_current_tick() {
-        // Delta large enough to be clamped, but last_recorded_tick must store the raw tick.
+    fn last_recorded_tick_updated_to_clamped_tick() {
+        // Delta large enough to be clamped: last_recorded_tick must store the clamped position,
+        // not the raw tick, so the next delta is measured from what was actually recorded.
         let current_tick = MAX_TICK_DELTA
             .checked_mul(3)
             .expect("MAX_TICK_DELTA * 3 fits in i32");
@@ -437,7 +442,72 @@ mod tests {
         );
         let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
-        assert_eq!(obs.last_recorded_tick, current_tick);
+        assert_eq!(obs.last_recorded_tick, MAX_TICK_DELTA);
+    }
+
+    /// A price moved far beyond `MAX_TICK_DELTA` and reverted before the next observation must
+    /// not inject more into the accumulator than the clamp allows.
+    ///
+    /// With the anchor stored raw, the second observation measured its delta from the
+    /// *manipulated* position, so the revert clamped to `-MAX_TICK_DELTA` and integrated
+    /// `spike - MAX_TICK_DELTA` over an interval where the true price was back at the baseline —
+    /// the two observations together injected exactly what an unclamped oracle would have.
+    #[test]
+    fn manipulate_then_revert_is_bounded_by_max_tick_delta() {
+        let spike = MAX_TICK_DELTA
+            .checked_mul(11)
+            .expect("MAX_TICK_DELTA * 11 fits in i32");
+        let interval = min_interval();
+        let interval_i64 = i64::try_from(interval).expect("min_interval fits in i64");
+
+        // t1: attacker moves the pool.
+        let post_states = record_tick(
+            make_price_observations(1, 0, 0, 0),
+            make_current_tick_account(spike, 0),
+            clock_account_with_timestamp(interval),
+            price_source_id(),
+            WINDOW_24H,
+            ORACLE_PROGRAM_ID,
+        );
+        let after_spike = PriceObservations::try_from(post_states[0].post_data())
+            .expect("valid PriceObservations");
+        let spike_cumulative = after_spike.entries[1].tick_cumulative;
+        assert_eq!(
+            spike_cumulative,
+            i64::from(MAX_TICK_DELTA)
+                .checked_mul(interval_i64)
+                .expect("MAX_TICK_DELTA * interval fits in i64")
+        );
+
+        // t2: the pool is already back at the baseline.
+        let doubled = interval
+            .checked_mul(2)
+            .expect("2 * min_interval fits in u64");
+        let post_states = record_tick(
+            make_price_observations(
+                2,
+                after_spike.last_recorded_tick,
+                interval,
+                spike_cumulative,
+            ),
+            make_current_tick_account(0, 0),
+            clock_account_with_timestamp(doubled),
+            price_source_id(),
+            WINDOW_24H,
+            ORACLE_PROGRAM_ID,
+        );
+        let after_revert = PriceObservations::try_from(post_states[0].post_data())
+            .expect("valid PriceObservations");
+
+        // The revert walks the anchor back to 0, so the second interval contributes nothing.
+        assert_eq!(after_revert.last_recorded_tick, 0);
+        assert_eq!(after_revert.entries[2].tick_cumulative, spike_cumulative);
+
+        // Strictly less than what an unclamped oracle would have accumulated for the same attack.
+        let unclamped = i64::from(spike)
+            .checked_mul(interval_i64)
+            .expect("spike * interval fits in i64");
+        assert!(after_revert.entries[2].tick_cumulative < unclamped);
     }
 
     #[test]
