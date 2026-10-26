@@ -6,9 +6,9 @@
 
     # Core wallet module dependency. The input name must match the
     # metadata.json `dependencies` entry so the builder resolves it as a module
-    # dependency. Same rev the repo-root flake and the apps/amm flake pin: the
-    # 0.4.1-interim build (byte-string fix on a v0.2.4 wallet-ffi). See the root
-    # flake.nix for the full rationale.
+    # dependency. Same rev the repo-root flake and the apps/amm flake pin:
+    # lez_core 0.4.2 (v0.2.5-rc2 wallet-ffi). See the root flake.nix for the
+    # full rationale.
     lez_core.url = "github:logos-blockchain/logos-execution-zone-module?rev=825d2a41262b9882aa0f9ca837cb03635f7980c2";
 
     # The repo-root flake supplies the amm_ffi crate. amm_ffi is a Cargo
