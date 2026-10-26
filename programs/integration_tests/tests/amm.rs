@@ -2514,7 +2514,7 @@ fn amm_twap_observations_accumulate_across_swaps_and_yield_time_weighted_average
             obs.entries[written_index].tick_cumulative, expected_cumulative,
             "cumulative must advance by tick × elapsed_ms"
         );
-        // last_recorded_tick tracks the raw tick for the next delta computation.
+        // Within the clamp, the recorded (clamped) tick equals the live tick.
         assert_eq!(obs.last_recorded_tick, current_tick);
 
         snapshots.push((now, current_tick, expected_cumulative));

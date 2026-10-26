@@ -6,7 +6,7 @@ use lee_core::{
 use twap_oracle_core::{
     compute_current_tick_account_pda, compute_oracle_price_account_pda,
     compute_price_observations_pda, tick_to_oracle_price, CurrentTickAccount, OraclePriceAccount,
-    PriceObservations, MAX_TICK_DELTA, OBSERVATIONS_CAPACITY,
+    PriceObservations, MAX_TAIL_INTERVALS, MAX_TICK_DELTA, OBSERVATIONS_CAPACITY,
 };
 
 /// Computes the TWAP over the span from the oldest stored observation up to `now` and writes the
@@ -39,6 +39,13 @@ use twap_oracle_core::{
 /// Returns all accounts unchanged when fewer than two observations are available. The price account
 /// stays at `timestamp = 0` (uninitialized signal) until there is something to publish.
 ///
+/// The tail is bounded: publishing is refused once the newest stored observation is more than
+/// [`MAX_TAIL_INTERVALS`] sampling intervals old. `RecordTick` constrains the gap between
+/// observations only from below, so without this an unattended feed would publish an average made
+/// almost entirely of extrapolation while still stamping `timestamp = now` — the only freshness
+/// signal consumers have. An idle feed now keeps its previous timestamp, which is what a
+/// consumer's `max_age` check is designed to catch.
+///
 /// The publication timestamp is taken from `clock`, which must be [`CLOCK_01_PROGRAM_ACCOUNT_ID`].
 /// It becomes the consumer-facing freshness signal on the [`OraclePriceAccount`], so a forged or
 /// caller-controlled clock could make a stale price look current; it must never be caller-supplied.
@@ -54,6 +61,8 @@ use twap_oracle_core::{
 /// - `price_observations` or `current_tick_account` is not owned by `oracle_program_id`.
 /// - `clock.account_id` is not [`CLOCK_01_PROGRAM_ACCOUNT_ID`].
 /// - Any account is not a valid initialised account of its respective type.
+/// - The newest stored observation is more than [`MAX_TAIL_INTERVALS`] sampling intervals old; call
+///   `RecordTick` (equally permissionless) first.
 pub fn publish_price(
     price_observations: AccountWithMetadata,
     oracle_price_account: AccountWithMetadata,
@@ -150,6 +159,21 @@ pub fn publish_price(
         .get(t2_index)
         .expect("t2_index is within bounds");
 
+    // Refuse to publish an average that is mostly extrapolation. `RecordTick` bounds the gap
+    // between observations only from below, so an unattended feed would otherwise keep publishing
+    // a tail of unbounded length stamped `timestamp = now` — fresh-looking by the only signal
+    // consumers have. Panicking rather than no-opping keeps the failure visible to the publisher:
+    // the fix is to call the (equally permissionless) `RecordTick` first.
+    let max_tail_ms = window_duration
+        .checked_div(u64::from(OBSERVATIONS_CAPACITY))
+        .expect("OBSERVATIONS_CAPACITY is non-zero")
+        .max(1)
+        .saturating_mul(MAX_TAIL_INTERVALS);
+    assert!(
+        now.saturating_sub(t2.timestamp) <= max_tail_ms,
+        "PublishPrice: observations are stale; call RecordTick before publishing"
+    );
+
     // Extrapolate the accumulator from the newest stored observation (t2) to `now`. The live tick
     // is only known to have held since `current_tick_data.last_updated`; before that, the best
     // estimate for the unrecorded gap is the tick stored at t2 (`last_recorded_tick`). Splitting
@@ -227,7 +251,8 @@ mod tests {
     use twap_oracle_core::{
         compute_current_tick_account_pda, compute_oracle_price_account_pda,
         compute_price_observations_pda, tick_to_oracle_price, CurrentTickAccount, ObservationEntry,
-        OraclePriceAccount, PriceObservations, MAX_TICK_DELTA, OBSERVATIONS_CAPACITY,
+        OraclePriceAccount, PriceObservations, MAX_TAIL_INTERVALS, MAX_TICK_DELTA,
+        OBSERVATIONS_CAPACITY,
     };
 
     use super::*;
@@ -239,6 +264,18 @@ mod tests {
 
     fn price_source_id() -> AccountId {
         AccountId::new([1u8; 32])
+    }
+    /// Longest tail `publish_price` will extrapolate for `WINDOW_24H`.
+    ///
+    /// The tail tests below blend a stored span of this length with a tail of the same length, so
+    /// the arithmetic stays a clean 50/50 while staying inside the bound.
+    fn max_tail_ms() -> u64 {
+        WINDOW_24H
+            .checked_div(u64::from(OBSERVATIONS_CAPACITY))
+            .expect("OBSERVATIONS_CAPACITY is non-zero")
+            .max(1)
+            .checked_mul(MAX_TAIL_INTERVALS)
+            .expect("max tail fits in u64")
     }
     fn base_asset_id() -> AccountId {
         AccountId::new([10u8; 32])
@@ -459,13 +496,12 @@ mod tests {
 
     #[test]
     fn timestamp_set_to_clock_now() {
-        let now = WINDOW_24H
-            .checked_mul(2)
-            .expect("WINDOW_24H * 2 fits in u64");
+        let t2_time = max_tail_ms();
+        let now = t2_time.checked_mul(2).expect("fits");
         let post_states = publish_price(
-            make_price_observations(&[(0, 0), (WINDOW_24H, 0)], 0),
+            make_price_observations(&[(0, 0), (t2_time, 0)], 0),
             make_oracle_price_account(),
-            make_current_tick_account(0, WINDOW_24H),
+            make_current_tick_account(0, t2_time),
             clock_account_with_timestamp(now),
             price_source_id(),
             WINDOW_24H,
@@ -577,18 +613,22 @@ mod tests {
 
     // ── tail extrapolation to `now` ─────────────────────────────────────────────
 
-    /// The motivating case: the price has not changed and no tick has been recorded for a full
-    /// window, but the current tick account still reports the same tick. Publishing must extend the
+    /// The motivating case: the price has not changed and no tick has been recorded for a while,
+    /// but the current tick account still reports the same tick. Publishing must extend the
     /// average all the way to `now`, yielding the (unchanged) price and a *fresh* `now` timestamp —
-    /// not a stale window. The newest stored observation is one whole window old.
+    /// not a stale window.
+    ///
+    /// The gap is one `MAX_TAIL_INTERVALS` tail; a longer one is refused outright (see
+    /// `stale_observations_are_refused`), because past that point `timestamp = now` stops being
+    /// honest.
     #[test]
     fn extrapolates_constant_price_to_now_with_fresh_timestamp() {
         let tick = 100_i32;
-        let t2_time = WINDOW_24H;
+        let t2_time = max_tail_ms();
         let cumulative_at_t2 = i64::from(tick)
             .checked_mul(i64::try_from(t2_time).expect("fits"))
             .expect("fits");
-        let now = t2_time.checked_mul(2).expect("fits"); // one window past the last observation
+        let now = t2_time.checked_mul(2).expect("fits");
         let post_states = publish_price(
             make_price_observations(&[(0, 0), (t2_time, cumulative_at_t2)], tick),
             make_oracle_price_account(),
@@ -612,7 +652,7 @@ mod tests {
     /// `0 over [0, W]` with `100 over [W, 2W]` → average 50. Without extrapolation this would be 0.
     #[test]
     fn tail_segment_extrapolated_with_current_tick() {
-        let t2_time = WINDOW_24H;
+        let t2_time = max_tail_ms();
         let now = t2_time.checked_mul(2).expect("fits");
         let post_states = publish_price(
             make_price_observations(&[(0, 0), (t2_time, 0)], 0),
@@ -642,7 +682,7 @@ mod tests {
     /// / 2`.
     #[test]
     fn tail_extrapolation_clamps_large_tick_jump() {
-        let t2_time = WINDOW_24H;
+        let t2_time = max_tail_ms();
         let now = t2_time.checked_mul(2).expect("fits");
         let huge = MAX_TICK_DELTA.checked_mul(10).expect("fits in i32");
         let post_states = publish_price(
@@ -666,7 +706,7 @@ mod tests {
     /// `[0, W]`, current tick `-100`, published at `2W` → `(0·W + (−100)·W) / 2W = −50`.
     #[test]
     fn negative_tail_segment_extrapolated() {
-        let t2_time = WINDOW_24H;
+        let t2_time = max_tail_ms();
         let now = t2_time.checked_mul(2).expect("fits");
         let post_states = publish_price(
             make_price_observations(&[(0, 0), (t2_time, 0)], 0),
@@ -690,7 +730,7 @@ mod tests {
     /// that ignoring `last_updated` and extrapolating 100 over the full tail would produce.
     #[test]
     fn tail_extrapolation_respects_current_tick_last_updated() {
-        let t2_time = WINDOW_24H;
+        let t2_time = max_tail_ms();
         let now = t2_time.checked_mul(2).expect("fits");
         let tick_update_time = now.checked_sub(1).expect("now > 0");
         let post_states = publish_price(
@@ -705,6 +745,75 @@ mod tests {
         let account = OraclePriceAccount::try_from(post_states[1].post_data())
             .expect("valid OraclePriceAccount");
         assert_eq!(account.price, tick_to_oracle_price(0));
+    }
+
+    /// A tail longer than `MAX_TAIL_INTERVALS` is refused rather than published as fresh.
+    ///
+    /// `RecordTick` bounds the interval between observations only from below, and both
+    /// instructions are permissionless and unrewarded, so an unattended feed is the default
+    /// state. Publishing anyway would stamp `timestamp = now` on an average that is almost
+    /// entirely extrapolation — and `timestamp` is the only freshness signal consumers have.
+    #[test]
+    #[should_panic(expected = "PublishPrice: observations are stale")]
+    fn stale_observations_are_refused() {
+        let t2_time = max_tail_ms();
+        let now = t2_time
+            .checked_add(max_tail_ms())
+            .and_then(|t| t.checked_add(1))
+            .expect("fits");
+        publish_price(
+            make_price_observations(&[(0, 0), (t2_time, 0)], 0),
+            make_oracle_price_account(),
+            make_current_tick_account(0, t2_time),
+            clock_account_with_timestamp(now),
+            price_source_id(),
+            WINDOW_24H,
+            ORACLE_PROGRAM_ID,
+        );
+    }
+
+    /// A tail of exactly `MAX_TAIL_INTERVALS` is still publishable — the bound is inclusive.
+    #[test]
+    fn tail_exactly_at_bound_publishes() {
+        let t2_time = max_tail_ms();
+        let now = t2_time.checked_mul(2).expect("fits");
+        let post_states = publish_price(
+            make_price_observations(&[(0, 0), (t2_time, 0)], 0),
+            make_oracle_price_account(),
+            make_current_tick_account(0, t2_time),
+            clock_account_with_timestamp(now),
+            price_source_id(),
+            WINDOW_24H,
+            ORACLE_PROGRAM_ID,
+        );
+        let account = OraclePriceAccount::try_from(post_states[1].post_data())
+            .expect("valid OraclePriceAccount");
+        assert_eq!(account.timestamp, now);
+    }
+
+    /// An actively traded pool whose feed nobody records is the worst case, and the one the bound
+    /// exists for.
+    ///
+    /// Every swap chains `UpdateCurrentTick`, so `last_updated` stays fresh while
+    /// `last_recorded_tick` goes stale. The tail splits at `last_updated`, which puts the *whole*
+    /// unrecorded gap on the pre-boundary segment — the one carrying the stale
+    /// `last_recorded_tick`. Unbounded, that published the pre-move price verbatim, stamped
+    /// `timestamp = now`, however far the market had actually moved.
+    #[test]
+    #[should_panic(expected = "PublishPrice: observations are stale")]
+    fn fresh_live_tick_does_not_excuse_a_stale_feed() {
+        let t2_time = max_tail_ms();
+        let now = t2_time.checked_mul(100).expect("fits");
+        publish_price(
+            make_price_observations(&[(0, 0), (t2_time, 0)], 0),
+            make_oracle_price_account(),
+            // Live tick far from the recorded one and updated right now: the pool is trading.
+            make_current_tick_account(-23_028, now),
+            clock_account_with_timestamp(now),
+            price_source_id(),
+            WINDOW_24H,
+            ORACLE_PROGRAM_ID,
+        );
     }
 
     /// Publishing exactly at the newest observation leaves no tail, so the live tick does not
