@@ -38,3 +38,9 @@ tests/testnet/custom-token-manifest.json
 # Stablecoin deployment manifest written by scripts/deploy-stablecoin.sh when the
 # setup script deploys the stablecoin. Regenerated on every setup run.
 tests/testnet/stablecoin.json
+
+# Stablecoin deployment manifest (program ids + accounts) for a local or testnet run
+tests/testnet/stablecoin.json
+
+# Custom token picked for tests/custom-token.mjs
+tests/testnet/custom-token-manifest.json
