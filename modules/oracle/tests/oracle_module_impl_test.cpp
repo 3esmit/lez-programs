@@ -13,6 +13,7 @@
 
 extern std::string oracleLastProgramRequest;
 extern std::string oracleLastFeedRequest;
+extern std::string oracleLastPlanRequest;
 
 namespace {
 using json = nlohmann::json;
@@ -31,6 +32,13 @@ const std::string CLOCK58 = "4Ss5JMkXAD9Z7cktFEdrqeMuT6jGMF1pVozTyPHZ6zT4";
 const std::string SOURCE58 = "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3";
 const std::string PRICE58 = "6k78AbasGMFFrhG95Pj6jQbqkVt7FQMhVgemxJovWKR6";
 const std::string OTHER58 = "CVDFLCAjXhVWiPXH9nTCTpCgVzmDVoiPzNJYuccr1dqB";
+// Derived feed accounts returned by the mocked planners.
+const std::string TICK_ACCOUNT(64, '6');
+const std::string TICK_ACCOUNT58 = "7tj9biW3KRJ7EEWmVUGigHiouCTXhV2dzcyvwma7Cyu7";
+const std::string OBSERVATIONS(64, '7');
+const std::string OBSERVATIONS58 = "93MB2qRDNVLxbmmPuYpLdAqn3u2x9ZhaVZK5wELHueP8";
+const std::string PRICE_ACCOUNT(64, '8');
+const std::string PRICE_ACCOUNT58 = "AByCTxLPRZPoyK22KdMxa3xkCbcNbeNWzVeEvh6UcJs9";
 
 class Environment {
 public:
@@ -70,13 +78,16 @@ json accountSnapshot() {
             {"data", ""}};
 }
 
+// Borsh bytes spanning the full 0..255 range.
+const json INSTRUCTION_BYTES = {0, 127, 128, 255};
+
 json plan(const std::vector<bool>& signers) {
     std::vector<std::string> accounts = {PRICE, SOURCE, CLOCK};
     if (signers.size() == 4) accounts = {PRICE, SOURCE, PAYER, CLOCK};
     return {{"programId", PROGRAM},
             {"accountIds", accounts},
             {"signingRequirements", signers},
-            {"instruction", {0, 127, 128, 255}}};
+            {"instruction", INSTRUCTION_BYTES}};
 }
 
 void assertError(const LogosMap& value, const char* code) {
@@ -92,6 +103,7 @@ struct Fixture {
     OracleModuleImpl module;
     std::string program_response;
     std::string feed_response;
+    std::string plan_response;
 
     Fixture() {
         module._logosCoreSetLogosModulesPtr_(&modules);
@@ -100,7 +112,10 @@ struct Fixture {
                                                               {CLOCK58, CLOCK},
                                                               {SOURCE58, SOURCE},
                                                               {PRICE58, PRICE},
-                                                              {OTHER58, OTHER_PROGRAM}}) {
+                                                              {OTHER58, OTHER_PROGRAM},
+                                                              {TICK_ACCOUNT58, TICK_ACCOUNT},
+                                                              {OBSERVATIONS58, OBSERVATIONS},
+                                                              {PRICE_ACCOUNT58, PRICE_ACCOUNT}}) {
             MockStore::instance()
                 .when("lez_core", "account_id_from_base58")
                 .withArgs(QVariantList{QString::fromStdString(base58)})
@@ -112,12 +127,24 @@ struct Fixture {
         program_response = json{{"ok", true}, {"value", value}}.dump();
         context.mockCFunction("oracle_program_info").returns(program_response);
     }
+    // The C mock stores only the reply's pointer, so the fixture owns it.
+    void planner(const char* name, std::string reply) {
+        plan_response = std::move(reply);
+        context.mockCFunction(name).returns(plan_response);
+    }
     void inventory(const std::vector<std::string>& ids) {
         QVariantList accounts;
         for (const auto& id : ids)
             accounts.push_back(
                 QVariantMap{{"account_id", QString::fromStdString(id)}, {"is_public", true}});
         context.mockModule("lez_core", "list_accounts").returnsVariant(accounts);
+    }
+    // Mocks lez_core's read of one account; a default snapshot is "absent".
+    void account(const std::string& id, const json& snapshot) {
+        MockStore::instance()
+            .when("lez_core", "get_account_public")
+            .withArgs(QVariantList{QString::fromStdString(id)})
+            .thenReturn(QString::fromStdString(snapshot.dump()));
     }
     void submission(const std::string& response = json{
                         {"success", true},
@@ -401,4 +428,275 @@ LOGOS_TEST(malformed_plans_and_failed_submissions_have_stable_errors) {
         assertError(OracleModuleTestAccess::submit(f.module, plan({false, true, false}), PAYER),
                     "wallet_submission_failed");
     }
+}
+
+namespace {
+json ownedSnapshot(const std::string& owner = PROGRAM) {
+    auto snapshot = accountSnapshot();
+    snapshot["program_owner"] = owner;
+    snapshot["data"] = "abcd";
+    return snapshot;
+}
+
+json identity(const std::string& base58, const std::string& hex) {
+    return {{"id", base58}, {"hex", hex}};
+}
+
+// One row per transaction method: its planner mock, its public request, the
+// accounts its plan touches, and which of those must already exist.
+struct Operation {
+    const char* name;
+    const char* planner;
+    LogosMap (OracleModuleImpl::*method)(const LogosMap&);
+    json request;
+    std::vector<bool> signers;
+    std::vector<std::pair<std::string, json>> identities;
+    std::vector<std::pair<std::string, bool>> requirements;
+};
+
+std::vector<Operation> operations() {
+    const auto tick = identity(TICK_ACCOUNT58, TICK_ACCOUNT);
+    const auto observations = identity(OBSERVATIONS58, OBSERVATIONS);
+    const auto price = identity(PRICE_ACCOUNT58, PRICE_ACCOUNT);
+    return {
+        {"createCurrentTickAccount", "oracle_create_current_tick_account_plan",
+         &OracleModuleImpl::createCurrentTickAccount,
+         {{"priceSourceId", SOURCE58},
+          {"initialPrice", "18446744073709551616"},
+          {"feePayerId", PAYER}},
+         {false, true, false},
+         {{"currentTickAccountId", tick}},
+         {{TICK_ACCOUNT, false}}},
+        {"createPriceObservations", "oracle_create_price_observations_plan",
+         &OracleModuleImpl::createPriceObservations,
+         {{"priceSourceId", SOURCE58},
+          {"initialTick", "-42"},
+          {"windowDurationMs", "86400000"},
+          {"feePayerId", PAYER}},
+         {false, true, false},
+         {{"priceObservationsId", observations}},
+         {{OBSERVATIONS, false}}},
+        {"createOraclePriceAccount", "oracle_create_oracle_price_account_plan",
+         &OracleModuleImpl::createOraclePriceAccount,
+         {{"priceSourceId", SOURCE58},
+          {"baseAssetId", PRICE58},
+          {"quoteAssetId", OTHER58},
+          {"initialPrice", "18446744073709551616"},
+          {"windowDurationMs", "86400000"},
+          {"feePayerId", PAYER}},
+         {false, true, false},
+         {{"priceAccountId", price}},
+         {{PRICE_ACCOUNT, false}}},
+        {"updateCurrentTick", "oracle_update_current_tick_plan",
+         &OracleModuleImpl::updateCurrentTick,
+         {{"priceSourceId", SOURCE58}, {"price", "0"}, {"feePayerId", PAYER}},
+         {false, true, false},
+         {{"currentTickAccountId", tick}},
+         {{TICK_ACCOUNT, true}}},
+        {"recordTick", "oracle_record_tick_plan", &OracleModuleImpl::recordTick,
+         {{"priceSourceId", SOURCE58}, {"windowDurationMs", "86400000"}, {"feePayerId", PAYER}},
+         {false, false, false},
+         {{"priceObservationsId", observations}, {"currentTickAccountId", tick}},
+         {{OBSERVATIONS, true}, {TICK_ACCOUNT, true}}},
+        {"publishPrice", "oracle_publish_price_plan", &OracleModuleImpl::publishPrice,
+         {{"priceSourceId", SOURCE58}, {"windowDurationMs", "86400000"}, {"feePayerId", PAYER}},
+         {false, false, false, false},
+         {{"priceObservationsId", observations},
+          {"priceAccountId", price},
+          {"currentTickAccountId", tick}},
+         {{OBSERVATIONS, true}, {PRICE_ACCOUNT, true}, {TICK_ACCOUNT, true}}},
+    };
+}
+
+json planReply(const Operation& op, const std::string& program = PROGRAM) {
+    std::vector<std::string> accounts;
+    for (const auto& [key, value] : op.identities) accounts.push_back(value["hex"]);
+    while (accounts.size() + 1 < op.signers.size()) accounts.push_back(SOURCE);
+    accounts.push_back(CLOCK);
+    json identities = {{"priceSourceId", SOURCE58},
+                       {"priceSourceIdHex", SOURCE},
+                       {"clockId", CLOCK58},
+                       {"clockIdHex", CLOCK}};
+    for (const auto& [key, value] : op.identities) {
+        identities[key] = value["id"];
+        identities[key + "Hex"] = value["hex"];
+    }
+    return {{"ok", true},
+            {"value",
+             {{"plan",
+               {{"programId", program},
+                {"accountIds", accounts},
+                {"signingRequirements", op.signers},
+                {"instruction", INSTRUCTION_BYTES}}},
+              {"identities", identities}}}};
+}
+
+// Every requirement satisfied: creation targets absent, maintained accounts
+// owned by the oracle program, and the source and payer in the wallet.
+void satisfy(Fixture& f, const Operation& op) {
+    f.planner(op.planner, planReply(op).dump());
+    for (const auto& [id, initialized] : op.requirements)
+        f.account(id, initialized ? ownedSnapshot() : accountSnapshot());
+    f.inventory({SOURCE, PAYER});
+    f.submission();
+}
+
+LogosMap invoke(Fixture& f, const Operation& op) {
+    return (f.module.*op.method)(op.request.get<LogosMap>());
+}
+}  // namespace
+
+LOGOS_TEST(transaction_methods_plan_check_accounts_and_submit) {
+    for (const auto& op : operations()) {
+        Fixture f;
+        satisfy(f, op);
+        const auto result = invoke(f, op);
+        LOGOS_ASSERT_EQ(result.at("status"), json("ok"));
+        LOGOS_ASSERT_EQ(result.at("transactionId"), json(HASH));
+        LOGOS_ASSERT_EQ(result.at("priceSourceId"), json(SOURCE58));
+        for (const auto& [key, value] : op.identities) {
+            LOGOS_ASSERT_EQ(result.at(key), value["id"]);
+            LOGOS_ASSERT_EQ(result.at(key + "Hex"), value["hex"]);
+        }
+        // The planner gets the resolved program and normalized ids, with
+        // numeric arguments passed through as the caller's decimal strings.
+        // The payer stays in C++: plans never name it.
+        json expected = op.request;
+        expected.erase("feePayerId");
+        expected["oracleProgramId"] = PROGRAM;
+        expected["priceSourceId"] = SOURCE;
+        if (expected.contains("baseAssetId")) expected["baseAssetId"] = PRICE;
+        if (expected.contains("quoteAssetId")) expected["quoteAssetId"] = OTHER_PROGRAM;
+        LOGOS_ASSERT_EQ(json::parse(oracleLastPlanRequest), expected);
+        LOGOS_ASSERT_EQ(f.context.cFunctionCallCount(op.planner), 1);
+        LOGOS_ASSERT_EQ(f.context.moduleCallCount("lez_core", "get_account_public"),
+                        static_cast<int>(op.requirements.size()));
+        LOGOS_ASSERT_EQ(
+            f.context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
+    }
+}
+
+LOGOS_TEST(creation_refuses_existing_accounts_and_maintenance_requires_feed_state) {
+    for (const auto& op : operations()) {
+        for (const auto& [id, initialized] : op.requirements) {
+            Fixture f;
+            satisfy(f, op);
+            if (initialized) {
+                f.account(id, accountSnapshot());
+                assertError(invoke(f, op), "account_not_initialized");
+                f.account(id, ownedSnapshot(OTHER_PROGRAM));
+                assertError(invoke(f, op), "account_not_initialized");
+            } else {
+                f.account(id, ownedSnapshot());
+                assertError(invoke(f, op), "already_initialized");
+                auto funded = accountSnapshot();
+                funded["balance"] = "01" + std::string(30, '0');
+                f.account(id, funded);
+                assertError(invoke(f, op), "already_initialized");
+            }
+            f.context.mockModule("lez_core", "get_account_public").returns("");
+            assertError(invoke(f, op), "account_read_failed");
+            LOGOS_ASSERT_EQ(
+                f.context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+        }
+    }
+}
+
+LOGOS_TEST(source_writes_need_the_source_and_every_method_needs_the_payer) {
+    for (const auto& op : operations()) {
+        Fixture f;
+        satisfy(f, op);
+        f.inventory({PAYER});
+        const bool source_signs = op.signers.size() == 3 && op.signers[1];
+        const auto result = invoke(f, op);
+        if (source_signs) {
+            assertError(result, "source_not_signable");
+        } else {
+            LOGOS_ASSERT_EQ(result.at("status"), json("ok"));
+        }
+        LOGOS_ASSERT_EQ(f.context.moduleCallCount("lez_core", "send_generic_public_transaction"),
+                        source_signs ? 0 : 1);
+        f.inventory({SOURCE});
+        assertError(invoke(f, op), "fee_payer_not_signable");
+        LOGOS_ASSERT_EQ(f.context.moduleCallCount("lez_core", "send_generic_public_transaction"),
+                        source_signs ? 0 : 1);
+    }
+}
+
+LOGOS_TEST(the_source_may_pay_but_an_invalid_or_nonsigning_payer_is_refused) {
+    for (const auto& op : operations()) {
+        Fixture f;
+        satisfy(f, op);
+        auto request = op.request;
+        request["feePayerId"] = SOURCE58;
+        const auto paid_by_source = (f.module.*op.method)(request.get<LogosMap>());
+        LOGOS_ASSERT_EQ(paid_by_source.at("status"), json("ok"));
+        for (const auto& payer : {std::string("invalid!"), CLOCK}) {
+            request["feePayerId"] = payer;
+            assertError((f.module.*op.method)(request.get<LogosMap>()), "invalid_fee_payer");
+        }
+        LOGOS_ASSERT_EQ(f.context.moduleCallCount("lez_core", "send_generic_public_transaction"),
+                        1);
+    }
+}
+
+LOGOS_TEST(transaction_inputs_and_planner_failures_have_stable_errors) {
+    for (const auto& op : operations()) {
+        Fixture f;
+        satisfy(f, op);
+        for (const auto& [key, value] : op.request.items()) {
+            auto missing = op.request;
+            missing.erase(key);
+            assertError((f.module.*op.method)(missing.get<LogosMap>()), "bad_request");
+            auto numeric = op.request;
+            numeric[key] = 1;
+            assertError((f.module.*op.method)(numeric.get<LogosMap>()), "bad_request");
+        }
+        auto bad_source = op.request;
+        bad_source["priceSourceId"] = "invalid!";
+        assertError((f.module.*op.method)(bad_source.get<LogosMap>()), "invalid_account_id");
+        LOGOS_ASSERT_EQ(f.context.cFunctionCallCount(op.planner), 0);
+
+        for (const auto* code : {"invalid_window", "invalid_numeric_value", "invalid_price",
+                                 "invalid_program_id", "invalid_account_id"}) {
+            f.planner(op.planner, json{{"ok", false}, {"error", code}}.dump());
+            assertError(invoke(f, op), code);
+        }
+        f.context.mockCFunction(op.planner).returns(R"({"ok":false,"error":"guest panic"})");
+        assertError(invoke(f, op), "backend_error");
+        // A plan for another program, or malformed identities, never submits.
+        f.planner(op.planner, planReply(op, OTHER_PROGRAM).dump());
+        assertError(invoke(f, op), "backend_error");
+        auto broken = planReply(op);
+        broken["value"]["identities"]["priceSourceIdHex"] = OTHER_PROGRAM;
+        f.planner(op.planner, broken.dump());
+        assertError(invoke(f, op), "backend_error");
+        auto missing_plan = planReply(op);
+        missing_plan["value"].erase("plan");
+        f.planner(op.planner, missing_plan.dump());
+        assertError(invoke(f, op), "backend_error");
+        LOGOS_ASSERT_EQ(
+            f.context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+    }
+    for (const auto& op : operations()) {
+        Fixture f;
+        Environment absent("TWAP_ORACLE_PROGRAM_ID", nullptr);
+        assertError(invoke(f, op), "config_missing");
+        LOGOS_ASSERT_EQ(f.context.cFunctionCallCount(op.planner), 0);
+    }
+}
+
+LOGOS_TEST(create_oracle_price_account_normalizes_asset_ids) {
+    const auto op = operations()[2];
+    Fixture f;
+    satisfy(f, op);
+    for (const auto* key : {"baseAssetId", "quoteAssetId"}) {
+        auto request = op.request;
+        request[key] = "invalid!";
+        assertError((f.module.*op.method)(request.get<LogosMap>()), "invalid_account_id");
+    }
+    auto hex = op.request;
+    hex["baseAssetId"] = std::string(64, '5');
+    LOGOS_ASSERT_EQ((f.module.*op.method)(hex.get<LogosMap>()).at("status"), json("ok"));
+    LOGOS_ASSERT_EQ(json::parse(oracleLastPlanRequest)["baseAssetId"], json(PRICE));
 }

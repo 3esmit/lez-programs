@@ -43,6 +43,15 @@ std::string stringField(const json& value, const std::string& key) {
     return field != value.end() && field->is_string() ? field->get<std::string>() : std::string();
 }
 
+bool hasStrings(const json& value, std::initializer_list<const char*> keys) {
+    if (!value.is_object()) return false;
+    for (const auto* key : keys) {
+        const auto field = value.find(key);
+        if (field == value.end() || !field->is_string()) return false;
+    }
+    return true;
+}
+
 std::string binaryHex(const char* path) {
     std::ifstream file(path, std::ios::binary);
     if (!file) return {};
@@ -203,5 +212,139 @@ LogosMap OracleModuleImpl::submitPlan(const json& value, const std::string& fee_
         LogosMap result = success(identities);
         result["transactionId"] = transaction;
         return result;
+    });
+}
+
+LogosMap OracleModuleImpl::planAndSubmit(Planner planner, json request,
+                                         const std::string& fee_payer,
+                                         std::initializer_list<AccountRequirement> requirements) {
+    std::string error;
+    const json info = resolveProgram(error);
+    if (!info.is_object()) return failure(error);
+    const std::string program = info["programIdHex"].get<std::string>();
+    request["oracleProgramId"] = program;
+
+    const auto result = support::callFfi(planner, request);
+    if (!result.ok) return failure(result.error);
+    const auto plan = result.value.find("plan");
+    const auto identities = result.value.find("identities");
+    if (plan == result.value.end() || !plan->is_object() || identities == result.value.end() ||
+        !identities->is_object() || stringField(*plan, "programId") != program)
+        return failure("backend_error");
+    for (const auto& [key, value] : identities->items()) {
+        const bool hex_twin = key.size() > 3 && key.compare(key.size() - 3, 3, "Hex") == 0;
+        if (!hex_twin && !validIdentity(*identities, key)) return failure("backend_error");
+    }
+
+    // The program rejects these too; checking first gives a stable error code
+    // instead of a submitted transaction that fails on-chain.
+    for (const auto& requirement : requirements) {
+        const std::string id = stringField(*identities, std::string(requirement.identity) + "Hex");
+        if (id.empty()) return failure("backend_error");
+        const auto state = support::accountState(readPublicAccount(id), program);
+        if (state == support::AccountState::ReadFailed) return failure("account_read_failed");
+        if (!requirement.initialized && state != support::AccountState::Uninitialized)
+            return failure("already_initialized");
+        // A foreign-owned account at the PDA is not this feed's state either.
+        if (requirement.initialized && state != support::AccountState::ProgramOwned)
+            return failure("account_not_initialized");
+    }
+    return submitPlan(*plan, fee_payer, *identities);
+}
+
+LogosMap OracleModuleImpl::createCurrentTickAccount(const LogosMap& request) {
+    return guarded([&]() -> LogosMap {
+        const json input = request;
+        if (!hasStrings(input, {"priceSourceId", "initialPrice", "feePayerId"}))
+            return failure("bad_request");
+        const std::string source = normalizeAccountId(input["priceSourceId"].get<std::string>());
+        if (source.empty()) return failure("invalid_account_id");
+        return planAndSubmit(oracle_create_current_tick_account_plan,
+                             {{"priceSourceId", source}, {"initialPrice", input["initialPrice"]}},
+                             input["feePayerId"].get<std::string>(),
+                             {{"currentTickAccountId", false}});
+    });
+}
+
+LogosMap OracleModuleImpl::createPriceObservations(const LogosMap& request) {
+    return guarded([&]() -> LogosMap {
+        const json input = request;
+        if (!hasStrings(input, {"priceSourceId", "initialTick", "windowDurationMs", "feePayerId"}))
+            return failure("bad_request");
+        const std::string source = normalizeAccountId(input["priceSourceId"].get<std::string>());
+        if (source.empty()) return failure("invalid_account_id");
+        return planAndSubmit(oracle_create_price_observations_plan,
+                             {{"priceSourceId", source},
+                              {"initialTick", input["initialTick"]},
+                              {"windowDurationMs", input["windowDurationMs"]}},
+                             input["feePayerId"].get<std::string>(),
+                             {{"priceObservationsId", false}});
+    });
+}
+
+LogosMap OracleModuleImpl::createOraclePriceAccount(const LogosMap& request) {
+    return guarded([&]() -> LogosMap {
+        const json input = request;
+        if (!hasStrings(input, {"priceSourceId", "baseAssetId", "quoteAssetId", "initialPrice",
+                                "windowDurationMs", "feePayerId"}))
+            return failure("bad_request");
+        const std::string source = normalizeAccountId(input["priceSourceId"].get<std::string>());
+        const std::string base = normalizeAccountId(input["baseAssetId"].get<std::string>());
+        const std::string quote = normalizeAccountId(input["quoteAssetId"].get<std::string>());
+        if (source.empty() || base.empty() || quote.empty()) return failure("invalid_account_id");
+        return planAndSubmit(oracle_create_oracle_price_account_plan,
+                             {{"priceSourceId", source},
+                              {"baseAssetId", base},
+                              {"quoteAssetId", quote},
+                              {"initialPrice", input["initialPrice"]},
+                              {"windowDurationMs", input["windowDurationMs"]}},
+                             input["feePayerId"].get<std::string>(),
+                             {{"priceAccountId", false}});
+    });
+}
+
+LogosMap OracleModuleImpl::updateCurrentTick(const LogosMap& request) {
+    return guarded([&]() -> LogosMap {
+        const json input = request;
+        if (!hasStrings(input, {"priceSourceId", "price", "feePayerId"}))
+            return failure("bad_request");
+        const std::string source = normalizeAccountId(input["priceSourceId"].get<std::string>());
+        if (source.empty()) return failure("invalid_account_id");
+        return planAndSubmit(oracle_update_current_tick_plan,
+                             {{"priceSourceId", source}, {"price", input["price"]}},
+                             input["feePayerId"].get<std::string>(),
+                             {{"currentTickAccountId", true}});
+    });
+}
+
+LogosMap OracleModuleImpl::recordTick(const LogosMap& request) {
+    return guarded([&]() -> LogosMap {
+        const json input = request;
+        if (!hasStrings(input, {"priceSourceId", "windowDurationMs", "feePayerId"}))
+            return failure("bad_request");
+        const std::string source = normalizeAccountId(input["priceSourceId"].get<std::string>());
+        if (source.empty()) return failure("invalid_account_id");
+        return planAndSubmit(
+            oracle_record_tick_plan,
+            {{"priceSourceId", source}, {"windowDurationMs", input["windowDurationMs"]}},
+            input["feePayerId"].get<std::string>(),
+            {{"priceObservationsId", true}, {"currentTickAccountId", true}});
+    });
+}
+
+LogosMap OracleModuleImpl::publishPrice(const LogosMap& request) {
+    return guarded([&]() -> LogosMap {
+        const json input = request;
+        if (!hasStrings(input, {"priceSourceId", "windowDurationMs", "feePayerId"}))
+            return failure("bad_request");
+        const std::string source = normalizeAccountId(input["priceSourceId"].get<std::string>());
+        if (source.empty()) return failure("invalid_account_id");
+        return planAndSubmit(
+            oracle_publish_price_plan,
+            {{"priceSourceId", source}, {"windowDurationMs", input["windowDurationMs"]}},
+            input["feePayerId"].get<std::string>(),
+            {{"priceObservationsId", true},
+             {"priceAccountId", true},
+             {"currentTickAccountId", true}});
     });
 }
