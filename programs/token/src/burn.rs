@@ -9,7 +9,7 @@ use token_core::{
     Internal, TokenState,
 };
 
-use crate::{definition_state, holding_state, token_actor};
+use crate::{definition_state, holding_state, token_actor, write_holding};
 
 /// At the holding.
 pub(crate) fn burn(input: &ReceiveInput, amount: u128) -> Response {
@@ -20,7 +20,7 @@ pub(crate) fn burn(input: &ReceiveInput, amount: u128) -> Response {
         .checked_sub(amount)
         .expect("insufficient balance");
     let definition = holding.definition_id;
-    Response::set_state(TokenState::Holding(holding).encode()).send_sync(
+    write_holding(input, holding).send_sync(
         token_actor(input, definition),
         &Internal::DecreaseSupply { amount },
     )

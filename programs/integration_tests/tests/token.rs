@@ -79,7 +79,9 @@ impl Chain {
 
     fn holding(&self, id: AccountId) -> Option<TokenHolding> {
         match self.token_state(id) {
-            Some(TokenState::Holding(holding)) => Some(holding),
+            Some(TokenState::Holding(holding) | TokenState::PermittedHolding { holding, .. }) => {
+                Some(holding)
+            }
             Some(TokenState::Definition(_)) | None => None,
         }
     }

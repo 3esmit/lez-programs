@@ -1625,6 +1625,7 @@ dependencies = [
  "nft-methods",
  "nft_core",
  "token-methods",
+ "token-permission-example",
  "token_core",
 ]
 
@@ -3444,6 +3445,16 @@ version = "0.1.0"
 dependencies = [
  "risc0-build",
  "risc0-zkvm",
+ "token_core",
+]
+
+[[package]]
+name = "token-permission-example"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "lee_core",
+ "risc0-build",
  "token_core",
 ]
 

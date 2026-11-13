@@ -23,10 +23,12 @@ use lee_core::{
 pub use token_core as core;
 use token_core::{Internal, Message, TokenDefinition, TokenHolding, TokenState};
 
+mod batch;
 mod burn;
 mod initialize_holding;
 mod mint;
 mod new_definition;
+mod permission;
 mod read_state;
 mod set_authority;
 #[cfg(test)]
@@ -80,6 +82,15 @@ pub fn handle_message(input: &ReceiveInput) -> Response {
                 new_authority,
             } => set_authority::set_authority(input, definition, new_authority),
             Message::ReadState => read_state::read_state(input),
+            Message::Batch { payments, burn } => batch::batch(input, payments, burn),
+            Message::ApproveSpending { permission } => permission::approve(input, permission),
+            Message::RevokeSpending => permission::revoke(input),
+            Message::Spend {
+                generation,
+                nonce,
+                pay,
+                burn,
+            } => permission::spend(input, generation, nonce, pay, burn),
         }
     }
 }
@@ -92,13 +103,17 @@ fn token_actor(input: &ReceiveInput, account_id: AccountId) -> Actor {
 fn definition_state(input: &ReceiveInput) -> TokenDefinition {
     match TokenState::decode(&input.pre_state) {
         Some(TokenState::Definition(definition)) => definition,
-        Some(TokenState::Holding(_)) | None => panic!("receiver is not a token definition"),
+        Some(TokenState::Holding(_) | TokenState::PermittedHolding { .. }) | None => {
+            panic!("receiver is not a token definition")
+        }
     }
 }
 
 fn holding_state(input: &ReceiveInput) -> TokenHolding {
     match TokenState::decode(&input.pre_state) {
-        Some(TokenState::Holding(holding)) => holding,
+        Some(TokenState::Holding(holding) | TokenState::PermittedHolding { holding, .. }) => {
+            holding
+        }
         Some(TokenState::Definition(_)) | None => panic!("receiver is not a token holding"),
     }
 }
@@ -126,4 +141,22 @@ fn forward_as_authority(
 ) -> Response {
     assert!(input.is_authorized, "mint authority must authorize");
     Response::keep_state().send_sync(token_actor(input, definition), message)
+}
+
+/// Preserve the permission and its generation during ordinary owner operations or credits.
+fn write_holding(input: &ReceiveInput, holding: TokenHolding) -> Response {
+    let next = match TokenState::decode(&input.pre_state) {
+        Some(TokenState::PermittedHolding {
+            generation,
+            permission,
+            ..
+        }) => TokenState::PermittedHolding {
+            holding,
+            generation,
+            permission,
+        },
+        Some(TokenState::Holding(_)) => TokenState::Holding(holding),
+        Some(TokenState::Definition(_)) | None => panic!("receiver is not a token holding"),
+    };
+    Response::set_state(next.encode())
 }

@@ -20,6 +20,12 @@ pub const MAX_NAME_LEN: usize = 64;
 pub enum TokenState {
     Definition(TokenDefinition),
     Holding(TokenHolding),
+    /// Opt-in holding with one revocable, cumulative spending permission.
+    PermittedHolding {
+        holding: TokenHolding,
+        generation: u64,
+        permission: Option<SpendPermission>,
+    },
 }
 
 impl TokenState {
@@ -53,6 +59,28 @@ pub struct TokenDefinition {
 pub struct TokenHolding {
     pub definition_id: AccountId,
     pub balance: u128,
+}
+
+/// Independent effects in a batch. They do not observe one another's intermediate state.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct Payment {
+    pub to: AccountId,
+    pub amount: u128,
+}
+
+/// Authorizes only a fixed deployment/account to pay one destination and optionally burn.
+/// The source and asset are the enclosing holding. `remaining` includes both actions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+pub struct SpendPermission {
+    pub spender_account: AccountId,
+    pub spender_program: AccountId,
+    pub destination: AccountId,
+    pub remaining: u128,
+    pub burn_remaining: u128,
+    /// Next single-use spend nonce. Approval starts at zero.
+    pub next_nonce: u64,
+    /// Exclusive upper bound, in the same timestamp units as LEZ (milliseconds).
+    pub expires_before: u64,
 }
 
 /// Messages anyone may send: a transaction author or another program.
@@ -101,6 +129,25 @@ pub enum Message {
 
     /// Reply to the sender with this actor's state, as a `lee_core::program::StateReply`.
     ReadState,
+
+    /// Debit one authorized holding for independent payments and a burn.
+    /// Supply adjustment is synchronous; credits retain normal async Token semantics.
+    Batch { payments: Vec<Payment>, burn: u128 },
+
+    /// Owner approval replaces the previous permission and advances its generation.
+    ApproveSpending { permission: SpendPermission },
+
+    /// Owner revocation keeps the generation counter, so old grants cannot reappear.
+    RevokeSpending,
+
+    /// The exact permitted actor may consume part of its remaining budget.
+    /// No owner credential is required or desirable in the spending transaction.
+    Spend {
+        generation: u64,
+        nonce: u64,
+        pay: u128,
+        burn: u128,
+    },
 }
 
 /// Messages only token actors send each other, named for what they do at the receiver.

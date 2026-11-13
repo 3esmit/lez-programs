@@ -105,6 +105,66 @@
       "name": "ReadState",
       "tag": 6,
       "docs": "Reply to the sender with this actor's state, as a `lee_core::program::StateReply`."
+    },
+    {
+      "name": "Batch",
+      "tag": 7,
+      "docs": "Debit one authorized holding for independent payments and a burn.\nSupply adjustment is synchronous; credits retain normal async Token semantics.",
+      "fields": [
+        {
+          "name": "payments",
+          "type": {
+            "vec": {
+              "defined": "Payment"
+            }
+          }
+        },
+        {
+          "name": "burn",
+          "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "ApproveSpending",
+      "tag": 8,
+      "docs": "Owner approval replaces the previous permission and advances its generation.",
+      "fields": [
+        {
+          "name": "permission",
+          "type": {
+            "defined": "SpendPermission"
+          }
+        }
+      ]
+    },
+    {
+      "name": "RevokeSpending",
+      "tag": 9,
+      "docs": "Owner revocation keeps the generation counter, so old grants cannot reappear."
+    },
+    {
+      "name": "Spend",
+      "tag": 10,
+      "docs": "The exact permitted actor may consume part of its remaining budget.\nNo owner credential is required or desirable in the spending transaction.",
+      "fields": [
+        {
+          "name": "generation",
+          "type": "u64"
+        },
+        {
+          "name": "nonce",
+          "type": "u64"
+        },
+        {
+          "name": "pay",
+          "type": "u128"
+        },
+        {
+          "name": "burn",
+          "type": "u128"
+        }
+      ]
     }
   ],
   "state": {
@@ -235,6 +295,56 @@
       ]
     },
     {
+      "name": "Payment",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "to",
+          "type": "account_id"
+        },
+        {
+          "name": "amount",
+          "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "SpendPermission",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "spender_account",
+          "type": "account_id"
+        },
+        {
+          "name": "spender_program",
+          "type": "account_id"
+        },
+        {
+          "name": "destination",
+          "type": "account_id"
+        },
+        {
+          "name": "remaining",
+          "type": "u128"
+        },
+        {
+          "name": "burn_remaining",
+          "type": "u128"
+        },
+        {
+          "name": "next_nonce",
+          "type": "u64",
+          "docs": "Next single-use spend nonce. Approval starts at zero."
+        },
+        {
+          "name": "expires_before",
+          "type": "u64",
+          "docs": "Exclusive upper bound, in the same timestamp units as LEZ (milliseconds)."
+        }
+      ]
+    },
+    {
       "name": "TokenDefinition",
       "kind": "struct",
       "fields": [
@@ -291,6 +401,29 @@
               "name": "0",
               "type": {
                 "defined": "TokenHolding"
+              }
+            }
+          ]
+        },
+        {
+          "name": "PermittedHolding",
+          "fields": [
+            {
+              "name": "holding",
+              "type": {
+                "defined": "TokenHolding"
+              }
+            },
+            {
+              "name": "generation",
+              "type": "u64"
+            },
+            {
+              "name": "permission",
+              "type": {
+                "option": {
+                  "defined": "SpendPermission"
+                }
               }
             }
           ]
