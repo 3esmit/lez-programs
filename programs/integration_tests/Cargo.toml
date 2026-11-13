@@ -14,6 +14,10 @@ name = "token"
 path = "tests/token.rs"
 
 [[test]]
+name = "token_workflow"
+path = "tests/token_workflow.rs"
+
+[[test]]
 name = "nft"
 path = "tests/nft.rs"
 
@@ -23,5 +27,6 @@ lee = { workspace = true }
 lee_core = { workspace = true, features = ["host", "test_utils"] }
 token_core = { workspace = true }
 token-methods = { path = "../token/methods" }
+token-workflow-example = { path = "../token/examples/actor_workflow" }
 nft_core = { workspace = true }
 nft-methods = { path = "../nft/methods" }
