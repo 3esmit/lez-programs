@@ -1,0 +1,19 @@
+[package]
+name = "token-callback-example"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+borsh = { workspace = true }
+lee_core = { workspace = true }
+token_core = { workspace = true }
+
+[build-dependencies]
+risc0-build = "=3.0.5"
+
+[package.metadata.risc0]
+methods = ["guest"]

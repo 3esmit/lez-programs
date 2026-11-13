@@ -23,6 +23,7 @@ use lee_core::{
 pub use token_core as core;
 use token_core::{Internal, Message, TokenDefinition, TokenHolding, TokenState};
 
+mod atomic_transfer;
 mod burn;
 mod initialize_holding;
 mod mint;
@@ -54,8 +55,23 @@ pub fn handle_message(input: &ReceiveInput) -> Response {
             Internal::ChangeAuthority { new_authority } => {
                 set_authority::change_authority(input, from, new_authority)
             }
+            message @ Internal::DispatchAtomicTransfer { .. } => {
+                atomic_transfer::dispatch(input, message)
+            }
+            message @ Internal::CreditAndCall { .. } => {
+                atomic_transfer::credit(input, from, message)
+            }
+            Internal::AcknowledgeAtomicTransfer => atomic_transfer::acknowledge(input),
+            Internal::FinishAtomicTransfer => atomic_transfer::finish(input),
         }
     } else {
+        assert!(
+            !matches!(
+                TokenState::decode(&input.pre_state),
+                Some(TokenState::AtomicTransfer { .. })
+            ),
+            "atomic transfer in progress"
+        );
         let message: Message =
             borsh::from_slice(&input.message).expect("token message must decode");
         match message {
@@ -80,6 +96,9 @@ pub fn handle_message(input: &ReceiveInput) -> Response {
                 new_authority,
             } => set_authority::set_authority(input, definition, new_authority),
             Message::ReadState => read_state::read_state(input),
+            message @ Message::TransferAndCallAtomic { .. } => {
+                atomic_transfer::start(input, message)
+            }
         }
     }
 }
@@ -92,14 +111,18 @@ fn token_actor(input: &ReceiveInput, account_id: AccountId) -> Actor {
 fn definition_state(input: &ReceiveInput) -> TokenDefinition {
     match TokenState::decode(&input.pre_state) {
         Some(TokenState::Definition(definition)) => definition,
-        Some(TokenState::Holding(_)) | None => panic!("receiver is not a token definition"),
+        Some(TokenState::Holding(_) | TokenState::AtomicTransfer { .. }) | None => {
+            panic!("receiver is not a token definition")
+        }
     }
 }
 
 fn holding_state(input: &ReceiveInput) -> TokenHolding {
     match TokenState::decode(&input.pre_state) {
         Some(TokenState::Holding(holding)) => holding,
-        Some(TokenState::Definition(_)) | None => panic!("receiver is not a token holding"),
+        Some(TokenState::Definition(_) | TokenState::AtomicTransfer { .. }) | None => {
+            panic!("receiver is not a token holding")
+        }
     }
 }
 
