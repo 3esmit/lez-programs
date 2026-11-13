@@ -25,3 +25,15 @@ token_core = { workspace = true }
 token-methods = { path = "../token/methods" }
 nft_core = { workspace = true }
 nft-methods = { path = "../nft/methods" }
+
+[[test]]
+name = "token_composition"
+path = "tests/token_composition.rs"
+
+[[test]]
+name = "token_redemption"
+path = "tests/token_redemption.rs"
+
+[dev-dependencies]
+token-redemption-example = { path = "../token/examples/redemption" }
+token-composition-example = { path = "../token/examples/composition" }

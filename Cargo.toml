@@ -3,6 +3,8 @@ members = [
     "programs/token/core",
     "programs/token",
     "programs/token/methods",
+    "programs/token/examples/composition",
+    "programs/token/examples/redemption",
     "programs/nft/core",
     "programs/nft",
     "programs/nft/methods",
@@ -33,6 +35,8 @@ members = [
 ]
 exclude = [
     "programs/token/methods/guest",
+    "programs/token/examples/composition/guest",
+    "programs/token/examples/redemption/guest",
     "programs/nft/methods/guest",
     "programs/amm/methods/guest",
     "programs/ata/methods/guest",
