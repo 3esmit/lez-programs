@@ -17,11 +17,20 @@ path = "tests/token.rs"
 name = "nft"
 path = "tests/nft.rs"
 
+[[test]]
+name = "compare_payment"
+path = "tests/compare_payment.rs"
+
+[[test]]
+name = "compare_redemption"
+path = "tests/compare_redemption.rs"
+
 [dependencies]
 borsh = { workspace = true }
 lee = { workspace = true }
 lee_core = { workspace = true, features = ["host", "test_utils"] }
 token_core = { workspace = true }
 token-methods = { path = "../token/methods" }
+token-comparison-example = { path = "../token/examples/comparison" }
 nft_core = { workspace = true }
 nft-methods = { path = "../nft/methods" }
