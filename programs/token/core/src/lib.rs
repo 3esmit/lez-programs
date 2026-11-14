@@ -20,6 +20,12 @@ pub const MAX_NAME_LEN: usize = 64;
 pub enum TokenState {
     Definition(TokenDefinition),
     Holding(TokenHolding),
+    /// Provisional checked transfer; completion restores the original Holding format.
+    CheckedTransfer {
+        holding: TokenHolding,
+        destination: AccountId,
+        acknowledged: bool,
+    },
 }
 
 impl TokenState {
@@ -101,6 +107,28 @@ pub enum Message {
 
     /// Reply to the sender with this actor's state, as a `lee_core::program::StateReply`.
     ReadState,
+
+    /// Compare this holding and transfer only if the credit completes immediately.
+    TransferChecked {
+        definition: AccountId,
+        expected_balance: u128,
+        to: AccountId,
+        amount: u128,
+    },
+    /// Debit this holding, then compare and reduce its definition's supply atomically.
+    BurnChecked {
+        definition: AccountId,
+        expected_balance: u128,
+        expected_supply: u128,
+        amount: u128,
+    },
+    /// Fail unless this holding has the specified asset and balance at invocation.
+    AssertHolding {
+        definition: AccountId,
+        balance: u128,
+    },
+    /// Fail unless this definition has the specified supply at invocation.
+    AssertSupply { supply: u128 },
 }
 
 /// Messages only token actors send each other, named for what they do at the receiver.
@@ -110,17 +138,47 @@ pub enum Message {
 pub enum Internal {
     /// To a holding of `definition`: add `amount`. Sent async by a holding that debited
     /// the same amount, or by the definition after raising its supply.
-    IncreaseBalance { definition: AccountId, amount: u128 },
+    IncreaseBalance {
+        definition: AccountId,
+        amount: u128,
+    },
     /// To the definition an empty holding names: reply with `InitHolding` (amount 0).
     RequestHolding,
     /// To an empty holding, from its definition: write a holding of `amount`, the initial
     /// supply at creation or 0 in reply to `RequestHolding`.
-    InitHolding { definition: AccountId, amount: u128 },
+    InitHolding {
+        definition: AccountId,
+        amount: u128,
+    },
     /// To a holding's own definition, after the holding burned `amount`.
-    DecreaseSupply { amount: u128 },
+    DecreaseSupply {
+        amount: u128,
+    },
     /// To the definition, from its authority's actor: raise the supply by `amount` and
     /// credit it to `to`.
-    IncreaseSupply { to: AccountId, amount: u128 },
+    IncreaseSupply {
+        to: AccountId,
+        amount: u128,
+    },
     /// To the definition, from its authority's actor: rotate or renounce the authority.
-    ChangeAuthority { new_authority: Option<AccountId> },
+    ChangeAuthority {
+        new_authority: Option<AccountId>,
+    },
+    /// Self-call isolating the asynchronous credit below a mandatory completion guard.
+    DispatchCheckedCredit {
+        to: AccountId,
+        amount: u128,
+    },
+    /// A checked holding has already debited itself before emitting this credit.
+    CheckedCredit {
+        definition: AccountId,
+        amount: u128,
+    },
+    AcknowledgeCheckedCredit,
+    FinishCheckedTransfer,
+    /// Sent only to the holding's definition after its matching checked debit.
+    DecreaseSupplyChecked {
+        expected_supply: u128,
+        amount: u128,
+    },
 }
