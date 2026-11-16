@@ -1624,7 +1624,15 @@ dependencies = [
  "lee_core",
  "nft-methods",
  "nft_core",
+ "token-bounded-policy-example",
+ "token-candidate-plans-example",
+ "token-composition-example",
+ "token-internal-ledger-example",
  "token-methods",
+ "token-operation-receipts-example",
+ "token-redemption-example",
+ "token-script-coordinator-example",
+ "token-workflow-example",
  "token_core",
 ]
 
@@ -3439,11 +3447,97 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
+name = "token-bounded-policy-example"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "lee_core",
+ "risc0-build",
+ "sha2",
+ "token_core",
+]
+
+[[package]]
+name = "token-candidate-plans-example"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "lee_core",
+ "risc0-build",
+ "sha2",
+ "token_core",
+]
+
+[[package]]
+name = "token-composition-example"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "lee_core",
+ "risc0-build",
+ "token_core",
+]
+
+[[package]]
+name = "token-internal-ledger-example"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "lee_core",
+ "risc0-build",
+ "sha2",
+ "token_core",
+]
+
+[[package]]
 name = "token-methods"
 version = "0.1.0"
 dependencies = [
  "risc0-build",
  "risc0-zkvm",
+ "token_core",
+]
+
+[[package]]
+name = "token-operation-receipts-example"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "lee_core",
+ "risc0-build",
+ "sha2",
+ "token_core",
+]
+
+[[package]]
+name = "token-redemption-example"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "lee_core",
+ "risc0-build",
+ "sha2",
+ "token_core",
+]
+
+[[package]]
+name = "token-script-coordinator-example"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "lee_core",
+ "risc0-build",
+ "sha2",
+ "token_core",
+]
+
+[[package]]
+name = "token-workflow-example"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "lee_core",
+ "risc0-build",
  "token_core",
 ]
 

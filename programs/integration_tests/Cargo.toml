@@ -25,3 +25,65 @@ token_core = { workspace = true }
 token-methods = { path = "../token/methods" }
 nft_core = { workspace = true }
 nft-methods = { path = "../nft/methods" }
+
+[[test]]
+name = "token_workflow"
+path = "tests/token_workflow.rs"
+
+[dev-dependencies]
+token-operation-receipts-example = { path = "../token/examples/operation_receipts" }
+token-internal-ledger-example = { path = "../token/examples/internal_ledger" }
+token-script-coordinator-example = { path = "../token/examples/script_coordinator" }
+token-bounded-policy-example = { path = "../token/examples/bounded_policy" }
+token-candidate-plans-example = { path = "../token/examples/candidate_plans" }
+token-composition-example = { path = "../token/examples/composition" }
+token-redemption-example = { path = "../token/examples/redemption" }
+token-workflow-example = { path = "../token/examples/actor_workflow" }
+
+[[test]]
+name = "token_composition"
+path = "tests/token_composition.rs"
+
+[[test]]
+name = "token_redemption"
+path = "tests/token_redemption.rs"
+
+[[test]]
+name = "candidate_plans_payment"
+path = "tests/candidate_plans_payment.rs"
+
+[[test]]
+name = "candidate_plans_redemption"
+path = "tests/candidate_plans_redemption.rs"
+
+[[test]]
+name = "bounded_policy_payment"
+path = "tests/bounded_policy_payment.rs"
+
+[[test]]
+name = "bounded_policy_redemption"
+path = "tests/bounded_policy_redemption.rs"
+
+[[test]]
+name = "script_coordinator_payment"
+path = "tests/script_coordinator_payment.rs"
+
+[[test]]
+name = "script_coordinator_redemption"
+path = "tests/script_coordinator_redemption.rs"
+
+[[test]]
+name = "internal_ledger_payment"
+path = "tests/internal_ledger_payment.rs"
+
+[[test]]
+name = "internal_ledger_redemption"
+path = "tests/internal_ledger_redemption.rs"
+
+[[test]]
+name = "operation_receipts_payment"
+path = "tests/operation_receipts_payment.rs"
+
+[[test]]
+name = "operation_receipts_redemption"
+path = "tests/operation_receipts_redemption.rs"
