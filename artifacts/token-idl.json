@@ -105,6 +105,78 @@
       "name": "ReadState",
       "tag": 6,
       "docs": "Reply to the sender with this actor's state, as a `lee_core::program::StateReply`."
+    },
+    {
+      "name": "TransferChecked",
+      "tag": 7,
+      "docs": "Compare this holding and transfer only if the credit completes immediately.",
+      "fields": [
+        {
+          "name": "definition",
+          "type": "account_id"
+        },
+        {
+          "name": "expected_balance",
+          "type": "u128"
+        },
+        {
+          "name": "to",
+          "type": "account_id"
+        },
+        {
+          "name": "amount",
+          "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "BurnChecked",
+      "tag": 8,
+      "docs": "Debit this holding, then compare and reduce its definition's supply atomically.",
+      "fields": [
+        {
+          "name": "definition",
+          "type": "account_id"
+        },
+        {
+          "name": "expected_balance",
+          "type": "u128"
+        },
+        {
+          "name": "expected_supply",
+          "type": "u128"
+        },
+        {
+          "name": "amount",
+          "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "AssertHolding",
+      "tag": 9,
+      "docs": "Fail unless this holding has the specified asset and balance at invocation.",
+      "fields": [
+        {
+          "name": "definition",
+          "type": "account_id"
+        },
+        {
+          "name": "balance",
+          "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "AssertSupply",
+      "tag": 10,
+      "docs": "Fail unless this definition has the specified supply at invocation.",
+      "fields": [
+        {
+          "name": "supply",
+          "type": "u128"
+        }
+      ]
     }
   ],
   "state": {
@@ -292,6 +364,25 @@
               "type": {
                 "defined": "TokenHolding"
               }
+            }
+          ]
+        },
+        {
+          "name": "CheckedTransfer",
+          "fields": [
+            {
+              "name": "holding",
+              "type": {
+                "defined": "TokenHolding"
+              }
+            },
+            {
+              "name": "destination",
+              "type": "account_id"
+            },
+            {
+              "name": "acknowledged",
+              "type": "bool"
             }
           ]
         }

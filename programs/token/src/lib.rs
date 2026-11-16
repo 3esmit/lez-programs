@@ -24,6 +24,7 @@ pub use token_core as core;
 use token_core::{Internal, Message, TokenDefinition, TokenHolding, TokenState};
 
 mod burn;
+mod conditional;
 mod initialize_holding;
 mod mint;
 mod new_definition;
@@ -40,6 +41,18 @@ pub fn handle_message(input: &ReceiveInput) -> Response {
         let message: Internal =
             borsh::from_slice(&input.message).expect("internal token message must decode");
         match message {
+            Internal::DispatchCheckedCredit { to, amount } => {
+                conditional::dispatch(input, to, amount)
+            }
+            Internal::CheckedCredit { definition, amount } => {
+                conditional::credit(input, from, definition, amount)
+            }
+            Internal::AcknowledgeCheckedCredit => conditional::acknowledge(input),
+            Internal::FinishCheckedTransfer => conditional::finish(input),
+            Internal::DecreaseSupplyChecked {
+                expected_supply,
+                amount,
+            } => conditional::decrease_supply(input, from, expected_supply, amount),
             Internal::IncreaseBalance { definition, amount } => {
                 transfer::increase_balance(input, from, definition, amount)
             }
@@ -56,6 +69,13 @@ pub fn handle_message(input: &ReceiveInput) -> Response {
             }
         }
     } else {
+        assert!(
+            !matches!(
+                TokenState::decode(&input.pre_state),
+                Some(TokenState::CheckedTransfer { .. })
+            ),
+            "checked transfer in progress"
+        );
         let message: Message =
             borsh::from_slice(&input.message).expect("token message must decode");
         match message {
@@ -80,6 +100,35 @@ pub fn handle_message(input: &ReceiveInput) -> Response {
                 new_authority,
             } => set_authority::set_authority(input, definition, new_authority),
             Message::ReadState => read_state::read_state(input),
+            Message::TransferChecked {
+                definition,
+                expected_balance,
+                to,
+                amount,
+            } => conditional::transfer_checked(input, definition, expected_balance, to, amount),
+            Message::BurnChecked {
+                definition,
+                expected_balance,
+                expected_supply,
+                amount,
+            } => conditional::burn_checked(
+                input,
+                definition,
+                expected_balance,
+                expected_supply,
+                amount,
+            ),
+            Message::AssertHolding {
+                definition,
+                balance,
+            } => {
+                conditional::assert_holding(input, definition, balance);
+                Response::keep_state()
+            }
+            Message::AssertSupply { supply } => {
+                conditional::assert_supply(input, supply);
+                Response::keep_state()
+            }
         }
     }
 }
@@ -92,14 +141,18 @@ fn token_actor(input: &ReceiveInput, account_id: AccountId) -> Actor {
 fn definition_state(input: &ReceiveInput) -> TokenDefinition {
     match TokenState::decode(&input.pre_state) {
         Some(TokenState::Definition(definition)) => definition,
-        Some(TokenState::Holding(_)) | None => panic!("receiver is not a token definition"),
+        Some(TokenState::Holding(_)) | Some(TokenState::CheckedTransfer { .. }) | None => {
+            panic!("receiver is not a token definition")
+        }
     }
 }
 
 fn holding_state(input: &ReceiveInput) -> TokenHolding {
     match TokenState::decode(&input.pre_state) {
         Some(TokenState::Holding(holding)) => holding,
-        Some(TokenState::Definition(_)) | None => panic!("receiver is not a token holding"),
+        Some(TokenState::Definition(_)) | Some(TokenState::CheckedTransfer { .. }) | None => {
+            panic!("receiver is not a token holding")
+        }
     }
 }
 

@@ -26,6 +26,7 @@ Each extension is an independent child of the shared examples branch. Every chil
 | [script_coordinator](script_coordinator/) | Reusable continuation coordinator | `script_coordinator_payment`, `script_coordinator_redemption` |
 | [internal_ledger](internal_ledger/) | Internal ledger | `internal_ledger_payment`, `internal_ledger_redemption` |
 | [operation_receipts](operation_receipts/) | Operation receipts | `operation_receipts_payment`, `operation_receipts_redemption` |
+| [conditional_commands](conditional_commands/) | Conditional Token commands | `conditional_commands_payment`, `conditional_commands_redemption` |
 
 ## Shared scenarios
 

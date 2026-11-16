@@ -31,6 +31,7 @@ name = "token_workflow"
 path = "tests/token_workflow.rs"
 
 [dev-dependencies]
+token-conditional-commands-example = { path = "../token/examples/conditional_commands" }
 token-operation-receipts-example = { path = "../token/examples/operation_receipts" }
 token-internal-ledger-example = { path = "../token/examples/internal_ledger" }
 token-script-coordinator-example = { path = "../token/examples/script_coordinator" }
@@ -87,3 +88,11 @@ path = "tests/operation_receipts_payment.rs"
 [[test]]
 name = "operation_receipts_redemption"
 path = "tests/operation_receipts_redemption.rs"
+
+[[test]]
+name = "conditional_commands_payment"
+path = "tests/conditional_commands_payment.rs"
+
+[[test]]
+name = "conditional_commands_redemption"
+path = "tests/conditional_commands_redemption.rs"

@@ -1627,6 +1627,7 @@ dependencies = [
  "token-bounded-policy-example",
  "token-candidate-plans-example",
  "token-composition-example",
+ "token-conditional-commands-example",
  "token-internal-ledger-example",
  "token-methods",
  "token-operation-receipts-example",
@@ -3475,6 +3476,17 @@ dependencies = [
  "borsh",
  "lee_core",
  "risc0-build",
+ "token_core",
+]
+
+[[package]]
+name = "token-conditional-commands-example"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "lee_core",
+ "risc0-build",
+ "sha2",
  "token_core",
 ]
 
