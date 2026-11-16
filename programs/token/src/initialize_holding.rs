@@ -23,10 +23,16 @@ pub(crate) fn initialize_holding(input: &ReceiveInput, definition: AccountId) ->
         None => Response::keep_state()
             .send_sync(token_actor(input, definition), &Internal::RequestHolding),
         // Idempotent, so ATA `Create` can be repeated.
-        Some(TokenState::Holding(holding)) if holding.definition_id == definition => {
+        Some(TokenState::Holding(holding) | TokenState::PermittedHolding { holding, .. })
+            if holding.definition_id == definition =>
+        {
             Response::keep_state()
         }
-        Some(TokenState::Holding(_) | TokenState::Definition(_)) => {
+        Some(
+            TokenState::Holding(_)
+            | TokenState::PermittedHolding { .. }
+            | TokenState::Definition(_),
+        ) => {
             panic!("account already holds another token state")
         }
     }

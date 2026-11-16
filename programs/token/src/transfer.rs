@@ -11,7 +11,7 @@ use token_core::{
     Internal, TokenState,
 };
 
-use crate::{holding_state, token_actor};
+use crate::{holding_state, token_actor, write_holding};
 
 /// At the sender's holding.
 pub(crate) fn transfer(input: &ReceiveInput, to: AccountId, amount: u128) -> Response {
@@ -25,7 +25,7 @@ pub(crate) fn transfer(input: &ReceiveInput, to: AccountId, amount: u128) -> Res
         .checked_sub(amount)
         .expect("insufficient balance");
     let definition = holding.definition_id;
-    Response::set_state(TokenState::Holding(holding).encode()).send_async(
+    write_holding(input, holding).send_async(
         token_actor(input, to),
         &Internal::IncreaseBalance { definition, amount },
     )
@@ -41,7 +41,9 @@ pub(crate) fn increase_balance(
     amount: u128,
 ) -> Response {
     let mut holding = match TokenState::decode(&input.pre_state) {
-        Some(TokenState::Holding(holding)) => holding,
+        Some(TokenState::Holding(holding) | TokenState::PermittedHolding { holding, .. }) => {
+            holding
+        }
         None => panic!("recipient has no token holding; initialize it first"),
         Some(TokenState::Definition(_)) => panic!("recipient is a token definition"),
     };
@@ -54,7 +56,7 @@ pub(crate) fn increase_balance(
         .checked_add(amount)
         .expect("balance overflow");
 
-    let response = Response::set_state(TokenState::Holding(holding).encode());
+    let response = write_holding(input, holding);
     // A credit from the definition is a mint, which the definition announced as `Minted`.
     if from.account_id == definition {
         return response;

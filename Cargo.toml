@@ -1,5 +1,7 @@
 [workspace]
 members = [
+  "programs/token/examples/permissions",
+
   "programs/token/examples/operation_receipts",
 
   "programs/token/examples/internal_ledger",
@@ -47,6 +49,8 @@ members = [
   # "programs/token_mint_authority/methods",
 ]
 exclude = [
+  "programs/token/examples/permissions/guest",
+
   "programs/token/examples/operation_receipts/guest",
 
   "programs/token/examples/internal_ledger/guest",
