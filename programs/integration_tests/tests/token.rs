@@ -80,7 +80,7 @@ impl Chain {
     fn holding(&self, id: AccountId) -> Option<TokenHolding> {
         match self.token_state(id) {
             Some(TokenState::Holding(holding)) => Some(holding),
-            Some(TokenState::Definition(_)) | None => None,
+            Some(TokenState::Definition(_) | TokenState::AtomicTransfer { .. }) | None => None,
         }
     }
 

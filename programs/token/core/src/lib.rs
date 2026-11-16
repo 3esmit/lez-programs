@@ -20,6 +20,13 @@ pub const MAX_NAME_LEN: usize = 64;
 pub enum TokenState {
     Definition(TokenDefinition),
     Holding(TokenHolding),
+    /// Transaction-local transfer continuation. A successful atomic call restores `Holding`.
+    /// Incoming credits can update `holding`; public operations are blocked until completion.
+    AtomicTransfer {
+        holding: TokenHolding,
+        destination: AccountId,
+        acknowledged: bool,
+    },
 }
 
 impl TokenState {
@@ -101,6 +108,32 @@ pub enum Message {
 
     /// Reply to the sender with this actor's state, as a `lee_core::program::StateReply`.
     ReadState,
+
+    /// Transfer and invoke a recipient hook in the same transaction, or revert application
+    /// effects. The hook runs after the credit and receives `TokensReceived`, not raw `data`.
+    /// It must belong to another program. Required actors must participate immediately.
+    /// The credit drops inherited PDA grants; transaction credentials remain available.
+    TransferAndCallAtomic {
+        to: AccountId,
+        amount: u128,
+        callback_account: AccountId,
+        callback_program: AccountId,
+        data: Vec<u8>,
+    },
+}
+
+/// Authenticated transfer facts supplied by the recipient's Token actor to an external hook.
+/// Check the complete runtime sender against the expected recipient and Token deployment.
+/// `data` is caller-supplied and has no authority beyond the validated transfer facts.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct TokensReceived {
+    /// Runtime-presented sender address; never replaced with a private canonical address.
+    pub source: AccountId,
+    /// The destination address used by the transfer author.
+    pub destination: AccountId,
+    pub definition: AccountId,
+    pub amount: u128,
+    pub data: Vec<u8>,
 }
 
 /// Messages only token actors send each other, named for what they do at the receiver.
@@ -123,4 +156,25 @@ pub enum Internal {
     IncreaseSupply { to: AccountId, amount: u128 },
     /// To the definition, from its authority's actor: rotate or renounce the authority.
     ChangeAuthority { new_authority: Option<AccountId> },
+    /// Self-call that puts the grant-free credit below the final completion check.
+    DispatchAtomicTransfer {
+        to: AccountId,
+        amount: u128,
+        callback_account: AccountId,
+        callback_program: AccountId,
+        data: Vec<u8>,
+    },
+    /// Emitted only after a holding debits itself and enters `AtomicTransfer`.
+    CreditAndCall {
+        destination: AccountId,
+        definition: AccountId,
+        amount: u128,
+        callback_account: AccountId,
+        callback_program: AccountId,
+        data: Vec<u8>,
+    },
+    /// Recipient confirms that its credit and the entire hook subtree succeeded.
+    AcknowledgeAtomicTransfer,
+    /// Final self-call rejects deferred delivery and restores the ordinary holding state.
+    FinishAtomicTransfer,
 }
