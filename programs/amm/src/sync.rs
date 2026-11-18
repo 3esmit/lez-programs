@@ -50,6 +50,7 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         | Message::NewDefinition { .. }
         | Message::AddLiquidity { .. }
         | Message::RemoveLiquidity { .. }
+        | Message::RemoveLiquidityWithPolicy { .. }
         | Message::SwapExactInput { .. }
         | Message::SwapExactOutput { .. }
         | Message::WithdrawProtocolFees { .. }

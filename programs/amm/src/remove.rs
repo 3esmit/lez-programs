@@ -1,5 +1,6 @@
 use amm_core::{
-    compute_vault_pda_seed, event::Event, mul_div_floor, Message, Pending, MINIMUM_LIQUIDITY,
+    compute_vault_pda_seed, event::Event, mul_div_floor, policy::WithdrawalInputs, Message,
+    Pending, MINIMUM_LIQUIDITY,
 };
 use lee_core::program::{ReceiveInput, Response};
 use token_core::Message as TokenMessage;
@@ -10,7 +11,7 @@ use crate::{
 };
 
 pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
-    let Message::RemoveLiquidity {
+    let (Message::RemoveLiquidity {
         user_holding_a,
         user_holding_b,
         user_holding_lp,
@@ -18,7 +19,16 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         min_amount_to_remove_token_a: min_a,
         min_amount_to_remove_token_b: min_b,
         ..
-    } = pending.request
+    }
+    | Message::RemoveLiquidityWithPolicy {
+        user_holding_a,
+        user_holding_b,
+        user_holding_lp,
+        remove_liquidity_amount: liquidity,
+        min_amount_to_remove_token_a: min_a,
+        min_amount_to_remove_token_b: min_b,
+        ..
+    }) = pending.request
     else {
         unreachable!("remove continuation")
     };
@@ -42,8 +52,26 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         liquidity <= unlocked,
         "cannot remove locked minimum liquidity"
     );
-    let amount_a = mul_div_floor(pool.reserve_a, liquidity, pool.liquidity_pool_supply);
-    let amount_b = mul_div_floor(pool.reserve_b, liquidity, pool.liquidity_pool_supply);
+    let canonical = (
+        mul_div_floor(pool.reserve_a, liquidity, pool.liquidity_pool_supply),
+        mul_div_floor(pool.reserve_b, liquidity, pool.liquidity_pool_supply),
+    );
+    let (amount_a, amount_b) =
+        if let Message::RemoveLiquidityWithPolicy { policy, .. } = &pending.request {
+            let output = policy.evaluate(WithdrawalInputs {
+                reserve_a: pool.reserve_a,
+                reserve_b: pool.reserve_b,
+                liquidity,
+                supply: pool.liquidity_pool_supply,
+            });
+            assert_eq!(
+                output, canonical,
+                "policy differs from proportional withdrawal"
+            );
+            output
+        } else {
+            canonical
+        };
     assert!(
         amount_a >= min_a && amount_b >= min_b,
         "withdrawal below minimum"

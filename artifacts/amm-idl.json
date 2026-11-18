@@ -259,6 +259,47 @@
       "name": "ReadState",
       "tag": 11,
       "docs": "Reply to the sender with a `lee_core::program::StateReply`. Busy actors reject reads."
+    },
+    {
+      "name": "RemoveLiquidityWithPolicy",
+      "tag": 12,
+      "docs": "Remove liquidity using a bounded calculation. Both outputs must match the\nproportional withdrawal rule. The same holdings and authorizations apply.",
+      "fields": [
+        {
+          "name": "user_holding_a",
+          "type": "account_id"
+        },
+        {
+          "name": "user_holding_b",
+          "type": "account_id"
+        },
+        {
+          "name": "user_holding_lp",
+          "type": "account_id"
+        },
+        {
+          "name": "remove_liquidity_amount",
+          "type": "u128"
+        },
+        {
+          "name": "min_amount_to_remove_token_a",
+          "type": "u128"
+        },
+        {
+          "name": "min_amount_to_remove_token_b",
+          "type": "u128"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        },
+        {
+          "name": "policy",
+          "type": {
+            "defined": "WithdrawalPolicy"
+          }
+        }
+      ]
     }
   ],
   "state": {
@@ -730,6 +771,45 @@
         },
         {
           "name": "ReadState"
+        },
+        {
+          "name": "RemoveLiquidityWithPolicy",
+          "fields": [
+            {
+              "name": "user_holding_a",
+              "type": "account_id"
+            },
+            {
+              "name": "user_holding_b",
+              "type": "account_id"
+            },
+            {
+              "name": "user_holding_lp",
+              "type": "account_id"
+            },
+            {
+              "name": "remove_liquidity_amount",
+              "type": "u128"
+            },
+            {
+              "name": "min_amount_to_remove_token_a",
+              "type": "u128"
+            },
+            {
+              "name": "min_amount_to_remove_token_b",
+              "type": "u128"
+            },
+            {
+              "name": "deadline",
+              "type": "u64"
+            },
+            {
+              "name": "policy",
+              "type": {
+                "defined": "WithdrawalPolicy"
+              }
+            }
+          ]
         }
       ]
     },
@@ -845,6 +925,50 @@
         {
           "name": "balance",
           "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "WithdrawalOp",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "Nop"
+        },
+        {
+          "name": "ReserveA"
+        },
+        {
+          "name": "ReserveB"
+        },
+        {
+          "name": "Liquidity"
+        },
+        {
+          "name": "Supply"
+        },
+        {
+          "name": "MulDivFloor"
+        },
+        {
+          "name": "Emit"
+        }
+      ]
+    },
+    {
+      "name": "WithdrawalPolicy",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "ops",
+          "type": {
+            "array": [
+              {
+                "defined": "WithdrawalOp"
+              },
+              16
+            ]
+          }
         }
       ]
     }

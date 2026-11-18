@@ -1,7 +1,7 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::account::AccountId;
 
-use crate::AmmConfig;
+use crate::{policy::WithdrawalPolicy, AmmConfig};
 
 /// Public actor messages. NewDefinition goes to the config actor; other pool operations
 /// go to the pool actor. Initialization and admin
@@ -90,6 +90,18 @@ pub enum Message {
     },
     /// Reply to the sender with a `lee_core::program::StateReply`. Busy actors reject reads.
     ReadState,
+    /// Remove liquidity using a bounded calculation. Both outputs must match the
+    /// proportional withdrawal rule. The same holdings and authorizations apply.
+    RemoveLiquidityWithPolicy {
+        user_holding_a: AccountId,
+        user_holding_b: AccountId,
+        user_holding_lp: AccountId,
+        remove_liquidity_amount: u128,
+        min_amount_to_remove_token_a: u128,
+        min_amount_to_remove_token_b: u128,
+        deadline: u64,
+        policy: WithdrawalPolicy,
+    },
 }
 
 /// Decoded only for messages from this AMM deployment. No generic forwarding or arbitrary

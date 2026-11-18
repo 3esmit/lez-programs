@@ -8,6 +8,7 @@ use lee_core::{account::AccountId, program::PdaSeed};
 pub mod event;
 mod message;
 pub mod oracle;
+pub mod policy;
 mod state;
 pub use message::*;
 pub use state::*;

@@ -2,9 +2,12 @@
 
 use amm_core::{
     compute_config_pda, compute_liquidity_token_pda, compute_lp_lock_holding_pda, compute_pool_pda,
-    compute_protocol_fee_pda, compute_vault_pda, event::Event, oracle, spot_price_q64_64,
-    swap_exact_in_amounts, swap_exact_out_amounts, AmmConfig, AmmState, Message, PoolDefinition,
-    MINIMUM_LIQUIDITY,
+    compute_protocol_fee_pda, compute_vault_pda,
+    event::Event,
+    oracle,
+    policy::{WithdrawalOp, WithdrawalPolicy},
+    spot_price_q64_64, swap_exact_in_amounts, swap_exact_out_amounts, AmmConfig, AmmState, Message,
+    PoolDefinition, MINIMUM_LIQUIDITY,
 };
 use integration_tests::{account, assert_refused, deploy, deploy_at, key, submit};
 use lee::{error::LeeError, PrivateKey, V03State};
@@ -423,6 +426,173 @@ fn add_and_remove_liquidity_preserve_the_permanent_lock() {
     assert_eq!(chain.pool().liquidity_pool_supply, MINIMUM_LIQUIDITY);
     assert_eq!(chain.balance(chain.user_lp), 0);
     chain.assert_reserves();
+}
+
+fn withdrawal_policy(first_input: WithdrawalOp) -> WithdrawalPolicy {
+    use WithdrawalOp::{Emit, Liquidity, MulDivFloor, Nop, ReserveB, Supply};
+    WithdrawalPolicy {
+        ops: [
+            first_input,
+            Liquidity,
+            Supply,
+            MulDivFloor,
+            Emit,
+            ReserveB,
+            Liquidity,
+            Supply,
+            MulDivFloor,
+            Emit,
+            Nop,
+            Nop,
+            Nop,
+            Nop,
+            Nop,
+            Nop,
+        ],
+    }
+}
+
+fn policy_message(chain: &Chain, liquidity: u128, policy: WithdrawalPolicy) -> Message {
+    Message::RemoveLiquidityWithPolicy {
+        user_holding_a: chain.user_a,
+        user_holding_b: chain.user_b,
+        user_holding_lp: chain.user_lp,
+        remove_liquidity_amount: liquidity,
+        min_amount_to_remove_token_a: 1,
+        min_amount_to_remove_token_b: 1,
+        deadline: u64::MAX,
+        policy,
+    }
+}
+
+#[test]
+fn withdrawal_policy_uses_live_lp_supply_and_recorded_reserves() {
+    let mut chain = Chain::new();
+    let pool = chain.pool();
+    let liquidity = 100_001;
+    let external_burn = 100_000;
+    let donation = 123;
+    chain
+        .token_submit(
+            chain.user_lp,
+            &[chain.user_lp, pool.liquidity_pool_id],
+            &[&key(6)],
+            &TokenMessage::Burn {
+                amount: external_burn,
+            },
+        )
+        .expect("an external LP burn changes the Token supply");
+    chain
+        .token_submit(
+            chain.user_a,
+            &[chain.user_a, pool.vault_a_id],
+            &[&key(4)],
+            &TokenMessage::Transfer {
+                to: pool.vault_a_id,
+                amount: donation,
+            },
+        )
+        .expect("a direct donation leaves the recorded reserve unchanged");
+
+    let supply = pool
+        .liquidity_pool_supply
+        .checked_sub(external_burn)
+        .expect("external burn reduces supply");
+    assert_eq!(chain.lp_supply(), supply);
+    let (payout_a, payout_b) = (76_091, 152_183);
+    let before_a = chain.balance(chain.user_a);
+    let before_b = chain.balance(chain.user_b);
+    let before_lp = chain.balance(chain.user_lp);
+    let previous_oracle_price = chain.oracle().price;
+    let request = policy_message(&chain, liquidity, withdrawal_policy(WithdrawalOp::ReserveA));
+    chain
+        .call(chain.pool, &[&key(6)], &request)
+        .expect("a matching policy settles through the AMM");
+
+    let next = chain.pool();
+    assert_eq!(
+        chain.balance(chain.user_a),
+        before_a.checked_add(payout_a).expect("A credit")
+    );
+    assert_eq!(
+        chain.balance(chain.user_b),
+        before_b.checked_add(payout_b).expect("B credit")
+    );
+    assert_eq!(
+        chain.balance(chain.user_lp),
+        before_lp.checked_sub(liquidity).expect("LP debit")
+    );
+    assert_eq!(
+        next.reserve_a,
+        pool.reserve_a.checked_sub(payout_a).expect("A reserve")
+    );
+    assert_eq!(
+        next.reserve_b,
+        pool.reserve_b.checked_sub(payout_b).expect("B reserve")
+    );
+    assert_eq!(
+        chain.balance(next.vault_a_id),
+        next.reserve_a
+            .checked_add(donation)
+            .expect("unsynced donation")
+    );
+    assert_eq!(chain.balance(next.vault_b_id), next.reserve_b);
+    assert_eq!(
+        chain.lp_supply(),
+        supply.checked_sub(liquidity).expect("LP burn")
+    );
+    assert_eq!(chain.lp_supply(), next.liquidity_pool_supply);
+    assert_eq!(
+        chain.balance(compute_lp_lock_holding_pda(chain.amm, chain.pool)),
+        MINIMUM_LIQUIDITY
+    );
+    assert_eq!(
+        chain.oracle().price,
+        spot_price_q64_64(next.reserve_a, next.reserve_b)
+    );
+    assert_ne!(
+        chain.oracle().price,
+        previous_oracle_price,
+        "test should distinguish the oracle update"
+    );
+}
+
+#[test]
+fn withdrawal_policy_rejects_invalid_or_nonproportional_programs() {
+    let mut chain = Chain::new();
+    let before = chain.snapshot();
+    for (policy, failure) in [
+        (
+            withdrawal_policy(WithdrawalOp::ReserveB),
+            "policy differs from proportional withdrawal",
+        ),
+        (
+            withdrawal_policy(WithdrawalOp::Nop),
+            "policy stack underflow",
+        ),
+        (
+            WithdrawalPolicy {
+                ops: [WithdrawalOp::ReserveA; 16],
+            },
+            "policy stack limit exceeded",
+        ),
+    ] {
+        let result = chain.call(
+            chain.pool,
+            &[&key(6)],
+            &policy_message(&chain, 100_000, policy),
+        );
+        assert_refused(&result, failure);
+        assert_eq!(chain.snapshot(), before);
+    }
+
+    let valid = policy_message(&chain, 100_000, withdrawal_policy(WithdrawalOp::ReserveA));
+    let unsigned = chain.call(chain.pool, &[], &valid);
+    assert_refused(&unsigned, "holding must authorize the burn");
+    assert_eq!(chain.snapshot(), before);
+    chain
+        .call(chain.pool, &[&key(6)], &valid)
+        .expect("failed calls did not leave the pool busy");
 }
 
 #[test]
