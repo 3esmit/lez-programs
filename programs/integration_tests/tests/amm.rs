@@ -3,8 +3,8 @@
 use amm_core::{
     compute_config_pda, compute_liquidity_token_pda, compute_lp_lock_holding_pda, compute_pool_pda,
     compute_protocol_fee_pda, compute_vault_pda, event::Event, oracle, spot_price_q64_64,
-    swap_exact_in_amounts, swap_exact_out_amounts, AmmConfig, AmmState, Message, PoolDefinition,
-    MINIMUM_LIQUIDITY,
+    swap_exact_in_amounts, swap_exact_out_amounts, AmmConfig, AmmState, CheckedRemoval, Message,
+    PoolDefinition, RemovalQuote, MINIMUM_LIQUIDITY,
 };
 use integration_tests::{account, assert_refused, deploy, deploy_at, key, submit};
 use lee::{error::LeeError, PrivateKey, V03State};
@@ -268,6 +268,50 @@ impl Chain {
             min_amount_out: 1,
             deadline: u64::MAX,
         }
+    }
+
+    fn checked_removal(&self, liquidity: u128) -> CheckedRemoval {
+        let pool = self.pool();
+        let supply = self.lp_supply();
+        let amount_a = amm_core::mul_div_floor(pool.reserve_a, liquidity, supply);
+        let amount_b = amm_core::mul_div_floor(pool.reserve_b, liquidity, supply);
+        CheckedRemoval {
+            user_holding_a: self.user_a,
+            user_holding_b: self.user_b,
+            user_holding_lp: self.user_lp,
+            liquidity,
+            min_a: amount_a,
+            min_b: amount_b,
+            deadline: u64::MAX,
+            quote: RemovalQuote {
+                reserve_a: pool.reserve_a,
+                reserve_b: pool.reserve_b,
+                lp_supply: supply,
+                lp_balance: self.balance(self.user_lp),
+                vault_a_balance: self.balance(pool.vault_a_id),
+                vault_b_balance: self.balance(pool.vault_b_id),
+                recipient_a_balance: self.balance(self.user_a),
+                recipient_b_balance: self.balance(self.user_b),
+                amount_a,
+                amount_b,
+            },
+        }
+    }
+
+    fn remove_checked(
+        &mut self,
+        request: CheckedRemoval,
+        signed: bool,
+    ) -> Result<Vec<TransactionEvent>, LeeError> {
+        let owner = key(6);
+        let signers = [&owner];
+        self.call(
+            self.pool,
+            if signed { &signers } else { &[] },
+            &Message::RemoveLiquidityChecked {
+                request: Box::new(request),
+            },
+        )
     }
 
     fn snapshot(&self) -> Vec<(Actor, Vec<u8>)> {
@@ -903,6 +947,190 @@ fn creation_checks_token_id_arguments_and_the_initial_lp_signature() {
     assert_refused(
         &chain.call(chain.config, &[&key(4), &key(5), &key(6)], &wrong_pair),
         "token A definition mismatch",
+    );
+    assert_eq!(chain.snapshot(), before);
+}
+
+#[test]
+fn checked_removal_matches_ordinary_removal_for_the_same_state() {
+    let mut ordinary = Chain::new();
+    let mut checked = Chain::new();
+    let request = checked.checked_removal(10_000);
+    ordinary
+        .call(
+            ordinary.pool,
+            &[&key(6)],
+            &Message::RemoveLiquidity {
+                user_holding_a: ordinary.user_a,
+                user_holding_b: ordinary.user_b,
+                user_holding_lp: ordinary.user_lp,
+                remove_liquidity_amount: request.liquidity,
+                min_amount_to_remove_token_a: request.min_a,
+                min_amount_to_remove_token_b: request.min_b,
+                deadline: request.deadline,
+            },
+        )
+        .expect("ordinary removal settles");
+    checked
+        .remove_checked(request, true)
+        .expect("checked removal settles");
+    assert_eq!(checked.snapshot(), ordinary.snapshot());
+    checked.assert_reserves();
+}
+
+#[test]
+fn checked_removal_requotes_a_donation_without_syncing_the_reserves() {
+    let mut chain = Chain::new();
+    let old = chain.checked_removal(10_000);
+    let vault = chain.pool().vault_a_id;
+    chain
+        .token_submit(
+            chain.user_a,
+            &[chain.user_a, vault],
+            &[&key(4)],
+            &TokenMessage::Transfer {
+                to: vault,
+                amount: 500,
+            },
+        )
+        .expect("donation");
+    let donated = chain.snapshot();
+    let (old_a, old_b) = (old.quote.amount_a, old.quote.amount_b);
+    assert_refused(&chain.remove_checked(old, true), "stale holding condition");
+    assert_eq!(chain.snapshot(), donated);
+
+    let fresh = chain.checked_removal(10_000);
+    assert_eq!((fresh.quote.amount_a, fresh.quote.amount_b), (old_a, old_b));
+    let expected_a = fresh
+        .quote
+        .recipient_a_balance
+        .checked_add(old_a)
+        .expect("A credit");
+    let expected_b = fresh
+        .quote
+        .recipient_b_balance
+        .checked_add(old_b)
+        .expect("B credit");
+    chain
+        .remove_checked(fresh, true)
+        .expect("new quote settles");
+    assert_eq!(
+        (chain.balance(chain.user_a), chain.balance(chain.user_b)),
+        (expected_a, expected_b)
+    );
+    let pool = chain.pool();
+    assert_eq!(
+        chain.balance(vault),
+        pool.reserve_a.checked_add(500).expect("excess A remains")
+    );
+    assert_eq!(chain.balance(pool.vault_b_id), pool.reserve_b);
+    assert_eq!(chain.lp_supply(), pool.liquidity_pool_supply);
+    assert_eq!(
+        chain.oracle().price,
+        spot_price_q64_64(pool.reserve_a, pool.reserve_b)
+    );
+}
+
+#[test]
+fn checked_removal_rejects_stale_supply_after_another_holder_burns() {
+    let mut chain = Chain::new();
+    let supply_id = chain.pool().liquidity_pool_id;
+    let holder_key = key(7);
+    let holder = account(&holder_key);
+    chain
+        .token_submit(
+            holder,
+            &[holder, supply_id],
+            &[&holder_key],
+            &TokenMessage::InitializeHolding {
+                definition: supply_id,
+            },
+        )
+        .expect("another share holding");
+    chain
+        .token_submit(
+            chain.user_lp,
+            &[chain.user_lp, holder],
+            &[&key(6)],
+            &TokenMessage::Transfer {
+                to: holder,
+                amount: 100_000,
+            },
+        )
+        .expect("fund another share holding");
+    let old = chain.checked_removal(10_000);
+    chain
+        .token_submit(
+            holder,
+            &[holder, supply_id],
+            &[&holder_key],
+            &TokenMessage::Burn { amount: 100_000 },
+        )
+        .expect("direct burn by another holder");
+    let after_burn = chain.snapshot();
+    assert_refused(&chain.remove_checked(old, true), "stale supply condition");
+    assert_eq!(chain.snapshot(), after_burn);
+
+    let fresh = chain.checked_removal(10_000);
+    assert_eq!(fresh.quote.lp_supply, chain.lp_supply());
+    chain
+        .remove_checked(fresh, true)
+        .expect("new supply quote settles");
+    chain.assert_reserves();
+}
+
+#[test]
+fn checked_removal_checks_outputs_authority_and_recipient_balance() {
+    let mut chain = Chain::new();
+    let before = chain.snapshot();
+    let request = chain.checked_removal(10_000);
+    let mut incorrect = request.clone();
+    incorrect.quote.amount_a = incorrect
+        .quote
+        .amount_a
+        .checked_add(1)
+        .expect("wrong quote");
+    assert_refused(
+        &chain.remove_checked(incorrect, true),
+        "incorrect quoted outputs",
+    );
+    assert_eq!(chain.snapshot(), before);
+
+    assert_refused(
+        &chain.remove_checked(request.clone(), false),
+        "holding must authorize the burn",
+    );
+    assert_eq!(chain.snapshot(), before);
+
+    let mut stale = request;
+    stale.quote.recipient_b_balance = stale
+        .quote
+        .recipient_b_balance
+        .checked_sub(1)
+        .expect("stale receiver balance");
+    assert_refused(
+        &chain.remove_checked(stale, true),
+        "stale holding condition",
+    );
+    assert_eq!(chain.snapshot(), before);
+}
+
+#[test]
+fn checked_removal_rolls_back_burn_and_credits_when_oracle_rejects() {
+    let mut chain = Chain::new();
+    let mut oracle = chain.oracle();
+    oracle.reject_updates = true;
+    let mut account = chain.state.get_account_by_id(chain.pool);
+    account.data.set_actor_state(
+        chain.oracle,
+        borsh::to_vec(&oracle).expect("mock state encodes").into(),
+    );
+    chain.state.force_insert_account(chain.pool, account);
+    let before = chain.snapshot();
+    let request = chain.checked_removal(10_000);
+    assert_refused(
+        &chain.remove_checked(request, true),
+        "mock oracle refused update",
     );
     assert_eq!(chain.snapshot(), before);
 }

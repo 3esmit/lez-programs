@@ -90,6 +90,41 @@ pub enum Message {
     },
     /// Reply to the sender with a `lee_core::program::StateReply`. Busy actors reject reads.
     ReadState,
+    /// Opt in to a strict removal quote. Token checks the live holdings and share supply
+    /// when it settles the operation. The LP holding authorizes the burn.
+    RemoveLiquidityChecked {
+        request: Box<CheckedRemoval>,
+    },
+}
+
+/// A proportional withdrawal request with exact expected state.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct CheckedRemoval {
+    pub user_holding_a: AccountId,
+    pub user_holding_b: AccountId,
+    pub user_holding_lp: AccountId,
+    pub liquidity: u128,
+    pub min_a: u128,
+    pub min_b: u128,
+    /// Last valid block timestamp in milliseconds (inclusive).
+    pub deadline: u64,
+    pub quote: RemovalQuote,
+}
+
+/// The recorded reserves determine the price. The vault balances are separate
+/// conditions so an unsynced donation can remain in the vault.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct RemovalQuote {
+    pub reserve_a: u128,
+    pub reserve_b: u128,
+    pub lp_supply: u128,
+    pub lp_balance: u128,
+    pub vault_a_balance: u128,
+    pub vault_b_balance: u128,
+    pub recipient_a_balance: u128,
+    pub recipient_b_balance: u128,
+    pub amount_a: u128,
+    pub amount_b: u128,
 }
 
 /// Decoded only for messages from this AMM deployment. No generic forwarding or arbitrary

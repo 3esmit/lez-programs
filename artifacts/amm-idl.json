@@ -259,6 +259,19 @@
       "name": "ReadState",
       "tag": 11,
       "docs": "Reply to the sender with a `lee_core::program::StateReply`. Busy actors reject reads."
+    },
+    {
+      "name": "RemoveLiquidityChecked",
+      "tag": 12,
+      "docs": "Opt in to a strict removal quote. Token checks the live holdings and share supply\nwhen it settles the operation. The LP holding authorizes the burn.",
+      "fields": [
+        {
+          "name": "request",
+          "type": {
+            "defined": "CheckedRemoval"
+          }
+        }
+      ]
     }
   ],
   "state": {
@@ -362,6 +375,47 @@
               }
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "CheckedRemoval",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "user_holding_a",
+          "type": "account_id"
+        },
+        {
+          "name": "user_holding_b",
+          "type": "account_id"
+        },
+        {
+          "name": "user_holding_lp",
+          "type": "account_id"
+        },
+        {
+          "name": "liquidity",
+          "type": "u128"
+        },
+        {
+          "name": "min_a",
+          "type": "u128"
+        },
+        {
+          "name": "min_b",
+          "type": "u128"
+        },
+        {
+          "name": "deadline",
+          "type": "u64",
+          "docs": "Last valid block timestamp in milliseconds (inclusive)."
+        },
+        {
+          "name": "quote",
+          "type": {
+            "defined": "RemovalQuote"
+          }
         }
       ]
     },
@@ -730,6 +784,17 @@
         },
         {
           "name": "ReadState"
+        },
+        {
+          "name": "RemoveLiquidityChecked",
+          "fields": [
+            {
+              "name": "request",
+              "type": {
+                "defined": "CheckedRemoval"
+              }
+            }
+          ]
         }
       ]
     },
@@ -830,6 +895,52 @@
         },
         {
           "name": "reserve_b",
+          "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "RemovalQuote",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "reserve_a",
+          "type": "u128"
+        },
+        {
+          "name": "reserve_b",
+          "type": "u128"
+        },
+        {
+          "name": "lp_supply",
+          "type": "u128"
+        },
+        {
+          "name": "lp_balance",
+          "type": "u128"
+        },
+        {
+          "name": "vault_a_balance",
+          "type": "u128"
+        },
+        {
+          "name": "vault_b_balance",
+          "type": "u128"
+        },
+        {
+          "name": "recipient_a_balance",
+          "type": "u128"
+        },
+        {
+          "name": "recipient_b_balance",
+          "type": "u128"
+        },
+        {
+          "name": "amount_a",
+          "type": "u128"
+        },
+        {
+          "name": "amount_b",
           "type": "u128"
         }
       ]

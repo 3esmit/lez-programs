@@ -64,7 +64,7 @@ pub struct PoolDefinition {
 }
 
 /// Continuation data written only by AMM code. Replies must match both the expected account
-/// and program; transaction authors cannot supply token or configuration snapshots.
+/// and program. Values in an opt-in quote are checked by the pool and Token.
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct Pending {
     pub config_id: AccountId,

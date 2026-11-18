@@ -23,6 +23,7 @@ pub(crate) fn start(input: &ReceiveInput, state: Option<AmmState>, request: Mess
         | Message::RemoveLiquidity { deadline, .. }
         | Message::SwapExactInput { deadline, .. }
         | Message::SwapExactOutput { deadline, .. } => Some(*deadline),
+        Message::RemoveLiquidityChecked { request } => Some(request.deadline),
         Message::SyncReserves
         | Message::CreatePriceObservations { .. }
         | Message::CreateOraclePriceAccount { .. } => None,
@@ -70,6 +71,9 @@ pub(crate) fn reply(input: &ReceiveInput, mut pending: Pending) -> Response {
         let Some(AmmState::Config(config)) = AmmState::decode(&reply.state) else {
             panic!("AMM config must be initialized")
         };
+        if let Message::RemoveLiquidityChecked { request } = &pending.request {
+            return remove::execute_checked(input, pool(&pending), &config, request);
+        }
         pending.config = Some(config);
         let mut accounts = match &pending.request {
             Message::NewDefinition {
@@ -105,7 +109,8 @@ pub(crate) fn reply(input: &ReceiveInput, mut pending: Pending) -> Response {
             Message::Initialize { .. }
             | Message::UpdateConfig { .. }
             | Message::WithdrawProtocolFees { .. }
-            | Message::ReadState => unreachable!("pool operation"),
+            | Message::ReadState
+            | Message::RemoveLiquidityChecked { .. } => unreachable!("pool operation"),
         };
         if let Some(pool) = &pending.pool {
             accounts.extend([pool.vault_a_id, pool.vault_b_id]);
@@ -115,7 +120,9 @@ pub(crate) fn reply(input: &ReceiveInput, mut pending: Pending) -> Response {
     let holding = match TokenState::decode(&reply.state) {
         Some(TokenState::Holding(holding)) => Some(holding),
         None => None,
-        Some(TokenState::Definition(_)) => panic!("expected a token holding"),
+        Some(TokenState::Definition(_) | TokenState::CheckedTransfer { .. }) => {
+            panic!("expected a token holding")
+        }
     };
     pending.holdings.push(holding);
     next(input, pending)
@@ -212,7 +219,10 @@ fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         | Message::CreatePriceObservations { .. }
         | Message::CreateOraclePriceAccount { .. } => sync::execute(input, pending),
         Message::WithdrawProtocolFees { .. } => config::withdraw(input, pending),
-        Message::Initialize { .. } | Message::UpdateConfig { .. } | Message::ReadState => {
+        Message::Initialize { .. }
+        | Message::UpdateConfig { .. }
+        | Message::ReadState
+        | Message::RemoveLiquidityChecked { .. } => {
             unreachable!("operation continuation")
         }
     }
