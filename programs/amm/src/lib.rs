@@ -9,7 +9,7 @@
 //! rolls back the transaction, including the lock, transfers and oracle notifications.
 
 pub use amm_core as core;
-use amm_core::{AmmState, Internal, Message};
+use amm_core::{AmmState, DepositFunding, Internal, Message};
 use lee_core::{
     account::{AccountId, Actor},
     program::{ReceiveInput, Response, StateReply},
@@ -34,13 +34,26 @@ pub fn handle_message(input: &ReceiveInput) -> Response {
         return reads::reply(input, *pending, None);
     }
     if let Some(AmmState::ReadingLpSupply(pending)) = state {
-        return reads::lp_supply_reply(input, *pending);
+        return reads::lp_supply_reply(input, *pending, None);
     }
     if let Some(AmmState::ReadingDepositConfig(pending)) = state {
         return deposit::config_reply(input, *pending);
     }
     if let Some(AmmState::ReadingDepositHoldings(pending)) = state {
-        return reads::reply(input, pending.pending, Some(pending.input_definition));
+        let Message::SwapExactInput { swap_amount_in, .. } = pending.pending.request else {
+            unreachable!("legacy deposit only funds exact input swaps")
+        };
+        let funding = DepositFunding {
+            definition: pending.input_definition,
+            amount: swap_amount_in,
+        };
+        return reads::reply(input, pending.pending, Some(funding));
+    }
+    if let Some(AmmState::ReadingFundedHoldings(pending)) = state {
+        return reads::reply(input, pending.pending, Some(pending.funding));
+    }
+    if let Some(AmmState::ReadingFundedLpSupply(pending)) = state {
+        return reads::lp_supply_reply(input, pending.pending, Some(pending.funding));
     }
     if let Some(AmmState::Settling(next)) = state {
         assert_eq!(

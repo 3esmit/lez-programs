@@ -1,8 +1,9 @@
 use amm_core::{
-    AmmState, DepositConfigRead, Internal, Message, Pending, PoolDefinition, SwapDeposit,
+    AmmState, DepositConfigRead, DepositFunding, FundedDeposit, Internal, Message, Pending,
+    PoolDefinition, SwapDeposit,
 };
 use lee_core::{
-    account::Actor,
+    account::{AccountId, Actor},
     program::{ReceiveInput, Response, StateReply},
 };
 use token_core::TokensReceived;
@@ -60,29 +61,109 @@ pub(crate) fn config_reply(input: &ReceiveInput, pending: DepositConfigRead) -> 
         receipt.source, sender_account,
         "swap deposit cannot pay itself"
     );
-    let request: SwapDeposit =
-        borsh::from_slice(&receipt.data).expect("swap deposit parameters must decode");
-    let accounts = vec![
-        request.user_output_holding,
-        pool.vault_a_id,
-        pool.vault_b_id,
-    ];
+    let funding = DepositFunding {
+        definition: input_definition,
+        amount: receipt.amount,
+    };
+    let (request, mut accounts, deadline) = deposit_request(&pool, receipt, input_definition);
+    accounts.extend([pool.vault_a_id, pool.vault_b_id]);
     let pending = Pending {
         config_id: pool.config_id,
         config: Some(config),
         pool: Some(pool),
-        request: Message::SwapExactInput {
-            user_input_holding: receipt.source,
-            user_output_holding: request.user_output_holding,
-            swap_amount_in: receipt.amount,
-            min_amount_out: request.min_amount_out,
-            deadline: request.deadline,
-        },
+        request,
         expected_account: input.receiver.account_id,
         expected_program: input.receiver.program_account_id,
         remaining: vec![],
         holdings: vec![],
     };
-    let response = reads::read_holdings(input, pending, accounts, Some(input_definition));
-    reads::with_deadline(response, Some(request.deadline))
+    let response = reads::read_holdings(input, pending, accounts, Some(funding));
+    reads::with_deadline(response, Some(deadline))
+}
+
+fn check_user_holding(pool: &PoolDefinition, holding: AccountId) {
+    assert!(
+        holding != pool.vault_a_id && holding != pool.vault_b_id,
+        "callback user holding cannot be a pool vault"
+    );
+}
+
+fn deposit_request(
+    pool: &PoolDefinition,
+    receipt: TokensReceived,
+    input_definition: AccountId,
+) -> (Message, Vec<AccountId>, u64) {
+    // The old untagged payload is shorter than either tagged payload. Borsh
+    // requires the entire payload to decode, so their formats do not overlap.
+    if let Ok(request) = borsh::from_slice::<SwapDeposit>(&receipt.data) {
+        return (
+            Message::SwapExactInput {
+                user_input_holding: receipt.source,
+                user_output_holding: request.user_output_holding,
+                swap_amount_in: receipt.amount,
+                min_amount_out: request.min_amount_out,
+                deadline: request.deadline,
+            },
+            vec![request.user_output_holding],
+            request.deadline,
+        );
+    }
+    check_user_holding(pool, receipt.source);
+    match borsh::from_slice::<FundedDeposit>(&receipt.data)
+        .expect("funded deposit parameters must decode")
+    {
+        FundedDeposit::SwapExactOutput {
+            user_output_holding,
+            exact_amount_out,
+            max_amount_in,
+            deadline,
+        } => {
+            check_user_holding(pool, user_output_holding);
+            (
+                Message::SwapExactOutput {
+                    user_input_holding: receipt.source,
+                    user_output_holding,
+                    exact_amount_out,
+                    max_amount_in,
+                    deadline,
+                },
+                vec![user_output_holding],
+                deadline,
+            )
+        }
+        FundedDeposit::AddLiquidity {
+            other_holding,
+            user_holding_lp,
+            min_amount_liquidity,
+            max_amount_to_add_token_a,
+            max_amount_to_add_token_b,
+            deadline,
+        } => {
+            check_user_holding(pool, other_holding);
+            check_user_holding(pool, user_holding_lp);
+            assert_ne!(
+                other_holding, receipt.source,
+                "callback add needs a separate holding for the other asset"
+            );
+            let (user_holding_a, user_holding_b) = if input_definition == pool.definition_token_a_id
+            {
+                (receipt.source, other_holding)
+            } else {
+                (other_holding, receipt.source)
+            };
+            (
+                Message::AddLiquidity {
+                    user_holding_a,
+                    user_holding_b,
+                    user_holding_lp,
+                    min_amount_liquidity,
+                    max_amount_to_add_token_a,
+                    max_amount_to_add_token_b,
+                    deadline,
+                },
+                vec![other_holding, user_holding_lp],
+                deadline,
+            )
+        }
+    }
 }

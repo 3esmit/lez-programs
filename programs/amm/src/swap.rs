@@ -1,11 +1,9 @@
 use amm_core::{
     compute_protocol_fee_pda, compute_protocol_fee_pda_seed, compute_vault_pda_seed, event::Event,
-    protocol_fee_amount, swap_exact_in_amounts, swap_exact_out_amounts, Message, Pending,
+    protocol_fee_amount, swap_exact_in_amounts, swap_exact_out_amounts, DepositFunding, Message,
+    Pending,
 };
-use lee_core::{
-    account::AccountId,
-    program::{ReceiveInput, Response},
-};
+use lee_core::program::{ReceiveInput, Response};
 use token_core::Message as TokenMessage;
 
 use crate::{
@@ -16,15 +14,15 @@ use crate::{
 pub(crate) fn execute(
     input: &ReceiveInput,
     pending: &Pending,
-    deposited_asset: Option<AccountId>,
+    funding: Option<DepositFunding>,
 ) -> Response {
     let mut pool = reads::pool(pending);
-    let (token_in, source_balance, target) = match (deposited_asset, pending.holdings.as_slice()) {
+    let (token_in, source_balance, target) = match (funding, pending.holdings.as_slice()) {
         (None, [source, target, _, _]) => {
             let source = source.as_ref().expect("input holding must exist");
             (source.definition_id, Some(source.balance), target)
         }
-        (Some(definition), [target, _, _]) => (definition, None, target),
+        (Some(funding), [target, _, _]) => (funding.definition, None, target),
         (_, _) => unreachable!("swap holdings read"),
     };
     let a_to_b = if token_in == pool.definition_token_a_id {
@@ -119,6 +117,12 @@ pub(crate) fn execute(
     if let Some(balance) = source_balance {
         assert!(balance >= amount_in, "insufficient input balance");
     }
+    if let Some(deposit) = funding {
+        assert_eq!(
+            deposit.amount, amount_in,
+            "callback deposit does not match required input"
+        );
+    }
     let swap_fee = amount_in
         .checked_sub(effective)
         .expect("effective input is at most gross input");
@@ -136,7 +140,7 @@ pub(crate) fn execute(
         (new_out, new_in)
     };
     let mut response = Response::keep_state();
-    if deposited_asset.is_none() {
+    if funding.is_none() {
         response = response.send(token_call(
             config,
             from,

@@ -3,8 +3,8 @@
 use amm_core::{
     compute_config_pda, compute_liquidity_token_pda, compute_lp_lock_holding_pda, compute_pool_pda,
     compute_protocol_fee_pda, compute_vault_pda, event::Event, oracle, spot_price_q64_64,
-    swap_exact_in_amounts, swap_exact_out_amounts, AmmConfig, AmmState, Message, PoolDefinition,
-    SwapDeposit, MINIMUM_LIQUIDITY,
+    swap_exact_in_amounts, swap_exact_out_amounts, AmmConfig, AmmState, FundedDeposit, Message,
+    PoolDefinition, SwapDeposit, MINIMUM_LIQUIDITY,
 };
 use integration_tests::{account, assert_refused, deploy, deploy_at, key, submit};
 use lee::{error::LeeError, PrivateKey, V03State};
@@ -276,29 +276,49 @@ impl Chain {
         amount: u128,
         min_amount_out: u128,
     ) -> Result<Vec<TransactionEvent>, LeeError> {
-        let (source, target, definition, signer) = if a_to_b {
-            (self.user_a, self.user_b, self.a, key(4))
+        let (target, signer) = if a_to_b {
+            (self.user_b, key(4))
         } else {
-            (self.user_b, self.user_a, self.b, key(5))
+            (self.user_a, key(5))
+        };
+        self.deposit(
+            a_to_b,
+            amount,
+            SwapDeposit {
+                user_output_holding: target,
+                min_amount_out,
+                deadline: u64::MAX,
+            }
+            .encode(),
+            &[&signer],
+        )
+    }
+
+    fn deposit(
+        &mut self,
+        fund_a: bool,
+        amount: u128,
+        data: Vec<u8>,
+        signers: &[&PrivateKey],
+    ) -> Result<Vec<TransactionEvent>, LeeError> {
+        let (source, definition) = if fund_a {
+            (self.user_a, self.a)
+        } else {
+            (self.user_b, self.b)
         };
         let message = TokenMessage::TransferAndCallAtomic {
             to: compute_vault_pda(self.amm, self.pool, definition),
             amount,
             callback_account: self.pool,
             callback_program: self.amm,
-            data: SwapDeposit {
-                user_output_holding: target,
-                min_amount_out,
-                deadline: u64::MAX,
-            }
-            .encode(),
+            data,
         };
         let actors = self.actors();
         submit(
             &mut self.state,
             Actor::new(source, self.token),
             &actors,
-            &[&signer],
+            signers,
             &message,
         )
     }
@@ -452,6 +472,161 @@ fn callback_swaps_match_direct_swaps_in_both_directions() {
         );
         assert_eq!(callback.balance(pool.vault_b_id), pool.reserve_b);
     }
+}
+
+#[test]
+fn callback_exact_output_matches_direct_swaps_in_both_directions() {
+    let mut direct = Chain::new();
+    let mut callback = Chain::new();
+    let exact_amount_out = 500;
+    for (a_to_b, key_byte) in [(true, 4), (false, 5)] {
+        let pool = direct.pool();
+        let (source, target, reserve_in, reserve_out) = if a_to_b {
+            (direct.user_a, direct.user_b, pool.reserve_a, pool.reserve_b)
+        } else {
+            (direct.user_b, direct.user_a, pool.reserve_b, pool.reserve_a)
+        };
+        let (_, amount_in) =
+            swap_exact_out_amounts(exact_amount_out, reserve_in, reserve_out, 30).expect("quote");
+        direct
+            .call(
+                direct.pool,
+                &[&key(key_byte)],
+                &Message::SwapExactOutput {
+                    user_input_holding: source,
+                    user_output_holding: target,
+                    exact_amount_out,
+                    max_amount_in: amount_in,
+                    deadline: u64::MAX,
+                },
+            )
+            .expect("direct exact-output swap");
+        callback
+            .deposit(
+                a_to_b,
+                amount_in,
+                FundedDeposit::SwapExactOutput {
+                    user_output_holding: target,
+                    exact_amount_out,
+                    max_amount_in: amount_in,
+                    deadline: u64::MAX,
+                }
+                .encode(),
+                &[&key(key_byte)],
+            )
+            .expect("callback exact-output swap");
+        assert_eq!(callback.snapshot(), direct.snapshot());
+        callback.assert_reserves();
+    }
+}
+
+#[test]
+fn callback_exact_output_rejects_stale_deposit_and_respects_maximum() {
+    let mut chain = Chain::new();
+    let exact_amount_out = 500;
+    let old = chain.pool();
+    let (_, quoted_input) =
+        swap_exact_out_amounts(exact_amount_out, old.reserve_a, old.reserve_b, 30).expect("quote");
+    chain
+        .call(chain.pool, &[&key(4)], &chain.swap_in(true, 10_000))
+        .expect("an intervening swap changes the input needed");
+    let pool = chain.pool();
+    let (_, amount_in) =
+        swap_exact_out_amounts(exact_amount_out, pool.reserve_a, pool.reserve_b, 30)
+            .expect("current input");
+    assert!(quoted_input < amount_in);
+    let target = chain.user_b;
+    let payload = |max_amount_in| {
+        FundedDeposit::SwapExactOutput {
+            user_output_holding: target,
+            exact_amount_out,
+            max_amount_in,
+            deadline: u64::MAX,
+        }
+        .encode()
+    };
+    let before = chain.snapshot();
+    assert_refused(
+        &chain.deposit(true, quoted_input, payload(amount_in), &[&key(4)]),
+        "callback deposit does not match required input",
+    );
+    assert_eq!(chain.snapshot(), before);
+    assert_refused(
+        &chain.deposit(true, amount_in, payload(quoted_input), &[&key(4)]),
+        "input exceeds maximum",
+    );
+    assert_eq!(chain.snapshot(), before);
+}
+
+fn add_deposit(chain: &Chain, fund_a: bool) -> FundedDeposit {
+    FundedDeposit::AddLiquidity {
+        other_holding: if fund_a { chain.user_b } else { chain.user_a },
+        user_holding_lp: chain.user_lp,
+        min_amount_liquidity: 1,
+        max_amount_to_add_token_a: 10_000,
+        max_amount_to_add_token_b: 25_000,
+        deadline: u64::MAX,
+    }
+}
+
+#[test]
+fn callback_add_matches_direct_add_for_either_funded_asset_after_lp_burn() {
+    let mut direct = Chain::new();
+    let mut callback = Chain::new();
+    for chain in [&mut direct, &mut callback] {
+        chain
+            .token_submit(
+                chain.user_lp,
+                &[chain.user_lp, chain.pool().liquidity_pool_id],
+                &[&key(6)],
+                &TokenMessage::Burn { amount: 100_000 },
+            )
+            .expect("direct LP burn changes current supply");
+    }
+    for (fund_a, amount) in [(true, 10_000), (false, 20_000)] {
+        direct
+            .call(
+                direct.pool,
+                &[&key(4), &key(5)],
+                &Message::AddLiquidity {
+                    user_holding_a: direct.user_a,
+                    user_holding_b: direct.user_b,
+                    user_holding_lp: direct.user_lp,
+                    min_amount_liquidity: 1,
+                    max_amount_to_add_token_a: 10_000,
+                    max_amount_to_add_token_b: 25_000,
+                    deadline: u64::MAX,
+                },
+            )
+            .expect("direct add liquidity");
+        callback
+            .deposit(
+                fund_a,
+                amount,
+                add_deposit(&callback, fund_a).encode(),
+                &[&key(4), &key(5)],
+            )
+            .expect("callback add liquidity");
+        assert_eq!(callback.snapshot(), direct.snapshot());
+        callback.assert_reserves();
+    }
+}
+
+#[test]
+fn callback_add_rejects_wrong_credit_or_missing_other_signature() {
+    let mut chain = Chain::new();
+    let before = chain.snapshot();
+    let payload = add_deposit(&chain, true).encode();
+    assert_refused(
+        &chain.deposit(true, 9_999, payload.clone(), &[&key(4), &key(5)]),
+        "callback deposit does not match proportional input",
+    );
+    assert_eq!(chain.snapshot(), before);
+    assert_refused(
+        &chain.deposit(true, 10_000, payload, &[&key(4)]),
+        "sender holding must authorize",
+    );
+    assert_eq!(chain.snapshot(), before);
 }
 
 #[test]

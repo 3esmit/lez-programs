@@ -19,6 +19,10 @@ pub enum AmmState {
     ReadingDepositConfig(Box<DepositConfigRead>),
     /// The deposit succeeded provisionally. Read only the other swap holdings.
     ReadingDepositHoldings(Box<DepositHoldingsRead>),
+    /// A staged receipt funds an exact-output swap or one side of a liquidity add.
+    ReadingFundedHoldings(Box<FundedRead>),
+    /// Reconcile the LP supply for a liquidity add funded by a staged receipt.
+    ReadingFundedLpSupply(Box<FundedRead>),
 }
 
 impl AmmState {
@@ -97,4 +101,17 @@ pub struct DepositConfigRead {
 pub struct DepositHoldingsRead {
     pub pending: Pending,
     pub input_definition: AccountId,
+}
+
+/// Authenticated facts from the credit already staged by Token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct DepositFunding {
+    pub definition: AccountId,
+    pub amount: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct FundedRead {
+    pub pending: Pending,
+    pub funding: DepositFunding,
 }

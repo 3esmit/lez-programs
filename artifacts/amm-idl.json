@@ -384,6 +384,28 @@
               }
             }
           ]
+        },
+        {
+          "name": "ReadingFundedHoldings",
+          "fields": [
+            {
+              "name": "0",
+              "type": {
+                "defined": "FundedRead"
+              }
+            }
+          ]
+        },
+        {
+          "name": "ReadingFundedLpSupply",
+          "fields": [
+            {
+              "name": "0",
+              "type": {
+                "defined": "FundedRead"
+              }
+            }
+          ]
         }
       ]
     },
@@ -410,6 +432,20 @@
           "type": {
             "vec": "u8"
           }
+        }
+      ]
+    },
+    {
+      "name": "DepositFunding",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "definition",
+          "type": "account_id"
+        },
+        {
+          "name": "amount",
+          "type": "u128"
         }
       ]
     },
@@ -552,6 +588,24 @@
               "type": "u128"
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "FundedRead",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "pending",
+          "type": {
+            "defined": "Pending"
+          }
+        },
+        {
+          "name": "funding",
+          "type": {
+            "defined": "DepositFunding"
+          }
         }
       ]
     },

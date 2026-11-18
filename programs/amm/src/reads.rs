@@ -1,5 +1,6 @@
 use amm_core::{
-    AmmState, DepositHoldingsRead, Internal, Message, Pending, PoolDefinition, MINIMUM_LIQUIDITY,
+    AmmState, DepositFunding, DepositHoldingsRead, FundedRead, Internal, Message, Pending,
+    PoolDefinition, MINIMUM_LIQUIDITY,
 };
 use lee_core::{
     account::{AccountId, Actor},
@@ -73,7 +74,7 @@ fn state_reply(input: &ReceiveInput, pending: &Pending) -> StateReply {
 pub(crate) fn reply(
     input: &ReceiveInput,
     mut pending: Pending,
-    deposited_asset: Option<AccountId>,
+    funding: Option<DepositFunding>,
 ) -> Response {
     let reply = state_reply(input, &pending);
     if pending.config.is_none() {
@@ -130,10 +131,14 @@ pub(crate) fn reply(
         }
     };
     pending.holdings.push(holding);
-    next(input, pending, deposited_asset)
+    next(input, pending, funding)
 }
 
-pub(crate) fn lp_supply_reply(input: &ReceiveInput, mut pending: Pending) -> Response {
+pub(crate) fn lp_supply_reply(
+    input: &ReceiveInput,
+    mut pending: Pending,
+    funding: Option<DepositFunding>,
+) -> Response {
     let reply = state_reply(input, &pending);
     let Some(TokenState::Definition(definition)) = TokenState::decode(&reply.state) else {
         panic!("LP token definition must be initialized")
@@ -143,7 +148,7 @@ pub(crate) fn lp_supply_reply(input: &ReceiveInput, mut pending: Pending) -> Res
         .as_mut()
         .expect("liquidity operation has a pool")
         .liquidity_pool_supply = definition.total_supply;
-    execute(input, &pending, None)
+    execute(input, &pending, funding)
 }
 
 pub(crate) fn holdings(
@@ -158,18 +163,14 @@ pub(crate) fn read_holdings(
     input: &ReceiveInput,
     mut pending: Pending,
     mut accounts: Vec<AccountId>,
-    deposited_asset: Option<AccountId>,
+    funding: Option<DepositFunding>,
 ) -> Response {
     accounts.reverse();
     pending.remaining = accounts;
-    next(input, pending, deposited_asset)
+    next(input, pending, funding)
 }
 
-fn next(
-    input: &ReceiveInput,
-    mut pending: Pending,
-    deposited_asset: Option<AccountId>,
-) -> Response {
+fn next(input: &ReceiveInput, mut pending: Pending, funding: Option<DepositFunding>) -> Response {
     if let Some(account) = pending.remaining.pop() {
         let token = pending
             .config
@@ -179,13 +180,16 @@ fn next(
         let expected = Actor::new(account, token);
         pending.expected_account = expected.account_id;
         pending.expected_program = expected.program_account_id;
-        let state = match deposited_asset {
+        let state = match funding {
             None => AmmState::Pending(Box::new(pending)),
-            Some(input_definition) => {
+            Some(funding) if matches!(pending.request, Message::SwapExactInput { .. }) => {
                 AmmState::ReadingDepositHoldings(Box::new(DepositHoldingsRead {
                     pending,
-                    input_definition,
+                    input_definition: funding.definition,
                 }))
+            }
+            Some(funding) => {
+                AmmState::ReadingFundedHoldings(Box::new(FundedRead { pending, funding }))
             }
         };
         return Response::set_state(state.encode())
@@ -197,15 +201,13 @@ fn next(
         };
         let prior_balance = |snapshot, definition| {
             let current = holding(snapshot, definition).balance;
-            if deposited_asset != Some(definition) {
-                return current;
+            if let Some(deposit) = funding.filter(|deposit| deposit.definition == definition) {
+                current
+                    .checked_sub(deposit.amount)
+                    .expect("deposit exceeds vault balance")
+            } else {
+                current
             }
-            let Message::SwapExactInput { swap_amount_in, .. } = pending.request else {
-                unreachable!("deposit only funds exact input swaps")
-            };
-            current
-                .checked_sub(swap_amount_in)
-                .expect("deposit exceeds vault balance")
         };
         assert!(
             prior_balance(a, pool.definition_token_a_id) >= pool.reserve_a,
@@ -234,17 +236,19 @@ fn next(
         pending.expected_program = expected.program_account_id;
         // LP holders may burn directly through token. Read its authoritative supply
         // without granting the mint-authority seed to this read-only operation.
-        return Response::set_state(AmmState::ReadingLpSupply(Box::new(pending)).encode())
+        let state = match funding {
+            None => AmmState::ReadingLpSupply(Box::new(pending)),
+            Some(funding) => {
+                AmmState::ReadingFundedLpSupply(Box::new(FundedRead { pending, funding }))
+            }
+        };
+        return Response::set_state(state.encode())
             .send_sync(expected, &token_core::Message::ReadState);
     }
-    execute(input, &pending, deposited_asset)
+    execute(input, &pending, funding)
 }
 
-fn execute(
-    input: &ReceiveInput,
-    pending: &Pending,
-    deposited_asset: Option<AccountId>,
-) -> Response {
+fn execute(input: &ReceiveInput, pending: &Pending, funding: Option<DepositFunding>) -> Response {
     if let Some(pool) = &pending.pool {
         assert!(
             pool.liquidity_pool_supply >= MINIMUM_LIQUIDITY,
@@ -253,10 +257,10 @@ fn execute(
     }
     match pending.request {
         Message::NewDefinition { .. } => new_definition::execute(input, pending),
-        Message::AddLiquidity { .. } => add::execute(input, pending),
+        Message::AddLiquidity { .. } => add::execute(input, pending, funding),
         Message::RemoveLiquidity { .. } => remove::execute(input, pending),
         Message::SwapExactInput { .. } | Message::SwapExactOutput { .. } => {
-            swap::execute(input, pending, deposited_asset)
+            swap::execute(input, pending, funding)
         }
         Message::SyncReserves
         | Message::CreatePriceObservations { .. }

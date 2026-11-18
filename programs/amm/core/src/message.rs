@@ -111,6 +111,38 @@ impl SwapDeposit {
     }
 }
 
+/// Additional Borsh payloads for Token's `TransferAndCallAtomic` to a pool vault.
+/// The existing untagged `SwapDeposit` payload stays valid for exact-input swaps.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub enum FundedDeposit {
+    /// Transfer exactly the gross input required by the current pool reserves.
+    SwapExactOutput {
+        user_output_holding: AccountId,
+        exact_amount_out: u128,
+        max_amount_in: u128,
+        /// Last valid block timestamp in milliseconds (inclusive).
+        deadline: u64,
+    },
+    /// Fund one side first. The other holding must authorize the remaining debit.
+    AddLiquidity {
+        other_holding: AccountId,
+        user_holding_lp: AccountId,
+        min_amount_liquidity: u128,
+        max_amount_to_add_token_a: u128,
+        max_amount_to_add_token_b: u128,
+        /// Last valid block timestamp in milliseconds (inclusive).
+        deadline: u64,
+    },
+}
+
+impl FundedDeposit {
+    /// Encode this payload for the `data` field of Token's `TransferAndCallAtomic`.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        borsh::to_vec(self).expect("funded deposit parameters encode")
+    }
+}
+
 /// Decoded only for messages from this AMM deployment. No generic forwarding or arbitrary
 /// seed grants: each privileged message is constructed by an authorized public handler.
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
