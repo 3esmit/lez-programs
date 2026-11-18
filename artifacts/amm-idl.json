@@ -272,6 +272,176 @@
           }
         }
       ]
+    },
+    {
+      "name": "NewDefinitionChecked",
+      "tag": 13,
+      "docs": "Check initial source balances, fund both new vaults, and lock the minimum LP.",
+      "fields": [
+        {
+          "name": "request",
+          "type": {
+            "defined": "CheckedPoolCreation"
+          }
+        }
+      ]
+    },
+    {
+      "name": "AddLiquidityChecked",
+      "tag": 14,
+      "docs": "Check the quote, deposits, LP supply and mint receipt.",
+      "fields": [
+        {
+          "name": "request",
+          "type": {
+            "defined": "CheckedAdd"
+          }
+        }
+      ]
+    },
+    {
+      "name": "SwapExactInputChecked",
+      "tag": 15,
+      "docs": "Check an exact input swap quote and acknowledge each transfer credit.",
+      "fields": [
+        {
+          "name": "user_input_holding",
+          "type": "account_id"
+        },
+        {
+          "name": "user_output_holding",
+          "type": "account_id"
+        },
+        {
+          "name": "swap_amount_in",
+          "type": "u128"
+        },
+        {
+          "name": "min_amount_out",
+          "type": "u128"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        },
+        {
+          "name": "quote",
+          "type": {
+            "defined": "SwapQuote"
+          }
+        }
+      ]
+    },
+    {
+      "name": "SwapExactOutputChecked",
+      "tag": 16,
+      "docs": "Check an exact output swap quote and acknowledge each transfer credit.",
+      "fields": [
+        {
+          "name": "user_input_holding",
+          "type": "account_id"
+        },
+        {
+          "name": "user_output_holding",
+          "type": "account_id"
+        },
+        {
+          "name": "exact_amount_out",
+          "type": "u128"
+        },
+        {
+          "name": "max_amount_in",
+          "type": "u128"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        },
+        {
+          "name": "quote",
+          "type": {
+            "defined": "SwapQuote"
+          }
+        }
+      ]
+    },
+    {
+      "name": "SyncReservesChecked",
+      "tag": 17,
+      "docs": "Adopt the supplied reserve balances only if the actual vaults match.",
+      "fields": [
+        {
+          "name": "quote",
+          "type": {
+            "defined": "PoolQuote"
+          }
+        }
+      ]
+    },
+    {
+      "name": "WithdrawProtocolFeesChecked",
+      "tag": 18,
+      "docs": "The admin authorizes the same withdrawal with exact source and destination balances.",
+      "fields": [
+        {
+          "name": "config",
+          "type": "account_id"
+        },
+        {
+          "name": "token",
+          "type": "account_id"
+        },
+        {
+          "name": "destination",
+          "type": "account_id"
+        },
+        {
+          "name": "amount",
+          "type": "u128"
+        },
+        {
+          "name": "fee_balance",
+          "type": "u128"
+        },
+        {
+          "name": "destination_balance",
+          "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "CreatePriceObservationsChecked",
+      "tag": 19,
+      "docs": "Create the observations only when the vaults match the supplied backing.",
+      "fields": [
+        {
+          "name": "window_duration",
+          "type": "u64"
+        },
+        {
+          "name": "quote",
+          "type": {
+            "defined": "PoolQuote"
+          }
+        }
+      ]
+    },
+    {
+      "name": "CreateOraclePriceAccountChecked",
+      "tag": 20,
+      "docs": "Create the price account only when the vaults match the supplied backing.",
+      "fields": [
+        {
+          "name": "window_duration",
+          "type": "u64"
+        },
+        {
+          "name": "quote",
+          "type": {
+            "defined": "PoolQuote"
+          }
+        }
+      ]
     }
   ],
   "state": {
@@ -287,6 +457,46 @@
     }
   ],
   "types": [
+    {
+      "name": "AddQuote",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "pool",
+          "type": {
+            "defined": "PoolQuote"
+          }
+        },
+        {
+          "name": "lp_supply",
+          "type": "u128"
+        },
+        {
+          "name": "source_a_balance",
+          "type": "u128"
+        },
+        {
+          "name": "source_b_balance",
+          "type": "u128"
+        },
+        {
+          "name": "recipient_lp_balance",
+          "type": "u128"
+        },
+        {
+          "name": "amount_a",
+          "type": "u128"
+        },
+        {
+          "name": "amount_b",
+          "type": "u128"
+        },
+        {
+          "name": "liquidity",
+          "type": "u128"
+        }
+      ]
+    },
     {
       "name": "AmmConfig",
       "kind": "struct",
@@ -375,6 +585,98 @@
               }
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "CheckedAdd",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "user_holding_a",
+          "type": "account_id"
+        },
+        {
+          "name": "user_holding_b",
+          "type": "account_id"
+        },
+        {
+          "name": "user_holding_lp",
+          "type": "account_id"
+        },
+        {
+          "name": "min_amount_liquidity",
+          "type": "u128"
+        },
+        {
+          "name": "max_amount_to_add_token_a",
+          "type": "u128"
+        },
+        {
+          "name": "max_amount_to_add_token_b",
+          "type": "u128"
+        },
+        {
+          "name": "deadline",
+          "type": "u64",
+          "docs": "Last valid block timestamp in milliseconds (inclusive)."
+        },
+        {
+          "name": "quote",
+          "type": {
+            "defined": "AddQuote"
+          }
+        }
+      ]
+    },
+    {
+      "name": "CheckedPoolCreation",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "config",
+          "type": "account_id"
+        },
+        {
+          "name": "definition_token_a_id",
+          "type": "account_id"
+        },
+        {
+          "name": "definition_token_b_id",
+          "type": "account_id"
+        },
+        {
+          "name": "user_holding_a",
+          "type": "account_id"
+        },
+        {
+          "name": "user_holding_b",
+          "type": "account_id"
+        },
+        {
+          "name": "user_holding_lp",
+          "type": "account_id"
+        },
+        {
+          "name": "token_a_amount",
+          "type": "u128"
+        },
+        {
+          "name": "token_b_amount",
+          "type": "u128"
+        },
+        {
+          "name": "source_a_balance",
+          "type": "u128"
+        },
+        {
+          "name": "source_b_balance",
+          "type": "u128"
+        },
+        {
+          "name": "deadline",
+          "type": "u64",
+          "docs": "Last valid block timestamp in milliseconds (inclusive)."
         }
       ]
     },
@@ -795,6 +1097,160 @@
               }
             }
           ]
+        },
+        {
+          "name": "NewDefinitionChecked",
+          "fields": [
+            {
+              "name": "request",
+              "type": {
+                "defined": "CheckedPoolCreation"
+              }
+            }
+          ]
+        },
+        {
+          "name": "AddLiquidityChecked",
+          "fields": [
+            {
+              "name": "request",
+              "type": {
+                "defined": "CheckedAdd"
+              }
+            }
+          ]
+        },
+        {
+          "name": "SwapExactInputChecked",
+          "fields": [
+            {
+              "name": "user_input_holding",
+              "type": "account_id"
+            },
+            {
+              "name": "user_output_holding",
+              "type": "account_id"
+            },
+            {
+              "name": "swap_amount_in",
+              "type": "u128"
+            },
+            {
+              "name": "min_amount_out",
+              "type": "u128"
+            },
+            {
+              "name": "deadline",
+              "type": "u64"
+            },
+            {
+              "name": "quote",
+              "type": {
+                "defined": "SwapQuote"
+              }
+            }
+          ]
+        },
+        {
+          "name": "SwapExactOutputChecked",
+          "fields": [
+            {
+              "name": "user_input_holding",
+              "type": "account_id"
+            },
+            {
+              "name": "user_output_holding",
+              "type": "account_id"
+            },
+            {
+              "name": "exact_amount_out",
+              "type": "u128"
+            },
+            {
+              "name": "max_amount_in",
+              "type": "u128"
+            },
+            {
+              "name": "deadline",
+              "type": "u64"
+            },
+            {
+              "name": "quote",
+              "type": {
+                "defined": "SwapQuote"
+              }
+            }
+          ]
+        },
+        {
+          "name": "SyncReservesChecked",
+          "fields": [
+            {
+              "name": "quote",
+              "type": {
+                "defined": "PoolQuote"
+              }
+            }
+          ]
+        },
+        {
+          "name": "WithdrawProtocolFeesChecked",
+          "fields": [
+            {
+              "name": "config",
+              "type": "account_id"
+            },
+            {
+              "name": "token",
+              "type": "account_id"
+            },
+            {
+              "name": "destination",
+              "type": "account_id"
+            },
+            {
+              "name": "amount",
+              "type": "u128"
+            },
+            {
+              "name": "fee_balance",
+              "type": "u128"
+            },
+            {
+              "name": "destination_balance",
+              "type": "u128"
+            }
+          ]
+        },
+        {
+          "name": "CreatePriceObservationsChecked",
+          "fields": [
+            {
+              "name": "window_duration",
+              "type": "u64"
+            },
+            {
+              "name": "quote",
+              "type": {
+                "defined": "PoolQuote"
+              }
+            }
+          ]
+        },
+        {
+          "name": "CreateOraclePriceAccountChecked",
+          "fields": [
+            {
+              "name": "window_duration",
+              "type": "u64"
+            },
+            {
+              "name": "quote",
+              "type": {
+                "defined": "PoolQuote"
+              }
+            }
+          ]
         }
       ]
     },
@@ -900,6 +1356,28 @@
       ]
     },
     {
+      "name": "PoolQuote",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "reserve_a",
+          "type": "u128"
+        },
+        {
+          "name": "reserve_b",
+          "type": "u128"
+        },
+        {
+          "name": "vault_a_balance",
+          "type": "u128"
+        },
+        {
+          "name": "vault_b_balance",
+          "type": "u128"
+        }
+      ]
+    },
+    {
       "name": "RemovalQuote",
       "kind": "struct",
       "fields": [
@@ -941,6 +1419,38 @@
         },
         {
           "name": "amount_b",
+          "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "SwapQuote",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "pool",
+          "type": {
+            "defined": "PoolQuote"
+          }
+        },
+        {
+          "name": "input_definition",
+          "type": "account_id"
+        },
+        {
+          "name": "source_balance",
+          "type": "u128"
+        },
+        {
+          "name": "recipient_balance",
+          "type": "u128"
+        },
+        {
+          "name": "amount_in",
+          "type": "u128"
+        },
+        {
+          "name": "amount_out",
           "type": "u128"
         }
       ]

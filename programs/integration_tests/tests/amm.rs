@@ -3,8 +3,9 @@
 use amm_core::{
     compute_config_pda, compute_liquidity_token_pda, compute_lp_lock_holding_pda, compute_pool_pda,
     compute_protocol_fee_pda, compute_vault_pda, event::Event, oracle, spot_price_q64_64,
-    swap_exact_in_amounts, swap_exact_out_amounts, AmmConfig, AmmState, CheckedRemoval, Message,
-    PoolDefinition, RemovalQuote, MINIMUM_LIQUIDITY,
+    swap_exact_in_amounts, swap_exact_out_amounts, AddQuote, AmmConfig, AmmState, CheckedAdd,
+    CheckedPoolCreation, CheckedRemoval, Message, PoolDefinition, PoolQuote, RemovalQuote,
+    SwapQuote, MINIMUM_LIQUIDITY,
 };
 use integration_tests::{account, assert_refused, deploy, deploy_at, key, submit};
 use lee::{error::LeeError, PrivateKey, V03State};
@@ -1133,4 +1134,411 @@ fn checked_removal_rolls_back_burn_and_credits_when_oracle_rejects() {
         "mock oracle refused update",
     );
     assert_eq!(chain.snapshot(), before);
+}
+
+fn expected_pool(chain: &Chain) -> PoolQuote {
+    let pool = chain.pool();
+    PoolQuote {
+        reserve_a: pool.reserve_a,
+        reserve_b: pool.reserve_b,
+        vault_a_balance: chain.balance(pool.vault_a_id),
+        vault_b_balance: chain.balance(pool.vault_b_id),
+    }
+}
+
+#[test]
+fn checked_creation_funds_vaults_and_rolls_back_initialization_on_stale_debit() {
+    let mut ordinary = Chain::empty(2_000);
+    let mut checked = Chain::empty(2_000);
+    let request = CheckedPoolCreation {
+        config: checked.config,
+        definition_token_a_id: checked.a,
+        definition_token_b_id: checked.b,
+        user_holding_a: checked.user_a,
+        user_holding_b: checked.user_b,
+        user_holding_lp: checked.user_lp,
+        token_a_amount: DEPOSIT_A,
+        token_b_amount: DEPOSIT_B,
+        source_a_balance: checked.balance(checked.user_a),
+        source_b_balance: checked.balance(checked.user_b),
+        deadline: u64::MAX,
+    };
+    let before = checked.snapshot();
+    let mut stale = request.clone();
+    stale.source_b_balance = stale
+        .source_b_balance
+        .checked_sub(1)
+        .expect("stale balance");
+    let signers = [&key(4), &key(5), &key(6)];
+    assert_refused(
+        &checked.call(
+            checked.config,
+            &signers,
+            &Message::NewDefinitionChecked {
+                request: Box::new(stale),
+            },
+        ),
+        "stale holding condition",
+    );
+    assert_eq!(checked.snapshot(), before);
+    checked
+        .call(
+            checked.config,
+            &signers,
+            &Message::NewDefinitionChecked {
+                request: Box::new(request),
+            },
+        )
+        .expect("checked creation");
+    ordinary.create().expect("ordinary creation");
+    assert_eq!(checked.snapshot(), ordinary.snapshot());
+    checked.assert_reserves();
+}
+
+#[test]
+fn checked_add_matches_ordinary_add_and_checks_supply_before_mint() {
+    let mut ordinary = Chain::new();
+    let mut checked = Chain::new();
+    let lp_supply = checked.lp_supply();
+    let (amount_a, amount_b) = (10_000, 20_000);
+    let liquidity = amm_core::mul_div_floor(lp_supply, amount_a, DEPOSIT_A);
+    let request = CheckedAdd {
+        user_holding_a: checked.user_a,
+        user_holding_b: checked.user_b,
+        user_holding_lp: checked.user_lp,
+        min_amount_liquidity: liquidity,
+        max_amount_to_add_token_a: amount_a,
+        max_amount_to_add_token_b: amount_b,
+        deadline: u64::MAX,
+        quote: AddQuote {
+            pool: expected_pool(&checked),
+            lp_supply,
+            source_a_balance: checked.balance(checked.user_a),
+            source_b_balance: checked.balance(checked.user_b),
+            recipient_lp_balance: checked.balance(checked.user_lp),
+            amount_a,
+            amount_b,
+            liquidity,
+        },
+    };
+    let before = checked.snapshot();
+    let mut stale = request.clone();
+    stale.quote.lp_supply = lp_supply.checked_add(1).expect("stale supply");
+    stale.quote.liquidity = amm_core::mul_div_floor(stale.quote.lp_supply, amount_a, DEPOSIT_A);
+    assert_refused(
+        &checked.call(
+            checked.pool,
+            &[&key(4), &key(5)],
+            &Message::AddLiquidityChecked {
+                request: Box::new(stale),
+            },
+        ),
+        "stale supply condition",
+    );
+    assert_eq!(checked.snapshot(), before);
+    let mut stale = request.clone();
+    stale.quote.recipient_lp_balance = request
+        .quote
+        .recipient_lp_balance
+        .checked_sub(liquidity)
+        .expect("stale recipient would disguise a deferred mint credit");
+    assert_refused(
+        &checked.call(
+            checked.pool,
+            &[&key(4), &key(5)],
+            &Message::AddLiquidityChecked {
+                request: Box::new(stale),
+            },
+        ),
+        "stale holding condition",
+    );
+    assert_eq!(checked.snapshot(), before);
+    checked
+        .call(
+            checked.pool,
+            &[&key(4), &key(5)],
+            &Message::AddLiquidityChecked {
+                request: Box::new(request),
+            },
+        )
+        .expect("checked add");
+    ordinary
+        .call(
+            ordinary.pool,
+            &[&key(4), &key(5)],
+            &Message::AddLiquidity {
+                user_holding_a: ordinary.user_a,
+                user_holding_b: ordinary.user_b,
+                user_holding_lp: ordinary.user_lp,
+                min_amount_liquidity: liquidity,
+                max_amount_to_add_token_a: amount_a,
+                max_amount_to_add_token_b: amount_b,
+                deadline: u64::MAX,
+            },
+        )
+        .expect("ordinary add");
+    assert_eq!(checked.snapshot(), ordinary.snapshot());
+    checked.assert_reserves();
+}
+
+#[test]
+fn checked_swaps_match_ordinary_both_ways_and_reject_stale_vaults() {
+    let mut ordinary = Chain::new();
+    let mut checked = Chain::new();
+    for (exact_input, a_to_b) in [(true, true), (true, false), (false, true), (false, false)] {
+        let pool = checked.pool();
+        let (source, recipient, input_definition, reserve_in, reserve_out, signer) = if a_to_b {
+            (
+                checked.user_a,
+                checked.user_b,
+                checked.a,
+                pool.reserve_a,
+                pool.reserve_b,
+                key(4),
+            )
+        } else {
+            (
+                checked.user_b,
+                checked.user_a,
+                checked.b,
+                pool.reserve_b,
+                pool.reserve_a,
+                key(5),
+            )
+        };
+        let (amount_in, amount_out) = if exact_input {
+            (
+                10_000,
+                swap_exact_in_amounts(10_000, reserve_in, reserve_out, 30).1,
+            )
+        } else {
+            (
+                swap_exact_out_amounts(500, reserve_in, reserve_out, 30)
+                    .expect("quote")
+                    .1,
+                500,
+            )
+        };
+        let quote = SwapQuote {
+            pool: expected_pool(&checked),
+            input_definition,
+            source_balance: checked.balance(source),
+            recipient_balance: checked.balance(recipient),
+            amount_in,
+            amount_out,
+        };
+        let request = |quote: SwapQuote| {
+            if exact_input {
+                Message::SwapExactInputChecked {
+                    user_input_holding: source,
+                    user_output_holding: recipient,
+                    swap_amount_in: amount_in,
+                    min_amount_out: amount_out,
+                    deadline: u64::MAX,
+                    quote: Box::new(quote),
+                }
+            } else {
+                Message::SwapExactOutputChecked {
+                    user_input_holding: source,
+                    user_output_holding: recipient,
+                    exact_amount_out: amount_out,
+                    max_amount_in: amount_in,
+                    deadline: u64::MAX,
+                    quote: Box::new(quote),
+                }
+            }
+        };
+        let mut stale = quote.clone();
+        stale.pool.vault_b_balance = stale
+            .pool
+            .vault_b_balance
+            .checked_add(1)
+            .expect("stale balance");
+        let before = checked.snapshot();
+        assert_refused(
+            &checked.call(checked.pool, &[&signer], &request(stale)),
+            "stale holding condition",
+        );
+        assert_eq!(checked.snapshot(), before);
+        checked
+            .call(checked.pool, &[&signer], &request(quote))
+            .expect("checked swap");
+        let normal = if exact_input {
+            ordinary.swap_in(a_to_b, amount_in)
+        } else {
+            Message::SwapExactOutput {
+                user_input_holding: source,
+                user_output_holding: recipient,
+                exact_amount_out: amount_out,
+                max_amount_in: amount_in,
+                deadline: u64::MAX,
+            }
+        };
+        ordinary
+            .call(ordinary.pool, &[&signer], &normal)
+            .expect("ordinary swap");
+        assert_eq!(checked.snapshot(), ordinary.snapshot());
+        checked.assert_reserves();
+    }
+}
+
+#[test]
+fn checked_fee_withdrawal_uses_admin_authority_and_exact_balances() {
+    let mut ordinary = Chain::new();
+    let mut checked = Chain::new();
+    for chain in [&mut ordinary, &mut checked] {
+        chain
+            .call(chain.pool, &[&key(4)], &chain.swap_in(true, 10_000))
+            .expect("earn protocol fees");
+    }
+    let fees = compute_protocol_fee_pda(checked.amm, checked.config, checked.a);
+    let amount = checked.balance(fees);
+    assert_ne!(amount, 0);
+    let request = |destination_balance| Message::WithdrawProtocolFeesChecked {
+        config: checked.config,
+        token: checked.a,
+        destination: checked.user_a,
+        amount,
+        fee_balance: amount,
+        destination_balance,
+    };
+    let recipient = checked.balance(checked.user_a);
+    let valid = request(recipient);
+    let stale = request(recipient.checked_add(1).expect("stale destination"));
+    let admin = account(&key(1));
+    let before = checked.snapshot();
+    assert_refused(
+        &checked.call(admin, &[&key(4)], &valid),
+        "AMM owner or authority must authorize",
+    );
+    assert_refused(
+        &checked.call(admin, &[&key(1)], &stale),
+        "stale holding condition",
+    );
+    assert_eq!(checked.snapshot(), before);
+    checked
+        .call(admin, &[&key(1)], &valid)
+        .expect("checked withdraw");
+    ordinary
+        .call(
+            admin,
+            &[&key(1)],
+            &Message::WithdrawProtocolFees {
+                config: ordinary.config,
+                token: ordinary.a,
+                destination: ordinary.user_a,
+                amount,
+            },
+        )
+        .expect("ordinary withdraw");
+    assert_eq!(checked.snapshot(), ordinary.snapshot());
+}
+
+#[test]
+fn checked_sync_adopts_only_verified_vault_balances() {
+    let mut ordinary = Chain::new();
+    let mut checked = Chain::new();
+    let stale = Message::SyncReservesChecked {
+        quote: expected_pool(&checked),
+    };
+    for chain in [&mut ordinary, &mut checked] {
+        let vault = chain.pool().vault_a_id;
+        chain
+            .token_submit(
+                chain.user_a,
+                &[chain.user_a, vault],
+                &[&key(4)],
+                &TokenMessage::Transfer {
+                    to: vault,
+                    amount: 500,
+                },
+            )
+            .expect("donation");
+    }
+    let before = checked.snapshot();
+    assert_refused(
+        &checked.call(checked.pool, &[], &stale),
+        "stale holding condition",
+    );
+    assert_eq!(checked.snapshot(), before);
+    checked
+        .call(
+            checked.pool,
+            &[],
+            &Message::SyncReservesChecked {
+                quote: expected_pool(&checked),
+            },
+        )
+        .expect("checked sync");
+    ordinary
+        .call(ordinary.pool, &[], &Message::SyncReserves)
+        .expect("ordinary sync");
+    assert_eq!(checked.snapshot(), ordinary.snapshot());
+    checked.assert_reserves();
+}
+
+#[test]
+fn checked_oracle_setup_matches_ordinary_and_rejects_stale_vaults() {
+    let mut ordinary = Chain::new();
+    let mut checked = Chain::new();
+    let stale = expected_pool(&checked);
+    for chain in [&mut ordinary, &mut checked] {
+        let vault = chain.pool().vault_a_id;
+        chain
+            .token_submit(
+                chain.user_a,
+                &[chain.user_a, vault],
+                &[&key(4)],
+                &TokenMessage::Transfer {
+                    to: vault,
+                    amount: 123,
+                },
+            )
+            .expect("unsynced donation");
+    }
+    let window_duration = 86_400_000;
+    for observations in [true, false] {
+        let checked_message = |quote| {
+            if observations {
+                Message::CreatePriceObservationsChecked {
+                    window_duration,
+                    quote,
+                }
+            } else {
+                Message::CreateOraclePriceAccountChecked {
+                    window_duration,
+                    quote,
+                }
+            }
+        };
+        let before = checked.snapshot();
+        assert_refused(
+            &checked.call(checked.pool, &[], &checked_message(stale)),
+            "stale holding condition",
+        );
+        assert_eq!(checked.snapshot(), before);
+        checked
+            .call(checked.pool, &[], &checked_message(expected_pool(&checked)))
+            .expect("checked oracle setup");
+        let ordinary_message = if observations {
+            Message::CreatePriceObservations { window_duration }
+        } else {
+            Message::CreateOraclePriceAccount { window_duration }
+        };
+        ordinary
+            .call(ordinary.pool, &[], &ordinary_message)
+            .expect("ordinary oracle setup");
+        assert_eq!(checked.snapshot(), ordinary.snapshot());
+    }
+    assert_eq!(checked.pool().reserve_a, DEPOSIT_A);
+    assert_eq!(checked.oracle().observations, vec![window_duration]);
+    assert_eq!(
+        checked.oracle().prices,
+        vec![oracle::Message::CreateOraclePriceAccount {
+            base_asset: checked.a,
+            quote_asset: checked.b,
+            initial_price: spot_price_q64_64(DEPOSIT_A, DEPOSIT_B),
+            window_duration,
+        }]
+    );
 }

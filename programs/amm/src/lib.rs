@@ -16,6 +16,7 @@ use lee_core::{
 };
 
 mod add;
+mod checked;
 mod config;
 mod new_definition;
 mod reads;
@@ -57,9 +58,8 @@ pub fn handle_message(input: &ReceiveInput) -> Response {
             Internal::ReadState => read_state(input),
             Internal::Complete => panic!("no settlement in progress"),
             Internal::NewPool { request } => {
-                let Message::NewDefinition { config, .. } = *request else {
-                    panic!("expected pool creation")
-                };
+                let (config, _, _) =
+                    new_definition::creation_pair(&request).expect("expected pool creation");
                 assert_eq!(
                     input.from,
                     Some(actor(input, config)),
@@ -69,19 +69,31 @@ pub fn handle_message(input: &ReceiveInput) -> Response {
             }
             message @ (Internal::InitializeConfig { .. }
             | Internal::UpdateConfig { .. }
-            | Internal::WithdrawProtocolFees { .. }) => config::internal(input, state, message),
+            | Internal::WithdrawProtocolFees { .. }
+            | Internal::WithdrawProtocolFeesChecked { .. }) => {
+                config::internal(input, state, message)
+            }
         };
     }
     let message: Message = borsh::from_slice(&input.message).expect("AMM message must decode");
     match message {
         Message::ReadState => read_state(input),
-        message @ Message::NewDefinition { .. } => new_definition::forward(input, state, message),
+        message @ (Message::NewDefinition { .. } | Message::NewDefinitionChecked { .. }) => {
+            new_definition::forward(input, state, message)
+        }
         Message::Initialize { .. }
         | Message::UpdateConfig { .. }
-        | Message::WithdrawProtocolFees { .. } => config::forward(input, message),
+        | Message::WithdrawProtocolFees { .. }
+        | Message::WithdrawProtocolFeesChecked { .. } => config::forward(input, message),
         message @ (Message::AddLiquidity { .. }
         | Message::RemoveLiquidity { .. }
         | Message::RemoveLiquidityChecked { .. }
+        | Message::AddLiquidityChecked { .. }
+        | Message::SwapExactInputChecked { .. }
+        | Message::SwapExactOutputChecked { .. }
+        | Message::SyncReservesChecked { .. }
+        | Message::CreatePriceObservationsChecked { .. }
+        | Message::CreateOraclePriceAccountChecked { .. }
         | Message::SwapExactInput { .. }
         | Message::SwapExactOutput { .. }
         | Message::SyncReserves

@@ -95,6 +95,55 @@ pub enum Message {
     RemoveLiquidityChecked {
         request: Box<CheckedRemoval>,
     },
+    /// Check initial source balances, fund both new vaults, and lock the minimum LP.
+    NewDefinitionChecked {
+        request: Box<CheckedPoolCreation>,
+    },
+    /// Check the quote, deposits, LP supply and mint receipt.
+    AddLiquidityChecked {
+        request: Box<CheckedAdd>,
+    },
+    /// Check an exact input swap quote and acknowledge each transfer credit.
+    SwapExactInputChecked {
+        user_input_holding: AccountId,
+        user_output_holding: AccountId,
+        swap_amount_in: u128,
+        min_amount_out: u128,
+        deadline: u64,
+        quote: Box<SwapQuote>,
+    },
+    /// Check an exact output swap quote and acknowledge each transfer credit.
+    SwapExactOutputChecked {
+        user_input_holding: AccountId,
+        user_output_holding: AccountId,
+        exact_amount_out: u128,
+        max_amount_in: u128,
+        deadline: u64,
+        quote: Box<SwapQuote>,
+    },
+    /// Adopt the supplied reserve balances only if the actual vaults match.
+    SyncReservesChecked {
+        quote: PoolQuote,
+    },
+    /// The admin authorizes the same withdrawal with exact source and destination balances.
+    WithdrawProtocolFeesChecked {
+        config: AccountId,
+        token: AccountId,
+        destination: AccountId,
+        amount: u128,
+        fee_balance: u128,
+        destination_balance: u128,
+    },
+    /// Create the observations only when the vaults match the supplied backing.
+    CreatePriceObservationsChecked {
+        window_duration: u64,
+        quote: PoolQuote,
+    },
+    /// Create the price account only when the vaults match the supplied backing.
+    CreateOraclePriceAccountChecked {
+        window_duration: u64,
+        quote: PoolQuote,
+    },
 }
 
 /// A proportional withdrawal request with exact expected state.
@@ -127,6 +176,66 @@ pub struct RemovalQuote {
     pub amount_b: u128,
 }
 
+/// Pool accounting and Token custody are separate conditions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct PoolQuote {
+    pub reserve_a: u128,
+    pub reserve_b: u128,
+    pub vault_a_balance: u128,
+    pub vault_b_balance: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct CheckedPoolCreation {
+    pub config: AccountId,
+    pub definition_token_a_id: AccountId,
+    pub definition_token_b_id: AccountId,
+    pub user_holding_a: AccountId,
+    pub user_holding_b: AccountId,
+    pub user_holding_lp: AccountId,
+    pub token_a_amount: u128,
+    pub token_b_amount: u128,
+    pub source_a_balance: u128,
+    pub source_b_balance: u128,
+    /// Last valid block timestamp in milliseconds (inclusive).
+    pub deadline: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct CheckedAdd {
+    pub user_holding_a: AccountId,
+    pub user_holding_b: AccountId,
+    pub user_holding_lp: AccountId,
+    pub min_amount_liquidity: u128,
+    pub max_amount_to_add_token_a: u128,
+    pub max_amount_to_add_token_b: u128,
+    /// Last valid block timestamp in milliseconds (inclusive).
+    pub deadline: u64,
+    pub quote: AddQuote,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct AddQuote {
+    pub pool: PoolQuote,
+    pub lp_supply: u128,
+    pub source_a_balance: u128,
+    pub source_b_balance: u128,
+    pub recipient_lp_balance: u128,
+    pub amount_a: u128,
+    pub amount_b: u128,
+    pub liquidity: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct SwapQuote {
+    pub pool: PoolQuote,
+    pub input_definition: AccountId,
+    pub source_balance: u128,
+    pub recipient_balance: u128,
+    pub amount_in: u128,
+    pub amount_out: u128,
+}
+
 /// Decoded only for messages from this AMM deployment. No generic forwarding or arbitrary
 /// seed grants: each privileged message is constructed by an authorized public handler.
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
@@ -147,5 +256,12 @@ pub enum Internal {
     Complete,
     NewPool {
         request: Box<Message>,
+    },
+    WithdrawProtocolFeesChecked {
+        token: AccountId,
+        destination: AccountId,
+        amount: u128,
+        fee_balance: u128,
+        destination_balance: u128,
     },
 }

@@ -5,7 +5,7 @@ use amm_core::{
 };
 use lee_core::program::{ReceiveInput, Response, SyncMessage};
 
-use crate::{actor, reads, settlement};
+use crate::{actor, checked, reads, settlement};
 
 pub(crate) fn forward(input: &ReceiveInput, message: Message) -> Response {
     assert!(input.is_authorized, "AMM owner or authority must authorize");
@@ -40,7 +40,31 @@ pub(crate) fn forward(input: &ReceiveInput, message: Message) -> Response {
                 amount,
             },
         ),
+        Message::WithdrawProtocolFeesChecked {
+            config,
+            token,
+            destination,
+            amount,
+            fee_balance,
+            destination_balance,
+        } => (
+            config,
+            Internal::WithdrawProtocolFeesChecked {
+                token,
+                destination,
+                amount,
+                fee_balance,
+                destination_balance,
+            },
+        ),
         Message::NewDefinition { .. }
+        | Message::NewDefinitionChecked { .. }
+        | Message::AddLiquidityChecked { .. }
+        | Message::SwapExactInputChecked { .. }
+        | Message::SwapExactOutputChecked { .. }
+        | Message::SyncReservesChecked { .. }
+        | Message::CreatePriceObservationsChecked { .. }
+        | Message::CreateOraclePriceAccountChecked { .. }
         | Message::AddLiquidity { .. }
         | Message::RemoveLiquidity { .. }
         | Message::RemoveLiquidityChecked { .. }
@@ -125,6 +149,37 @@ pub(crate) fn internal(
                 holdings: vec![],
             };
             reads::holdings(input, pending, vec![source, destination])
+        }
+        Internal::WithdrawProtocolFeesChecked {
+            token,
+            destination,
+            amount,
+            fee_balance,
+            destination_balance,
+        } => {
+            let config_id = input.receiver.account_id;
+            let source =
+                compute_protocol_fee_pda(input.receiver.program_account_id, config_id, token);
+            let mut checks = checked::Balances::default();
+            let _ = checks.remember(source, token, fee_balance);
+            let _ = checks.remember(destination, token, destination_balance);
+            let response = Response::keep_state().send(checks.transfer(
+                &config,
+                source,
+                destination,
+                token,
+                amount,
+                Some(compute_protocol_fee_pda_seed(config_id, token)),
+            ));
+            let response = checks.confirm(&config, response).event(
+                Event::ProtocolFeesWithdrawn {
+                    token,
+                    destination,
+                    amount,
+                }
+                .to_program_event(),
+            );
+            settlement::finish(input, AmmState::Config(config), response)
         }
         Internal::InitializeConfig { .. }
         | Internal::ReadState

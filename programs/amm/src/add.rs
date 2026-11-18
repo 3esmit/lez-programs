@@ -3,11 +3,24 @@ use lee_core::program::{ReceiveInput, Response};
 use token_core::Message as TokenMessage;
 
 use crate::{
+    checked::{self, Balances},
     reads,
     settlement::{self, token_call},
 };
 
 pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
+    execute_with_checks(input, pending, None)
+}
+
+pub(crate) fn execute_with_checks(
+    input: &ReceiveInput,
+    pending: &Pending,
+    checked: Option<(Balances, (u128, u128, u128))>,
+) -> Response {
+    let (mut checks, expected) = match checked {
+        Some((balances, amounts)) => (Some(balances), Some(amounts)),
+        None => (None, None),
+    };
     let Message::AddLiquidity {
         user_holding_a,
         user_holding_b,
@@ -26,7 +39,7 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
     };
     let a = reads::holding(a, pool.definition_token_a_id);
     let b = reads::holding(b, pool.definition_token_b_id);
-    reads::holding(lp, pool.liquidity_pool_id);
+    let lp = reads::holding(lp, pool.liquidity_pool_id);
     assert!(
         max_a != 0 && max_b != 0 && min_amount_liquidity != 0,
         "liquidity amounts must be nonzero"
@@ -46,6 +59,14 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         mul_div_floor(pool.liquidity_pool_supply, amount_b, pool.reserve_b),
     );
     assert!(liquidity >= min_amount_liquidity, "liquidity below minimum");
+    if let Some(expected) = expected {
+        assert_eq!(
+            (amount_a, amount_b, liquidity),
+            expected,
+            "incorrect quoted add amounts"
+        );
+    }
+    let supply_before = pool.liquidity_pool_supply;
     pool.liquidity_pool_supply = pool
         .liquidity_pool_supply
         .checked_add(liquidity)
@@ -59,25 +80,48 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         .checked_add(amount_b)
         .expect("reserve B overflow");
     let config = pending.config.as_ref().expect("config was read");
-    let response = Response::keep_state()
-        .send(token_call(
+    let mut response = Response::keep_state()
+        .send(checked::transfer(
+            checks.as_mut(),
             config,
             user_holding_a,
-            &TokenMessage::Transfer {
-                to: pool.vault_a_id,
-                amount: amount_a,
-            },
+            pool.vault_a_id,
+            pool.definition_token_a_id,
+            amount_a,
             None,
         ))
-        .send(token_call(
+        .send(checked::transfer(
+            checks.as_mut(),
             config,
             user_holding_b,
-            &TokenMessage::Transfer {
-                to: pool.vault_b_id,
-                amount: amount_b,
-            },
+            pool.vault_b_id,
+            pool.definition_token_b_id,
+            amount_b,
             None,
-        ))
+        ));
+    if checks.is_some() {
+        // The next call is the mint, without any other program invocation between.
+        // Verify the starting recipient balance so the final balance proves the credit arrived.
+        response = response
+            .send(token_call(
+                config,
+                user_holding_lp,
+                &TokenMessage::AssertHolding {
+                    definition: pool.liquidity_pool_id,
+                    balance: lp.balance,
+                },
+                None,
+            ))
+            .send(token_call(
+                config,
+                pool.liquidity_pool_id,
+                &TokenMessage::AssertSupply {
+                    supply: supply_before,
+                },
+                None,
+            ));
+    }
+    response = response
         .send(token_call(
             config,
             pool.liquidity_pool_id,
@@ -96,5 +140,10 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
             }
             .to_program_event(),
         );
+    if let Some(mut checks) = checks {
+        // The postcondition also requires that the ordinary mint credit settled.
+        checks.add_credit(user_holding_lp, pool.liquidity_pool_id, liquidity);
+        response = checks.confirm(config, response);
+    }
     settlement::pool(input, config, pool, response)
 }

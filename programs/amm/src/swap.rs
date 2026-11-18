@@ -6,11 +6,24 @@ use lee_core::program::{ReceiveInput, Response};
 use token_core::Message as TokenMessage;
 
 use crate::{
+    checked::{self, Balances},
     reads,
     settlement::{self, token_call},
 };
 
 pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
+    execute_with_checks(input, pending, None)
+}
+
+pub(crate) fn execute_with_checks(
+    input: &ReceiveInput,
+    pending: &Pending,
+    checked: Option<(Balances, (u128, u128))>,
+) -> Response {
+    let (mut checks, expected) = match checked {
+        Some((balances, amounts)) => (Some(balances), Some(amounts)),
+        None => (None, None),
+    };
     let mut pool = reads::pool(pending);
     let [source, target, _, _] = pending.holdings.as_slice() else {
         unreachable!("four holdings read")
@@ -96,12 +109,27 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         | Message::AddLiquidity { .. }
         | Message::RemoveLiquidity { .. }
         | Message::RemoveLiquidityChecked { .. }
+        | Message::NewDefinitionChecked { .. }
+        | Message::AddLiquidityChecked { .. }
+        | Message::SwapExactInputChecked { .. }
+        | Message::SwapExactOutputChecked { .. }
+        | Message::SyncReservesChecked { .. }
+        | Message::CreatePriceObservationsChecked { .. }
+        | Message::CreateOraclePriceAccountChecked { .. }
+        | Message::WithdrawProtocolFeesChecked { .. }
         | Message::SyncReserves
         | Message::CreatePriceObservations { .. }
         | Message::CreateOraclePriceAccount { .. }
         | Message::WithdrawProtocolFees { .. }
         | Message::ReadState => unreachable!("swap continuation"),
     };
+    if let Some(expected) = expected {
+        assert_eq!(
+            (amount_in, amount_out),
+            expected,
+            "incorrect quoted swap amounts"
+        );
+    }
     assert!(
         effective != 0 && amount_out != 0,
         "swap amounts must be nonzero"
@@ -124,22 +152,22 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         (new_out, new_in)
     };
     let mut response = Response::keep_state()
-        .send(token_call(
+        .send(checked::transfer(
+            checks.as_mut(),
             config,
             from,
-            &TokenMessage::Transfer {
-                to: vault_in,
-                amount: amount_in,
-            },
+            vault_in,
+            source.definition_id,
+            amount_in,
             None,
         ))
-        .send(token_call(
+        .send(checked::transfer(
+            checks.as_mut(),
             config,
             vault_out,
-            &TokenMessage::Transfer {
-                to,
-                amount: amount_out,
-            },
+            to,
+            token_out,
+            amount_out,
             Some(compute_vault_pda_seed(input.receiver.account_id, token_out)),
         ));
     if protocol_fee != 0 {
@@ -160,18 +188,21 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
                     source.definition_id,
                 )),
             ))
-            .send(token_call(
+            .send(checked::transfer(
+                checks.as_mut(),
                 config,
                 vault_in,
-                &TokenMessage::Transfer {
-                    to: fee_holding,
-                    amount: protocol_fee,
-                },
+                fee_holding,
+                source.definition_id,
+                protocol_fee,
                 Some(compute_vault_pda_seed(
                     input.receiver.account_id,
                     source.definition_id,
                 )),
             ));
+    }
+    if let Some(checks) = checks {
+        response = checks.confirm(config, response);
     }
     response = response.event(
         Event::Swapped {

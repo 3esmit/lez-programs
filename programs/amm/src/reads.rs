@@ -5,12 +5,12 @@ use lee_core::{
 };
 use token_core::{TokenHolding, TokenState};
 
-use crate::{actor, add, config, new_definition, remove, swap, sync};
+use crate::{actor, add, checked, config, new_definition, remove, swap, sync};
 
 pub(crate) fn start(input: &ReceiveInput, state: Option<AmmState>, request: Message) -> Response {
-    let (config_id, pool) = if let Message::NewDefinition { config, .. } = &request {
+    let (config_id, pool) = if let Some((config, _, _)) = new_definition::creation_pair(&request) {
         assert!(state.is_none(), "pool already exists");
-        (*config, None)
+        (config, None)
     } else {
         let Some(AmmState::Pool(pool)) = state else {
             panic!("receiver is not an AMM pool")
@@ -22,14 +22,22 @@ pub(crate) fn start(input: &ReceiveInput, state: Option<AmmState>, request: Mess
         | Message::AddLiquidity { deadline, .. }
         | Message::RemoveLiquidity { deadline, .. }
         | Message::SwapExactInput { deadline, .. }
-        | Message::SwapExactOutput { deadline, .. } => Some(*deadline),
+        | Message::SwapExactOutput { deadline, .. }
+        | Message::SwapExactInputChecked { deadline, .. }
+        | Message::SwapExactOutputChecked { deadline, .. } => Some(*deadline),
         Message::RemoveLiquidityChecked { request } => Some(request.deadline),
+        Message::NewDefinitionChecked { request } => Some(request.deadline),
+        Message::AddLiquidityChecked { request } => Some(request.deadline),
         Message::SyncReserves
+        | Message::SyncReservesChecked { .. }
+        | Message::CreatePriceObservationsChecked { .. }
+        | Message::CreateOraclePriceAccountChecked { .. }
         | Message::CreatePriceObservations { .. }
         | Message::CreateOraclePriceAccount { .. } => None,
         Message::Initialize { .. }
         | Message::UpdateConfig { .. }
         | Message::WithdrawProtocolFees { .. }
+        | Message::WithdrawProtocolFeesChecked { .. }
         | Message::ReadState => unreachable!("pool operation"),
     };
     let expected = actor(input, config_id);
@@ -71,8 +79,8 @@ pub(crate) fn reply(input: &ReceiveInput, mut pending: Pending) -> Response {
         let Some(AmmState::Config(config)) = AmmState::decode(&reply.state) else {
             panic!("AMM config must be initialized")
         };
-        if let Message::RemoveLiquidityChecked { request } = &pending.request {
-            return remove::execute_checked(input, pool(&pending), &config, request);
+        if let Some(response) = checked::execute(input, &pending, &config) {
+            return response;
         }
         pending.config = Some(config);
         let mut accounts = match &pending.request {
@@ -110,7 +118,15 @@ pub(crate) fn reply(input: &ReceiveInput, mut pending: Pending) -> Response {
             | Message::UpdateConfig { .. }
             | Message::WithdrawProtocolFees { .. }
             | Message::ReadState
-            | Message::RemoveLiquidityChecked { .. } => unreachable!("pool operation"),
+            | Message::RemoveLiquidityChecked { .. }
+            | Message::NewDefinitionChecked { .. }
+            | Message::AddLiquidityChecked { .. }
+            | Message::SwapExactInputChecked { .. }
+            | Message::SwapExactOutputChecked { .. }
+            | Message::SyncReservesChecked { .. }
+            | Message::CreatePriceObservationsChecked { .. }
+            | Message::CreateOraclePriceAccountChecked { .. }
+            | Message::WithdrawProtocolFeesChecked { .. } => unreachable!("pool operation"),
         };
         if let Some(pool) = &pending.pool {
             accounts.extend([pool.vault_a_id, pool.vault_b_id]);
@@ -222,7 +238,15 @@ fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         Message::Initialize { .. }
         | Message::UpdateConfig { .. }
         | Message::ReadState
-        | Message::RemoveLiquidityChecked { .. } => {
+        | Message::RemoveLiquidityChecked { .. }
+        | Message::NewDefinitionChecked { .. }
+        | Message::AddLiquidityChecked { .. }
+        | Message::SwapExactInputChecked { .. }
+        | Message::SwapExactOutputChecked { .. }
+        | Message::SyncReservesChecked { .. }
+        | Message::CreatePriceObservationsChecked { .. }
+        | Message::CreateOraclePriceAccountChecked { .. }
+        | Message::WithdrawProtocolFeesChecked { .. } => {
             unreachable!("operation continuation")
         }
     }

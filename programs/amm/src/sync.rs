@@ -4,6 +4,14 @@ use lee_core::program::{ReceiveInput, Response};
 use crate::{reads, settlement};
 
 pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
+    execute_with_preconditions(input, pending, Response::keep_state())
+}
+
+pub(crate) fn execute_with_preconditions(
+    input: &ReceiveInput,
+    pending: &Pending,
+    response: Response,
+) -> Response {
     let mut pool = reads::pool(pending);
     let config = pending.config.as_ref().expect("config was read");
     let message = match pending.request {
@@ -21,7 +29,7 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
                 input,
                 config,
                 pool,
-                Response::keep_state().event(event.to_program_event()),
+                response.event(event.to_program_event()),
             );
         }
         Message::CreatePriceObservations { window_duration } => {
@@ -51,12 +59,19 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         | Message::AddLiquidity { .. }
         | Message::RemoveLiquidity { .. }
         | Message::RemoveLiquidityChecked { .. }
+        | Message::NewDefinitionChecked { .. }
+        | Message::AddLiquidityChecked { .. }
+        | Message::SwapExactInputChecked { .. }
+        | Message::SwapExactOutputChecked { .. }
+        | Message::SyncReservesChecked { .. }
+        | Message::CreatePriceObservationsChecked { .. }
+        | Message::CreateOraclePriceAccountChecked { .. }
+        | Message::WithdrawProtocolFeesChecked { .. }
         | Message::SwapExactInput { .. }
         | Message::SwapExactOutput { .. }
         | Message::WithdrawProtocolFees { .. }
         | Message::ReadState => unreachable!("sync or oracle continuation"),
     };
-    let response =
-        Response::keep_state().send(settlement::oracle_call(input, config, &pool, &message));
+    let response = response.send(settlement::oracle_call(input, config, &pool, &message));
     settlement::finish(input, AmmState::Pool(pool), response)
 }

@@ -4,25 +4,43 @@ use amm_core::{
     compute_vault_pda_seed, event::Event, isqrt_product, oracle, spot_price_q64_64, AmmState,
     Internal, Message, Pending, PoolDefinition, MINIMUM_LIQUIDITY,
 };
-use lee_core::program::{ReceiveInput, Response, SyncMessage};
+use lee_core::{
+    account::AccountId,
+    program::{ReceiveInput, Response, SyncMessage},
+};
 use token_core::Message as TokenMessage;
 
-use crate::settlement::{finish, oracle_call, token_call};
+use crate::{
+    checked::{self, Balances},
+    settlement::{finish, oracle_call, token_call},
+};
+
+pub(crate) fn creation_pair(request: &Message) -> Option<(AccountId, AccountId, AccountId)> {
+    if let Message::NewDefinition {
+        config,
+        definition_token_a_id,
+        definition_token_b_id,
+        ..
+    } = request
+    {
+        Some((*config, *definition_token_a_id, *definition_token_b_id))
+    } else if let Message::NewDefinitionChecked { request } = request {
+        Some((
+            request.config,
+            request.definition_token_a_id,
+            request.definition_token_b_id,
+        ))
+    } else {
+        None
+    }
+}
 
 pub(crate) fn forward(input: &ReceiveInput, state: Option<AmmState>, request: Message) -> Response {
     assert!(
         matches!(state, Some(AmmState::Config(_))),
         "pool creation goes to an initialized config"
     );
-    let Message::NewDefinition {
-        config,
-        definition_token_a_id: a,
-        definition_token_b_id: b,
-        ..
-    } = request
-    else {
-        unreachable!("pool creation")
-    };
+    let (config, a, b) = creation_pair(&request).expect("pool creation");
     assert_eq!(
         config, input.receiver.account_id,
         "pool config does not match receiver"
@@ -40,6 +58,14 @@ pub(crate) fn forward(input: &ReceiveInput, state: Option<AmmState>, request: Me
 }
 
 pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
+    execute_with_checks(input, pending, None)
+}
+
+pub(crate) fn execute_with_checks(
+    input: &ReceiveInput,
+    pending: &Pending,
+    mut checks: Option<Balances>,
+) -> Response {
     let Message::NewDefinition {
         user_holding_a,
         user_holding_b,
@@ -115,6 +141,10 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
             Some(compute_vault_pda_seed(pool_id, definition)),
         ));
     }
+    if let Some(checks) = &mut checks {
+        // NewDefinition initializes the fresh LP holding with this exact supply.
+        let _ = checks.remember(user_holding_lp, pool.liquidity_pool_id, supply);
+    }
     // The initial LP holding signs the definition's InitHolding and the transfer into the
     // permanent lock. No lock seed is ever granted to a debit operation.
     response = response
@@ -137,31 +167,31 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
             },
             Some(compute_lp_lock_holding_pda_seed(pool_id)),
         ))
-        .send(token_call(
+        .send(checked::transfer(
+            checks.as_mut(),
             config,
             user_holding_lp,
-            &TokenMessage::Transfer {
-                to: lock,
-                amount: MINIMUM_LIQUIDITY,
-            },
+            lock,
+            pool.liquidity_pool_id,
+            MINIMUM_LIQUIDITY,
             None,
         ))
-        .send(token_call(
+        .send(checked::transfer(
+            checks.as_mut(),
             config,
             user_holding_a,
-            &TokenMessage::Transfer {
-                to: pool.vault_a_id,
-                amount: token_a_amount,
-            },
+            pool.vault_a_id,
+            a.definition_id,
+            token_a_amount,
             None,
         ))
-        .send(token_call(
+        .send(checked::transfer(
+            checks.as_mut(),
             config,
             user_holding_b,
-            &TokenMessage::Transfer {
-                to: pool.vault_b_id,
-                amount: token_b_amount,
-            },
+            pool.vault_b_id,
+            b.definition_id,
+            token_b_amount,
             None,
         ))
         .send(oracle_call(
