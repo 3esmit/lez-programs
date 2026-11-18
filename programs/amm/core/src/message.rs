@@ -15,6 +15,27 @@ pub struct RemovalQuote {
     pub amount_b: u128,
 }
 
+/// The recorded reserves, current LP supply, and exact results of an add-liquidity quote.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct AdditionQuote {
+    pub reserve_a: u128,
+    pub reserve_b: u128,
+    pub lp_supply: u128,
+    pub amount_a: u128,
+    pub amount_b: u128,
+    pub liquidity: u128,
+}
+
+/// The recorded reserves and exact debit and credit of a swap quote.
+/// The reserves are ordered by pool asset, independently of the swap direction.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct SwapQuote {
+    pub reserve_a: u128,
+    pub reserve_b: u128,
+    pub amount_in: u128,
+    pub amount_out: u128,
+}
+
 /// Public actor messages. NewDefinition goes to the config actor; other pool operations
 /// go to the pool actor. Initialization and admin
 /// operations go to the authorized owner's/authority's AMM actor, which forwards them.
@@ -113,6 +134,35 @@ pub enum Message {
         min_amount_to_remove_token_b: u128,
         deadline: u64,
         quote: RemovalQuote,
+    },
+    /// Like AddLiquidity, but both deposits and the LP mint must match the exact quote.
+    AddLiquidityQuoted {
+        user_holding_a: AccountId,
+        user_holding_b: AccountId,
+        user_holding_lp: AccountId,
+        min_amount_liquidity: u128,
+        max_amount_to_add_token_a: u128,
+        max_amount_to_add_token_b: u128,
+        deadline: u64,
+        quote: AdditionQuote,
+    },
+    /// Like SwapExactInput, but rejects a stale reserve snapshot or an incorrect quote.
+    SwapExactInputQuoted {
+        user_input_holding: AccountId,
+        user_output_holding: AccountId,
+        swap_amount_in: u128,
+        min_amount_out: u128,
+        deadline: u64,
+        quote: SwapQuote,
+    },
+    /// Like SwapExactOutput, but rejects a stale reserve snapshot or an incorrect quote.
+    SwapExactOutputQuoted {
+        user_input_holding: AccountId,
+        user_output_holding: AccountId,
+        exact_amount_out: u128,
+        max_amount_in: u128,
+        deadline: u64,
+        quote: SwapQuote,
     },
 }
 

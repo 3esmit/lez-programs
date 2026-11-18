@@ -80,10 +80,13 @@ pub fn handle_message(input: &ReceiveInput) -> Response {
         | Message::UpdateConfig { .. }
         | Message::WithdrawProtocolFees { .. } => config::forward(input, message),
         message @ (Message::AddLiquidity { .. }
+        | Message::AddLiquidityQuoted { .. }
         | Message::RemoveLiquidity { .. }
         | Message::RemoveLiquidityQuoted { .. }
         | Message::SwapExactInput { .. }
         | Message::SwapExactOutput { .. }
+        | Message::SwapExactInputQuoted { .. }
+        | Message::SwapExactOutputQuoted { .. }
         | Message::SyncReserves
         | Message::CreatePriceObservations { .. }
         | Message::CreateOraclePriceAccount { .. }) => reads::start(input, state, message),

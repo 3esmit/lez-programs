@@ -300,6 +300,113 @@
           }
         }
       ]
+    },
+    {
+      "name": "AddLiquidityQuoted",
+      "tag": 13,
+      "docs": "Like AddLiquidity, but both deposits and the LP mint must match the exact quote.",
+      "fields": [
+        {
+          "name": "user_holding_a",
+          "type": "account_id"
+        },
+        {
+          "name": "user_holding_b",
+          "type": "account_id"
+        },
+        {
+          "name": "user_holding_lp",
+          "type": "account_id"
+        },
+        {
+          "name": "min_amount_liquidity",
+          "type": "u128"
+        },
+        {
+          "name": "max_amount_to_add_token_a",
+          "type": "u128"
+        },
+        {
+          "name": "max_amount_to_add_token_b",
+          "type": "u128"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        },
+        {
+          "name": "quote",
+          "type": {
+            "defined": "AdditionQuote"
+          }
+        }
+      ]
+    },
+    {
+      "name": "SwapExactInputQuoted",
+      "tag": 14,
+      "docs": "Like SwapExactInput, but rejects a stale reserve snapshot or an incorrect quote.",
+      "fields": [
+        {
+          "name": "user_input_holding",
+          "type": "account_id"
+        },
+        {
+          "name": "user_output_holding",
+          "type": "account_id"
+        },
+        {
+          "name": "swap_amount_in",
+          "type": "u128"
+        },
+        {
+          "name": "min_amount_out",
+          "type": "u128"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        },
+        {
+          "name": "quote",
+          "type": {
+            "defined": "SwapQuote"
+          }
+        }
+      ]
+    },
+    {
+      "name": "SwapExactOutputQuoted",
+      "tag": 15,
+      "docs": "Like SwapExactOutput, but rejects a stale reserve snapshot or an incorrect quote.",
+      "fields": [
+        {
+          "name": "user_input_holding",
+          "type": "account_id"
+        },
+        {
+          "name": "user_output_holding",
+          "type": "account_id"
+        },
+        {
+          "name": "exact_amount_out",
+          "type": "u128"
+        },
+        {
+          "name": "max_amount_in",
+          "type": "u128"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        },
+        {
+          "name": "quote",
+          "type": {
+            "defined": "SwapQuote"
+          }
+        }
+      ]
     }
   ],
   "state": {
@@ -315,6 +422,36 @@
     }
   ],
   "types": [
+    {
+      "name": "AdditionQuote",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "reserve_a",
+          "type": "u128"
+        },
+        {
+          "name": "reserve_b",
+          "type": "u128"
+        },
+        {
+          "name": "lp_supply",
+          "type": "u128"
+        },
+        {
+          "name": "amount_a",
+          "type": "u128"
+        },
+        {
+          "name": "amount_b",
+          "type": "u128"
+        },
+        {
+          "name": "liquidity",
+          "type": "u128"
+        }
+      ]
+    },
     {
       "name": "AmmConfig",
       "kind": "struct",
@@ -810,6 +947,107 @@
               }
             }
           ]
+        },
+        {
+          "name": "AddLiquidityQuoted",
+          "fields": [
+            {
+              "name": "user_holding_a",
+              "type": "account_id"
+            },
+            {
+              "name": "user_holding_b",
+              "type": "account_id"
+            },
+            {
+              "name": "user_holding_lp",
+              "type": "account_id"
+            },
+            {
+              "name": "min_amount_liquidity",
+              "type": "u128"
+            },
+            {
+              "name": "max_amount_to_add_token_a",
+              "type": "u128"
+            },
+            {
+              "name": "max_amount_to_add_token_b",
+              "type": "u128"
+            },
+            {
+              "name": "deadline",
+              "type": "u64"
+            },
+            {
+              "name": "quote",
+              "type": {
+                "defined": "AdditionQuote"
+              }
+            }
+          ]
+        },
+        {
+          "name": "SwapExactInputQuoted",
+          "fields": [
+            {
+              "name": "user_input_holding",
+              "type": "account_id"
+            },
+            {
+              "name": "user_output_holding",
+              "type": "account_id"
+            },
+            {
+              "name": "swap_amount_in",
+              "type": "u128"
+            },
+            {
+              "name": "min_amount_out",
+              "type": "u128"
+            },
+            {
+              "name": "deadline",
+              "type": "u64"
+            },
+            {
+              "name": "quote",
+              "type": {
+                "defined": "SwapQuote"
+              }
+            }
+          ]
+        },
+        {
+          "name": "SwapExactOutputQuoted",
+          "fields": [
+            {
+              "name": "user_input_holding",
+              "type": "account_id"
+            },
+            {
+              "name": "user_output_holding",
+              "type": "account_id"
+            },
+            {
+              "name": "exact_amount_out",
+              "type": "u128"
+            },
+            {
+              "name": "max_amount_in",
+              "type": "u128"
+            },
+            {
+              "name": "deadline",
+              "type": "u64"
+            },
+            {
+              "name": "quote",
+              "type": {
+                "defined": "SwapQuote"
+              }
+            }
+          ]
         }
       ]
     },
@@ -936,6 +1174,28 @@
         },
         {
           "name": "amount_b",
+          "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "SwapQuote",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "reserve_a",
+          "type": "u128"
+        },
+        {
+          "name": "reserve_b",
+          "type": "u128"
+        },
+        {
+          "name": "amount_in",
+          "type": "u128"
+        },
+        {
+          "name": "amount_out",
           "type": "u128"
         }
       ]

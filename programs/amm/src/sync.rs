@@ -49,10 +49,13 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         | Message::UpdateConfig { .. }
         | Message::NewDefinition { .. }
         | Message::AddLiquidity { .. }
+        | Message::AddLiquidityQuoted { .. }
         | Message::RemoveLiquidity { .. }
         | Message::RemoveLiquidityQuoted { .. }
         | Message::SwapExactInput { .. }
         | Message::SwapExactOutput { .. }
+        | Message::SwapExactInputQuoted { .. }
+        | Message::SwapExactOutputQuoted { .. }
         | Message::WithdrawProtocolFees { .. }
         | Message::ReadState => unreachable!("sync or oracle continuation"),
     };

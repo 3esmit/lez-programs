@@ -48,8 +48,29 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         "reserves must be nonzero"
     );
     let config = pending.config.as_ref().expect("config was read");
+    let quote = if let Message::SwapExactInputQuoted { quote, .. }
+    | Message::SwapExactOutputQuoted { quote, .. } = &pending.request
+    {
+        Some(quote)
+    } else {
+        None
+    };
+    if let Some(quote) = quote {
+        assert_eq!(
+            (quote.reserve_a, quote.reserve_b),
+            (pool.reserve_a, pool.reserve_b),
+            "stale swap quote"
+        );
+    }
     let (from, to, amount_in, amount_out, effective) = match pending.request {
         Message::SwapExactInput {
+            user_input_holding,
+            user_output_holding,
+            swap_amount_in,
+            min_amount_out,
+            ..
+        }
+        | Message::SwapExactInputQuoted {
             user_input_holding,
             user_output_holding,
             swap_amount_in,
@@ -68,6 +89,13 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
             )
         }
         Message::SwapExactOutput {
+            user_input_holding,
+            user_output_holding,
+            exact_amount_out,
+            max_amount_in,
+            ..
+        }
+        | Message::SwapExactOutputQuoted {
             user_input_holding,
             user_output_holding,
             exact_amount_out,
@@ -94,6 +122,7 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         | Message::UpdateConfig { .. }
         | Message::NewDefinition { .. }
         | Message::AddLiquidity { .. }
+        | Message::AddLiquidityQuoted { .. }
         | Message::RemoveLiquidity { .. }
         | Message::RemoveLiquidityQuoted { .. }
         | Message::SyncReserves
@@ -107,6 +136,13 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         "swap amounts must be nonzero"
     );
     assert!(source.balance >= amount_in, "insufficient input balance");
+    if let Some(quote) = quote {
+        assert_eq!(
+            (quote.amount_in, quote.amount_out),
+            (amount_in, amount_out),
+            "swap quote has incorrect amounts"
+        );
+    }
     let swap_fee = amount_in
         .checked_sub(effective)
         .expect("effective input is at most gross input");

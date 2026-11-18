@@ -20,10 +20,13 @@ pub(crate) fn start(input: &ReceiveInput, state: Option<AmmState>, request: Mess
     let deadline = match &request {
         Message::NewDefinition { deadline, .. }
         | Message::AddLiquidity { deadline, .. }
+        | Message::AddLiquidityQuoted { deadline, .. }
         | Message::RemoveLiquidity { deadline, .. }
         | Message::RemoveLiquidityQuoted { deadline, .. }
         | Message::SwapExactInput { deadline, .. }
-        | Message::SwapExactOutput { deadline, .. } => Some(*deadline),
+        | Message::SwapExactOutput { deadline, .. }
+        | Message::SwapExactInputQuoted { deadline, .. }
+        | Message::SwapExactOutputQuoted { deadline, .. } => Some(*deadline),
         Message::SyncReserves
         | Message::CreatePriceObservations { .. }
         | Message::CreateOraclePriceAccount { .. } => None,
@@ -84,6 +87,12 @@ pub(crate) fn reply(input: &ReceiveInput, mut pending: Pending) -> Response {
                 user_holding_lp,
                 ..
             }
+            | Message::AddLiquidityQuoted {
+                user_holding_a,
+                user_holding_b,
+                user_holding_lp,
+                ..
+            }
             | Message::RemoveLiquidity {
                 user_holding_a,
                 user_holding_b,
@@ -102,6 +111,16 @@ pub(crate) fn reply(input: &ReceiveInput, mut pending: Pending) -> Response {
                 ..
             }
             | Message::SwapExactOutput {
+                user_input_holding,
+                user_output_holding,
+                ..
+            }
+            | Message::SwapExactInputQuoted {
+                user_input_holding,
+                user_output_holding,
+                ..
+            }
+            | Message::SwapExactOutputQuoted {
                 user_input_holding,
                 user_output_holding,
                 ..
@@ -180,6 +199,7 @@ fn next(input: &ReceiveInput, mut pending: Pending) -> Response {
     if matches!(
         pending.request,
         Message::AddLiquidity { .. }
+            | Message::AddLiquidityQuoted { .. }
             | Message::RemoveLiquidity { .. }
             | Message::RemoveLiquidityQuoted { .. }
     ) {
@@ -212,13 +232,16 @@ fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
     }
     match pending.request {
         Message::NewDefinition { .. } => new_definition::execute(input, pending),
-        Message::AddLiquidity { .. } => add::execute(input, pending),
+        Message::AddLiquidity { .. } | Message::AddLiquidityQuoted { .. } => {
+            add::execute(input, pending)
+        }
         Message::RemoveLiquidity { .. } | Message::RemoveLiquidityQuoted { .. } => {
             remove::execute(input, pending)
         }
-        Message::SwapExactInput { .. } | Message::SwapExactOutput { .. } => {
-            swap::execute(input, pending)
-        }
+        Message::SwapExactInput { .. }
+        | Message::SwapExactOutput { .. }
+        | Message::SwapExactInputQuoted { .. }
+        | Message::SwapExactOutputQuoted { .. } => swap::execute(input, pending),
         Message::SyncReserves
         | Message::CreatePriceObservations { .. }
         | Message::CreateOraclePriceAccount { .. } => sync::execute(input, pending),

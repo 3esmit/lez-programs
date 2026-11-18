@@ -2,9 +2,9 @@
 
 use amm_core::{
     compute_config_pda, compute_liquidity_token_pda, compute_lp_lock_holding_pda, compute_pool_pda,
-    compute_protocol_fee_pda, compute_vault_pda, event::Event, oracle, spot_price_q64_64,
-    swap_exact_in_amounts, swap_exact_out_amounts, AmmConfig, AmmState, Message, PoolDefinition,
-    RemovalQuote, MINIMUM_LIQUIDITY,
+    compute_protocol_fee_pda, compute_vault_pda, event::Event, mul_div_floor, oracle,
+    spot_price_q64_64, swap_exact_in_amounts, swap_exact_out_amounts, AdditionQuote, AmmConfig,
+    AmmState, Message, PoolDefinition, RemovalQuote, SwapQuote, MINIMUM_LIQUIDITY,
 };
 use integration_tests::{account, assert_refused, deploy, deploy_at, key, submit};
 use lee::{error::LeeError, PrivateKey, V03State};
@@ -19,6 +19,7 @@ const DEPOSIT_A: u128 = 1_000_000;
 const DEPOSIT_B: u128 = 2_000_000;
 const SUPPLY: u128 = 1_000_000_000;
 
+#[derive(Clone)]
 struct Chain {
     state: V03State,
     amm: AccountId,
@@ -267,6 +268,107 @@ impl Chain {
             swap_amount_in: amount,
             min_amount_out: 1,
             deadline: u64::MAX,
+        }
+    }
+
+    fn swap_quoted(&self, swap: Message) -> Message {
+        let (source, target) = if let Message::SwapExactInput {
+            user_input_holding,
+            user_output_holding,
+            ..
+        }
+        | Message::SwapExactOutput {
+            user_input_holding,
+            user_output_holding,
+            ..
+        } = &swap
+        {
+            (*user_input_holding, *user_output_holding)
+        } else {
+            panic!("expected baseline swap");
+        };
+        let pool = self.pool();
+        let (reserve_in, reserve_out) = if source == self.user_a {
+            (pool.reserve_a, pool.reserve_b)
+        } else {
+            (pool.reserve_b, pool.reserve_a)
+        };
+        if let Message::SwapExactInput {
+            swap_amount_in,
+            min_amount_out,
+            deadline,
+            ..
+        } = swap
+        {
+            let (_, amount_out) =
+                swap_exact_in_amounts(swap_amount_in, reserve_in, reserve_out, 30);
+            Message::SwapExactInputQuoted {
+                user_input_holding: source,
+                user_output_holding: target,
+                swap_amount_in,
+                min_amount_out,
+                deadline,
+                quote: SwapQuote {
+                    reserve_a: pool.reserve_a,
+                    reserve_b: pool.reserve_b,
+                    amount_in: swap_amount_in,
+                    amount_out,
+                },
+            }
+        } else {
+            let Message::SwapExactOutput {
+                exact_amount_out,
+                max_amount_in,
+                deadline,
+                ..
+            } = swap
+            else {
+                unreachable!("expected exact-output swap");
+            };
+            let (_, amount_in) =
+                swap_exact_out_amounts(exact_amount_out, reserve_in, reserve_out, 30)
+                    .expect("fillable swap");
+            Message::SwapExactOutputQuoted {
+                user_input_holding: source,
+                user_output_holding: target,
+                exact_amount_out,
+                max_amount_in,
+                deadline,
+                quote: SwapQuote {
+                    reserve_a: pool.reserve_a,
+                    reserve_b: pool.reserve_b,
+                    amount_in,
+                    amount_out: exact_amount_out,
+                },
+            }
+        }
+    }
+
+    fn add_quoted(&self, max_a: u128, max_b: u128) -> Message {
+        let pool = self.pool();
+        let lp_supply = self.lp_supply();
+        let amount_a = max_a.min(mul_div_floor(pool.reserve_a, max_b, pool.reserve_b));
+        let amount_b = max_b.min(mul_div_floor(pool.reserve_b, max_a, pool.reserve_a));
+        Message::AddLiquidityQuoted {
+            user_holding_a: self.user_a,
+            user_holding_b: self.user_b,
+            user_holding_lp: self.user_lp,
+            min_amount_liquidity: 1,
+            max_amount_to_add_token_a: max_a,
+            max_amount_to_add_token_b: max_b,
+            deadline: u64::MAX,
+            quote: AdditionQuote {
+                reserve_a: pool.reserve_a,
+                reserve_b: pool.reserve_b,
+                lp_supply,
+                amount_a,
+                amount_b,
+                liquidity: mul_div_floor(lp_supply, amount_a, pool.reserve_a).min(mul_div_floor(
+                    lp_supply,
+                    amount_b,
+                    pool.reserve_b,
+                )),
+            },
         }
     }
 
@@ -665,6 +767,135 @@ fn quoted_removal_rejects_an_incorrect_output_and_enforces_normal_guards() {
         &chain.call(chain.pool, &[], &valid),
         "holding must authorize the burn",
     );
+    assert_eq!(chain.snapshot(), before);
+}
+
+#[test]
+fn quoted_addition_uses_fresh_lp_supply_and_matches_ordinary_addition() {
+    let mut chain = Chain::new();
+    let (max_a, max_b) = (10_000, 25_000);
+    let stale = chain.add_quoted(max_a, max_b);
+    let definition = chain.pool().liquidity_pool_id;
+    chain
+        .token_submit(
+            chain.user_lp,
+            &[chain.user_lp, definition],
+            &[&key(6)],
+            &TokenMessage::Burn { amount: 10_000 },
+        )
+        .expect("external burn");
+    let before = chain.snapshot();
+    assert_refused(
+        &chain.call(chain.pool, &[&key(4), &key(5)], &stale),
+        "stale liquidity addition quote",
+    );
+
+    let fresh = chain.add_quoted(max_a, max_b);
+    let mut incorrect = fresh.clone();
+    let Message::AddLiquidityQuoted { quote, .. } = &mut incorrect else {
+        panic!("quoted addition");
+    };
+    quote.liquidity = quote.liquidity.checked_add(1).expect("overquoted mint");
+    assert_refused(
+        &chain.call(chain.pool, &[&key(4), &key(5)], &incorrect),
+        "liquidity addition quote has incorrect results",
+    );
+    assert_refused(
+        &chain.call(chain.pool, &[&key(4)], &fresh),
+        "sender holding must authorize the transfer",
+    );
+    assert_eq!(chain.snapshot(), before);
+
+    let mut ordinary = chain.clone();
+    ordinary
+        .call(
+            ordinary.pool,
+            &[&key(4), &key(5)],
+            &Message::AddLiquidity {
+                user_holding_a: ordinary.user_a,
+                user_holding_b: ordinary.user_b,
+                user_holding_lp: ordinary.user_lp,
+                min_amount_liquidity: 1,
+                max_amount_to_add_token_a: max_a,
+                max_amount_to_add_token_b: max_b,
+                deadline: u64::MAX,
+            },
+        )
+        .expect("ordinary addition");
+    chain
+        .call(chain.pool, &[&key(4), &key(5)], &fresh)
+        .expect("fresh quote settles");
+    assert_eq!(chain.snapshot(), ordinary.snapshot());
+    chain.assert_reserves();
+}
+
+#[test]
+fn quoted_swaps_match_ordinary_swaps_for_both_modes_and_directions() {
+    let mut chain = Chain::new();
+    let mut ordinary = chain.clone();
+    for (a_to_b, signer, source, target) in [
+        (true, key(4), chain.user_a, chain.user_b),
+        (false, key(5), chain.user_b, chain.user_a),
+    ] {
+        for request in [
+            chain.swap_in(a_to_b, 10_000),
+            Message::SwapExactOutput {
+                user_input_holding: source,
+                user_output_holding: target,
+                exact_amount_out: 500,
+                max_amount_in: u128::MAX,
+                deadline: u64::MAX,
+            },
+        ] {
+            let quoted = chain.swap_quoted(request.clone());
+            ordinary
+                .call(ordinary.pool, &[&signer], &request)
+                .expect("ordinary swap");
+            chain
+                .call(chain.pool, &[&signer], &quoted)
+                .expect("quoted swap");
+            assert_eq!(chain.snapshot(), ordinary.snapshot());
+            chain.assert_reserves();
+        }
+    }
+}
+
+#[test]
+fn quoted_swaps_reject_stale_reserves_and_incorrect_amounts() {
+    let mut chain = Chain::new();
+    let exact_input = chain.swap_in(true, 10_000);
+    let exact_output = Message::SwapExactOutput {
+        user_input_holding: chain.user_b,
+        user_output_holding: chain.user_a,
+        exact_amount_out: 500,
+        max_amount_in: u128::MAX,
+        deadline: u64::MAX,
+    };
+    let stale_input = chain.swap_quoted(exact_input.clone());
+    let stale_output = chain.swap_quoted(exact_output.clone());
+    chain
+        .call(chain.pool, &[&key(4)], &chain.swap_in(true, 500))
+        .expect("earlier swap changes reserves");
+
+    let before = chain.snapshot();
+    for (signer, stale) in [(key(4), stale_input), (key(5), stale_output)] {
+        assert_refused(
+            &chain.call(chain.pool, &[&signer], &stale),
+            "stale swap quote",
+        );
+    }
+    for (signer, request) in [(key(4), exact_input), (key(5), exact_output)] {
+        let mut incorrect = chain.swap_quoted(request);
+        if let Message::SwapExactInputQuoted { quote, .. } = &mut incorrect {
+            quote.amount_out = quote.amount_out.checked_add(1).expect("overquoted credit");
+        } else if let Message::SwapExactOutputQuoted { quote, .. } = &mut incorrect {
+            quote.amount_in = quote.amount_in.checked_sub(1).expect("underquoted debit");
+        }
+        assert_refused(
+            &chain.call(chain.pool, &[&signer], &incorrect),
+            "swap quote has incorrect amounts",
+        );
+    }
     assert_eq!(chain.snapshot(), before);
 }
 
