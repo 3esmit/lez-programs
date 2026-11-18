@@ -5,7 +5,7 @@ use amm_core::{
     compute_protocol_fee_pda, compute_vault_pda,
     event::Event,
     oracle,
-    policy::{WithdrawalOp, WithdrawalPolicy},
+    policy::{CalculationOp, CalculationPolicy, WithdrawalOp, WithdrawalPolicy},
     spot_price_q64_64, swap_exact_in_amounts, swap_exact_out_amounts, AmmConfig, AmmState, Message,
     PoolDefinition, MINIMUM_LIQUIDITY,
 };
@@ -426,6 +426,251 @@ fn add_and_remove_liquidity_preserve_the_permanent_lock() {
     assert_eq!(chain.pool().liquidity_pool_supply, MINIMUM_LIQUIDITY);
     assert_eq!(chain.balance(chain.user_lp), 0);
     chain.assert_reserves();
+}
+
+fn calculation_policy(ops: &[CalculationOp]) -> CalculationPolicy {
+    let mut policy = CalculationPolicy {
+        ops: [CalculationOp::Nop; 32],
+    };
+    policy
+        .ops
+        .get_mut(..ops.len())
+        .expect("test program fits")
+        .copy_from_slice(ops);
+    policy
+}
+
+#[test]
+fn creation_policy_matches_canonical_supply_and_rejects_wrong_output() {
+    use CalculationOp::{Emit, Input, SqrtProduct};
+
+    let mut reference = Chain::empty(2_000);
+    let mut chain = Chain::empty(2_000);
+    let request = |policy| Message::NewDefinitionWithPolicy {
+        config: chain.config,
+        definition_token_a_id: chain.a,
+        definition_token_b_id: chain.b,
+        user_holding_a: chain.user_a,
+        user_holding_b: chain.user_b,
+        user_holding_lp: chain.user_lp,
+        token_a_amount: DEPOSIT_A,
+        token_b_amount: DEPOSIT_B,
+        deadline: u64::MAX,
+        policy,
+    };
+    let wrong = request(calculation_policy(&[Input { index: 0 }, Emit]));
+    let matching = request(calculation_policy(&[
+        Input { index: 0 },
+        Input { index: 1 },
+        SqrtProduct,
+        Emit,
+    ]));
+    let before = chain.snapshot();
+    assert_refused(
+        &chain.call(chain.config, &[&key(4), &key(5), &key(6)], &wrong),
+        "policy differs from canonical pool calculation",
+    );
+    assert_eq!(chain.snapshot(), before);
+    chain
+        .call(chain.config, &[&key(4), &key(5), &key(6)], &matching)
+        .expect("matching supply calculation creates the pool");
+    reference.create().expect("standard pool creation");
+    assert_eq!(chain.snapshot(), reference.snapshot());
+    chain.assert_reserves();
+}
+
+#[test]
+fn add_policy_matches_deposits_and_mint_and_rejects_wrong_amounts() {
+    use CalculationOp::{Emit, Input, Minimum, MulDivFloor, Output};
+
+    let mut reference = Chain::new();
+    let mut chain = Chain::new();
+    let request = |policy| Message::AddLiquidityWithPolicy {
+        user_holding_a: chain.user_a,
+        user_holding_b: chain.user_b,
+        user_holding_lp: chain.user_lp,
+        min_amount_liquidity: 1,
+        max_amount_to_add_token_a: 20_000,
+        max_amount_to_add_token_b: 20_000,
+        deadline: u64::MAX,
+        policy,
+    };
+    let wrong = request(calculation_policy(&[
+        Input { index: 2 },
+        Emit,
+        Input { index: 3 },
+        Emit,
+        Input { index: 4 },
+        Emit,
+    ]));
+    let matching = request(calculation_policy(&[
+        // min(max A, reserve A * max B / reserve B)
+        Input { index: 2 },
+        Input { index: 0 },
+        Input { index: 3 },
+        Input { index: 1 },
+        MulDivFloor,
+        Minimum,
+        Emit,
+        // min(max B, reserve B * max A / reserve A)
+        Input { index: 3 },
+        Input { index: 1 },
+        Input { index: 2 },
+        Input { index: 0 },
+        MulDivFloor,
+        Minimum,
+        Emit,
+        // min(supply * amount A / reserve A, supply * amount B / reserve B)
+        Input { index: 4 },
+        Output { index: 0 },
+        Input { index: 0 },
+        MulDivFloor,
+        Input { index: 4 },
+        Output { index: 1 },
+        Input { index: 1 },
+        MulDivFloor,
+        Minimum,
+        Emit,
+    ]));
+    let before = chain.snapshot();
+    assert_refused(
+        &chain.call(chain.pool, &[&key(4), &key(5)], &wrong),
+        "policy differs from canonical pool calculation",
+    );
+    assert_eq!(chain.snapshot(), before);
+    chain
+        .call(chain.pool, &[&key(4), &key(5)], &matching)
+        .expect("matching deposit and mint calculation");
+    reference
+        .call(
+            reference.pool,
+            &[&key(4), &key(5)],
+            &Message::AddLiquidity {
+                user_holding_a: reference.user_a,
+                user_holding_b: reference.user_b,
+                user_holding_lp: reference.user_lp,
+                min_amount_liquidity: 1,
+                max_amount_to_add_token_a: 20_000,
+                max_amount_to_add_token_b: 20_000,
+                deadline: u64::MAX,
+            },
+        )
+        .expect("standard add liquidity");
+    assert_eq!(chain.snapshot(), reference.snapshot());
+    chain.assert_reserves();
+}
+
+#[test]
+fn swap_policies_match_both_directions_and_reject_wrong_prices() {
+    use CalculationOp::{
+        Add, Emit, FeeDenominator, Input, MulDivCeil, MulDivFloor, Output, Subtract,
+    };
+
+    let exact_input = calculation_policy(&[
+        // Effective input = floor(gross * (fee denominator - fee bps) / fee denominator).
+        Input { index: 2 },
+        FeeDenominator,
+        Input { index: 3 },
+        Subtract,
+        FeeDenominator,
+        MulDivFloor,
+        Emit,
+        // Output = floor(reserve out * effective input / (reserve in + effective input)).
+        Input { index: 1 },
+        Output { index: 0 },
+        Input { index: 0 },
+        Output { index: 0 },
+        Add,
+        MulDivFloor,
+        Emit,
+    ]);
+    let exact_output = calculation_policy(&[
+        // Effective input rounds up on the inverse curve.
+        Input { index: 0 },
+        Input { index: 2 },
+        Input { index: 1 },
+        Input { index: 2 },
+        Subtract,
+        MulDivCeil,
+        Emit,
+        // Gross input rounds up again to account for the fee.
+        Output { index: 0 },
+        FeeDenominator,
+        FeeDenominator,
+        Input { index: 3 },
+        Subtract,
+        MulDivCeil,
+        Emit,
+    ]);
+    let wrong = calculation_policy(&[Input { index: 0 }, Emit, Input { index: 1 }, Emit]);
+    let mut reference = Chain::new();
+    let mut chain = Chain::new();
+    for a_to_b in [true, false] {
+        let (source, target, signer) = if a_to_b {
+            (chain.user_a, chain.user_b, key(4))
+        } else {
+            (chain.user_b, chain.user_a, key(5))
+        };
+        let input_request = |policy| Message::SwapExactInputWithPolicy {
+            user_input_holding: source,
+            user_output_holding: target,
+            swap_amount_in: 10_000,
+            min_amount_out: 1,
+            deadline: u64::MAX,
+            policy,
+        };
+        let before = chain.snapshot();
+        assert_refused(
+            &chain.call(chain.pool, &[&signer], &input_request(wrong)),
+            "policy differs from canonical pool calculation",
+        );
+        assert_eq!(chain.snapshot(), before);
+        chain
+            .call(chain.pool, &[&signer], &input_request(exact_input))
+            .expect("matching exact input policy");
+        reference
+            .call(
+                reference.pool,
+                &[&signer],
+                &reference.swap_in(a_to_b, 10_000),
+            )
+            .expect("standard exact input swap");
+        assert_eq!(chain.snapshot(), reference.snapshot());
+        chain.assert_reserves();
+
+        let output_request = |policy| Message::SwapExactOutputWithPolicy {
+            user_input_holding: source,
+            user_output_holding: target,
+            exact_amount_out: 750,
+            max_amount_in: 10_000,
+            deadline: u64::MAX,
+            policy,
+        };
+        let before = chain.snapshot();
+        assert_refused(
+            &chain.call(chain.pool, &[&signer], &output_request(wrong)),
+            "policy differs from canonical pool calculation",
+        );
+        assert_eq!(chain.snapshot(), before);
+        chain
+            .call(chain.pool, &[&signer], &output_request(exact_output))
+            .expect("matching exact output policy");
+        reference
+            .call(
+                reference.pool,
+                &[&signer],
+                &Message::SwapExactOutput {
+                    user_input_holding: source,
+                    user_output_holding: target,
+                    exact_amount_out: 750,
+                    max_amount_in: 10_000,
+                    deadline: u64::MAX,
+                },
+            )
+            .expect("standard exact output swap");
+        assert_eq!(chain.snapshot(), reference.snapshot());
+        chain.assert_reserves();
+    }
 }
 
 fn withdrawal_policy(first_input: WithdrawalOp) -> WithdrawalPolicy {

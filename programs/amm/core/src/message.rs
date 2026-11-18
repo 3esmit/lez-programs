@@ -1,7 +1,10 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::account::AccountId;
 
-use crate::{policy::WithdrawalPolicy, AmmConfig};
+use crate::{
+    policy::{CalculationPolicy, WithdrawalPolicy},
+    AmmConfig,
+};
 
 /// Public actor messages. NewDefinition goes to the config actor; other pool operations
 /// go to the pool actor. Initialization and admin
@@ -101,6 +104,52 @@ pub enum Message {
         min_amount_to_remove_token_b: u128,
         deadline: u64,
         policy: WithdrawalPolicy,
+    },
+    /// Calculate the initial LP supply from inputs [deposit A, deposit B].
+    /// The result must equal the canonical supply before the permanent lock.
+    NewDefinitionWithPolicy {
+        config: AccountId,
+        definition_token_a_id: AccountId,
+        definition_token_b_id: AccountId,
+        user_holding_a: AccountId,
+        user_holding_b: AccountId,
+        user_holding_lp: AccountId,
+        token_a_amount: u128,
+        token_b_amount: u128,
+        deadline: u64,
+        policy: CalculationPolicy,
+    },
+    /// Inputs are [reserve A, reserve B, max A, max B, current LP supply].
+    /// Outputs are [deposit A, deposit B, minted shares].
+    AddLiquidityWithPolicy {
+        user_holding_a: AccountId,
+        user_holding_b: AccountId,
+        user_holding_lp: AccountId,
+        min_amount_liquidity: u128,
+        max_amount_to_add_token_a: u128,
+        max_amount_to_add_token_b: u128,
+        deadline: u64,
+        policy: CalculationPolicy,
+    },
+    /// Inputs are [input reserve, output reserve, gross input, fee bps].
+    /// Outputs are [fee-adjusted input, output amount].
+    SwapExactInputWithPolicy {
+        user_input_holding: AccountId,
+        user_output_holding: AccountId,
+        swap_amount_in: u128,
+        min_amount_out: u128,
+        deadline: u64,
+        policy: CalculationPolicy,
+    },
+    /// Inputs are [input reserve, output reserve, exact output, fee bps].
+    /// Outputs are [fee-adjusted input, required gross input].
+    SwapExactOutputWithPolicy {
+        user_input_holding: AccountId,
+        user_output_holding: AccountId,
+        exact_amount_out: u128,
+        max_amount_in: u128,
+        deadline: u64,
+        policy: CalculationPolicy,
     },
 }
 

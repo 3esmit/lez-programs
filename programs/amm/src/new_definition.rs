@@ -14,12 +14,18 @@ pub(crate) fn forward(input: &ReceiveInput, state: Option<AmmState>, request: Me
         matches!(state, Some(AmmState::Config(_))),
         "pool creation goes to an initialized config"
     );
-    let Message::NewDefinition {
+    let (Message::NewDefinition {
         config,
         definition_token_a_id: a,
         definition_token_b_id: b,
         ..
-    } = request
+    }
+    | Message::NewDefinitionWithPolicy {
+        config,
+        definition_token_a_id: a,
+        definition_token_b_id: b,
+        ..
+    }) = request
     else {
         unreachable!("pool creation")
     };
@@ -40,7 +46,7 @@ pub(crate) fn forward(input: &ReceiveInput, state: Option<AmmState>, request: Me
 }
 
 pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
-    let Message::NewDefinition {
+    let (Message::NewDefinition {
         user_holding_a,
         user_holding_b,
         user_holding_lp,
@@ -49,7 +55,17 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         definition_token_a_id,
         definition_token_b_id,
         ..
-    } = pending.request
+    }
+    | Message::NewDefinitionWithPolicy {
+        user_holding_a,
+        user_holding_b,
+        user_holding_lp,
+        token_a_amount,
+        token_b_amount,
+        definition_token_a_id,
+        definition_token_b_id,
+        ..
+    }) = pending.request
     else {
         unreachable!("new pool continuation")
     };
@@ -86,6 +102,9 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         "pool does not match config and token pair"
     );
     let supply = isqrt_product(token_a_amount, token_b_amount);
+    if let Message::NewDefinitionWithPolicy { policy, .. } = &pending.request {
+        policy.assert_matches(&[token_a_amount, token_b_amount], [supply]);
+    }
     assert!(
         supply > MINIMUM_LIQUIDITY,
         "initial liquidity must exceed minimum liquidity lock"

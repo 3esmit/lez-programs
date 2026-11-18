@@ -300,6 +300,162 @@
           }
         }
       ]
+    },
+    {
+      "name": "NewDefinitionWithPolicy",
+      "tag": 13,
+      "docs": "Calculate the initial LP supply from inputs [deposit A, deposit B].\nThe result must equal the canonical supply before the permanent lock.",
+      "fields": [
+        {
+          "name": "config",
+          "type": "account_id"
+        },
+        {
+          "name": "definition_token_a_id",
+          "type": "account_id"
+        },
+        {
+          "name": "definition_token_b_id",
+          "type": "account_id"
+        },
+        {
+          "name": "user_holding_a",
+          "type": "account_id"
+        },
+        {
+          "name": "user_holding_b",
+          "type": "account_id"
+        },
+        {
+          "name": "user_holding_lp",
+          "type": "account_id"
+        },
+        {
+          "name": "token_a_amount",
+          "type": "u128"
+        },
+        {
+          "name": "token_b_amount",
+          "type": "u128"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        },
+        {
+          "name": "policy",
+          "type": {
+            "defined": "CalculationPolicy"
+          }
+        }
+      ]
+    },
+    {
+      "name": "AddLiquidityWithPolicy",
+      "tag": 14,
+      "docs": "Inputs are [reserve A, reserve B, max A, max B, current LP supply].\nOutputs are [deposit A, deposit B, minted shares].",
+      "fields": [
+        {
+          "name": "user_holding_a",
+          "type": "account_id"
+        },
+        {
+          "name": "user_holding_b",
+          "type": "account_id"
+        },
+        {
+          "name": "user_holding_lp",
+          "type": "account_id"
+        },
+        {
+          "name": "min_amount_liquidity",
+          "type": "u128"
+        },
+        {
+          "name": "max_amount_to_add_token_a",
+          "type": "u128"
+        },
+        {
+          "name": "max_amount_to_add_token_b",
+          "type": "u128"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        },
+        {
+          "name": "policy",
+          "type": {
+            "defined": "CalculationPolicy"
+          }
+        }
+      ]
+    },
+    {
+      "name": "SwapExactInputWithPolicy",
+      "tag": 15,
+      "docs": "Inputs are [input reserve, output reserve, gross input, fee bps].\nOutputs are [fee-adjusted input, output amount].",
+      "fields": [
+        {
+          "name": "user_input_holding",
+          "type": "account_id"
+        },
+        {
+          "name": "user_output_holding",
+          "type": "account_id"
+        },
+        {
+          "name": "swap_amount_in",
+          "type": "u128"
+        },
+        {
+          "name": "min_amount_out",
+          "type": "u128"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        },
+        {
+          "name": "policy",
+          "type": {
+            "defined": "CalculationPolicy"
+          }
+        }
+      ]
+    },
+    {
+      "name": "SwapExactOutputWithPolicy",
+      "tag": 16,
+      "docs": "Inputs are [input reserve, output reserve, exact output, fee bps].\nOutputs are [fee-adjusted input, required gross input].",
+      "fields": [
+        {
+          "name": "user_input_holding",
+          "type": "account_id"
+        },
+        {
+          "name": "user_output_holding",
+          "type": "account_id"
+        },
+        {
+          "name": "exact_amount_out",
+          "type": "u128"
+        },
+        {
+          "name": "max_amount_in",
+          "type": "u128"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        },
+        {
+          "name": "policy",
+          "type": {
+            "defined": "CalculationPolicy"
+          }
+        }
+      ]
     }
   ],
   "state": {
@@ -403,6 +559,74 @@
               }
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "CalculationOp",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "Nop"
+        },
+        {
+          "name": "Input",
+          "fields": [
+            {
+              "name": "index",
+              "type": "u8"
+            }
+          ]
+        },
+        {
+          "name": "FeeDenominator"
+        },
+        {
+          "name": "Add"
+        },
+        {
+          "name": "Subtract"
+        },
+        {
+          "name": "Minimum"
+        },
+        {
+          "name": "MulDivFloor"
+        },
+        {
+          "name": "MulDivCeil"
+        },
+        {
+          "name": "SqrtProduct"
+        },
+        {
+          "name": "Emit"
+        },
+        {
+          "name": "Output",
+          "fields": [
+            {
+              "name": "index",
+              "type": "u8"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "CalculationPolicy",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "ops",
+          "type": {
+            "array": [
+              {
+                "defined": "CalculationOp"
+              },
+              32
+            ]
+          }
         }
       ]
     },
@@ -807,6 +1031,154 @@
               "name": "policy",
               "type": {
                 "defined": "WithdrawalPolicy"
+              }
+            }
+          ]
+        },
+        {
+          "name": "NewDefinitionWithPolicy",
+          "fields": [
+            {
+              "name": "config",
+              "type": "account_id"
+            },
+            {
+              "name": "definition_token_a_id",
+              "type": "account_id"
+            },
+            {
+              "name": "definition_token_b_id",
+              "type": "account_id"
+            },
+            {
+              "name": "user_holding_a",
+              "type": "account_id"
+            },
+            {
+              "name": "user_holding_b",
+              "type": "account_id"
+            },
+            {
+              "name": "user_holding_lp",
+              "type": "account_id"
+            },
+            {
+              "name": "token_a_amount",
+              "type": "u128"
+            },
+            {
+              "name": "token_b_amount",
+              "type": "u128"
+            },
+            {
+              "name": "deadline",
+              "type": "u64"
+            },
+            {
+              "name": "policy",
+              "type": {
+                "defined": "CalculationPolicy"
+              }
+            }
+          ]
+        },
+        {
+          "name": "AddLiquidityWithPolicy",
+          "fields": [
+            {
+              "name": "user_holding_a",
+              "type": "account_id"
+            },
+            {
+              "name": "user_holding_b",
+              "type": "account_id"
+            },
+            {
+              "name": "user_holding_lp",
+              "type": "account_id"
+            },
+            {
+              "name": "min_amount_liquidity",
+              "type": "u128"
+            },
+            {
+              "name": "max_amount_to_add_token_a",
+              "type": "u128"
+            },
+            {
+              "name": "max_amount_to_add_token_b",
+              "type": "u128"
+            },
+            {
+              "name": "deadline",
+              "type": "u64"
+            },
+            {
+              "name": "policy",
+              "type": {
+                "defined": "CalculationPolicy"
+              }
+            }
+          ]
+        },
+        {
+          "name": "SwapExactInputWithPolicy",
+          "fields": [
+            {
+              "name": "user_input_holding",
+              "type": "account_id"
+            },
+            {
+              "name": "user_output_holding",
+              "type": "account_id"
+            },
+            {
+              "name": "swap_amount_in",
+              "type": "u128"
+            },
+            {
+              "name": "min_amount_out",
+              "type": "u128"
+            },
+            {
+              "name": "deadline",
+              "type": "u64"
+            },
+            {
+              "name": "policy",
+              "type": {
+                "defined": "CalculationPolicy"
+              }
+            }
+          ]
+        },
+        {
+          "name": "SwapExactOutputWithPolicy",
+          "fields": [
+            {
+              "name": "user_input_holding",
+              "type": "account_id"
+            },
+            {
+              "name": "user_output_holding",
+              "type": "account_id"
+            },
+            {
+              "name": "exact_amount_out",
+              "type": "u128"
+            },
+            {
+              "name": "max_amount_in",
+              "type": "u128"
+            },
+            {
+              "name": "deadline",
+              "type": "u64"
+            },
+            {
+              "name": "policy",
+              "type": {
+                "defined": "CalculationPolicy"
               }
             }
           ]

@@ -8,7 +8,9 @@ use token_core::{TokenHolding, TokenState};
 use crate::{actor, add, config, new_definition, remove, swap, sync};
 
 pub(crate) fn start(input: &ReceiveInput, state: Option<AmmState>, request: Message) -> Response {
-    let (config_id, pool) = if let Message::NewDefinition { config, .. } = &request {
+    let (config_id, pool) = if let Message::NewDefinition { config, .. }
+    | Message::NewDefinitionWithPolicy { config, .. } = &request
+    {
         assert!(state.is_none(), "pool already exists");
         (*config, None)
     } else {
@@ -19,11 +21,15 @@ pub(crate) fn start(input: &ReceiveInput, state: Option<AmmState>, request: Mess
     };
     let deadline = match &request {
         Message::NewDefinition { deadline, .. }
+        | Message::NewDefinitionWithPolicy { deadline, .. }
         | Message::AddLiquidity { deadline, .. }
+        | Message::AddLiquidityWithPolicy { deadline, .. }
         | Message::RemoveLiquidity { deadline, .. }
         | Message::RemoveLiquidityWithPolicy { deadline, .. }
         | Message::SwapExactInput { deadline, .. }
-        | Message::SwapExactOutput { deadline, .. } => Some(*deadline),
+        | Message::SwapExactInputWithPolicy { deadline, .. }
+        | Message::SwapExactOutput { deadline, .. }
+        | Message::SwapExactOutputWithPolicy { deadline, .. } => Some(*deadline),
         Message::SyncReserves
         | Message::CreatePriceObservations { .. }
         | Message::CreateOraclePriceAccount { .. } => None,
@@ -77,8 +83,19 @@ pub(crate) fn reply(input: &ReceiveInput, mut pending: Pending) -> Response {
                 user_holding_a,
                 user_holding_b,
                 ..
+            }
+            | Message::NewDefinitionWithPolicy {
+                user_holding_a,
+                user_holding_b,
+                ..
             } => vec![*user_holding_a, *user_holding_b],
             Message::AddLiquidity {
+                user_holding_a,
+                user_holding_b,
+                user_holding_lp,
+                ..
+            }
+            | Message::AddLiquidityWithPolicy {
                 user_holding_a,
                 user_holding_b,
                 user_holding_lp,
@@ -101,7 +118,17 @@ pub(crate) fn reply(input: &ReceiveInput, mut pending: Pending) -> Response {
                 user_output_holding,
                 ..
             }
+            | Message::SwapExactInputWithPolicy {
+                user_input_holding,
+                user_output_holding,
+                ..
+            }
             | Message::SwapExactOutput {
+                user_input_holding,
+                user_output_holding,
+                ..
+            }
+            | Message::SwapExactOutputWithPolicy {
                 user_input_holding,
                 user_output_holding,
                 ..
@@ -180,6 +207,7 @@ fn next(input: &ReceiveInput, mut pending: Pending) -> Response {
     if matches!(
         pending.request,
         Message::AddLiquidity { .. }
+            | Message::AddLiquidityWithPolicy { .. }
             | Message::RemoveLiquidity { .. }
             | Message::RemoveLiquidityWithPolicy { .. }
     ) {
@@ -211,14 +239,19 @@ fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         );
     }
     match pending.request {
-        Message::NewDefinition { .. } => new_definition::execute(input, pending),
-        Message::AddLiquidity { .. } => add::execute(input, pending),
+        Message::NewDefinition { .. } | Message::NewDefinitionWithPolicy { .. } => {
+            new_definition::execute(input, pending)
+        }
+        Message::AddLiquidity { .. } | Message::AddLiquidityWithPolicy { .. } => {
+            add::execute(input, pending)
+        }
         Message::RemoveLiquidity { .. } | Message::RemoveLiquidityWithPolicy { .. } => {
             remove::execute(input, pending)
         }
-        Message::SwapExactInput { .. } | Message::SwapExactOutput { .. } => {
-            swap::execute(input, pending)
-        }
+        Message::SwapExactInput { .. }
+        | Message::SwapExactInputWithPolicy { .. }
+        | Message::SwapExactOutput { .. }
+        | Message::SwapExactOutputWithPolicy { .. } => swap::execute(input, pending),
         Message::SyncReserves
         | Message::CreatePriceObservations { .. }
         | Message::CreateOraclePriceAccount { .. } => sync::execute(input, pending),

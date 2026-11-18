@@ -55,6 +55,13 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
             swap_amount_in,
             min_amount_out,
             ..
+        }
+        | Message::SwapExactInputWithPolicy {
+            user_input_holding,
+            user_output_holding,
+            swap_amount_in,
+            min_amount_out,
+            ..
         } => {
             let (effective, out) =
                 swap_exact_in_amounts(swap_amount_in, reserve_in, reserve_out, config.swap_fee_bps);
@@ -68,6 +75,13 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
             )
         }
         Message::SwapExactOutput {
+            user_input_holding,
+            user_output_holding,
+            exact_amount_out,
+            max_amount_in,
+            ..
+        }
+        | Message::SwapExactOutputWithPolicy {
             user_input_holding,
             user_output_holding,
             exact_amount_out,
@@ -93,7 +107,9 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         Message::Initialize { .. }
         | Message::UpdateConfig { .. }
         | Message::NewDefinition { .. }
+        | Message::NewDefinitionWithPolicy { .. }
         | Message::AddLiquidity { .. }
+        | Message::AddLiquidityWithPolicy { .. }
         | Message::RemoveLiquidity { .. }
         | Message::RemoveLiquidityWithPolicy { .. }
         | Message::SyncReserves
@@ -107,6 +123,18 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         "swap amounts must be nonzero"
     );
     assert!(source.balance >= amount_in, "insufficient input balance");
+    if let Message::SwapExactInputWithPolicy { policy, .. } = &pending.request {
+        policy.assert_matches(
+            &[reserve_in, reserve_out, amount_in, config.swap_fee_bps],
+            [effective, amount_out],
+        );
+    }
+    if let Message::SwapExactOutputWithPolicy { policy, .. } = &pending.request {
+        policy.assert_matches(
+            &[reserve_in, reserve_out, amount_out, config.swap_fee_bps],
+            [effective, amount_in],
+        );
+    }
     let swap_fee = amount_in
         .checked_sub(effective)
         .expect("effective input is at most gross input");

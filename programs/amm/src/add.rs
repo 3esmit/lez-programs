@@ -8,7 +8,7 @@ use crate::{
 };
 
 pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
-    let Message::AddLiquidity {
+    let (Message::AddLiquidity {
         user_holding_a,
         user_holding_b,
         user_holding_lp,
@@ -16,7 +16,16 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         max_amount_to_add_token_a: max_a,
         max_amount_to_add_token_b: max_b,
         ..
-    } = pending.request
+    }
+    | Message::AddLiquidityWithPolicy {
+        user_holding_a,
+        user_holding_b,
+        user_holding_lp,
+        min_amount_liquidity,
+        max_amount_to_add_token_a: max_a,
+        max_amount_to_add_token_b: max_b,
+        ..
+    }) = pending.request
     else {
         unreachable!("add continuation")
     };
@@ -46,6 +55,18 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         mul_div_floor(pool.liquidity_pool_supply, amount_b, pool.reserve_b),
     );
     assert!(liquidity >= min_amount_liquidity, "liquidity below minimum");
+    if let Message::AddLiquidityWithPolicy { policy, .. } = &pending.request {
+        policy.assert_matches(
+            &[
+                pool.reserve_a,
+                pool.reserve_b,
+                max_a,
+                max_b,
+                pool.liquidity_pool_supply,
+            ],
+            [amount_a, amount_b, liquidity],
+        );
+    }
     pool.liquidity_pool_supply = pool
         .liquidity_pool_supply
         .checked_add(liquidity)

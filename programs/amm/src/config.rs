@@ -41,11 +41,15 @@ pub(crate) fn forward(input: &ReceiveInput, message: Message) -> Response {
             },
         ),
         Message::NewDefinition { .. }
+        | Message::NewDefinitionWithPolicy { .. }
         | Message::AddLiquidity { .. }
+        | Message::AddLiquidityWithPolicy { .. }
         | Message::RemoveLiquidity { .. }
         | Message::RemoveLiquidityWithPolicy { .. }
         | Message::SwapExactInput { .. }
+        | Message::SwapExactInputWithPolicy { .. }
         | Message::SwapExactOutput { .. }
+        | Message::SwapExactOutputWithPolicy { .. }
         | Message::SyncReserves
         | Message::CreatePriceObservations { .. }
         | Message::CreateOraclePriceAccount { .. }

@@ -57,7 +57,9 @@ pub fn handle_message(input: &ReceiveInput) -> Response {
             Internal::ReadState => read_state(input),
             Internal::Complete => panic!("no settlement in progress"),
             Internal::NewPool { request } => {
-                let Message::NewDefinition { config, .. } = *request else {
+                let (Message::NewDefinition { config, .. }
+                | Message::NewDefinitionWithPolicy { config, .. }) = *request
+                else {
                     panic!("expected pool creation")
                 };
                 assert_eq!(
@@ -75,15 +77,20 @@ pub fn handle_message(input: &ReceiveInput) -> Response {
     let message: Message = borsh::from_slice(&input.message).expect("AMM message must decode");
     match message {
         Message::ReadState => read_state(input),
-        message @ Message::NewDefinition { .. } => new_definition::forward(input, state, message),
+        message @ (Message::NewDefinition { .. } | Message::NewDefinitionWithPolicy { .. }) => {
+            new_definition::forward(input, state, message)
+        }
         Message::Initialize { .. }
         | Message::UpdateConfig { .. }
         | Message::WithdrawProtocolFees { .. } => config::forward(input, message),
         message @ (Message::AddLiquidity { .. }
+        | Message::AddLiquidityWithPolicy { .. }
         | Message::RemoveLiquidity { .. }
         | Message::RemoveLiquidityWithPolicy { .. }
         | Message::SwapExactInput { .. }
+        | Message::SwapExactInputWithPolicy { .. }
         | Message::SwapExactOutput { .. }
+        | Message::SwapExactOutputWithPolicy { .. }
         | Message::SyncReserves
         | Message::CreatePriceObservations { .. }
         | Message::CreateOraclePriceAccount { .. }) => reads::start(input, state, message),
