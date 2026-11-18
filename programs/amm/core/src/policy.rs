@@ -5,7 +5,7 @@
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
-use crate::{isqrt_product, mul_div_ceil, mul_div_floor, FEE_BPS_DENOMINATOR};
+use crate::{isqrt_product, mul_div_ceil, mul_div_floor, spot_price_q64_64, FEE_BPS_DENOMINATOR};
 
 const STACK_LIMIT: usize = 4;
 
@@ -88,6 +88,8 @@ pub enum CalculationOp {
     Output {
         index: u8,
     },
+    /// Consume base and quote reserves in stack order and push the saturated Q64.64 spot price.
+    SpotPriceQ64_64,
 }
 
 /// A fixed-size arithmetic program with no jumps, state access, or message
@@ -160,6 +162,10 @@ fn evaluate<const N: usize>(
             CalculationOp::SqrtProduct => {
                 let rhs = pop(&mut stack);
                 isqrt_product(pop(&mut stack), rhs)
+            }
+            CalculationOp::SpotPriceQ64_64 => {
+                let quote = pop(&mut stack);
+                spot_price_q64_64(pop(&mut stack), quote)
             }
             CalculationOp::Emit => {
                 assert!(outputs.len() < N.min(3), "policy emitted too many outputs");

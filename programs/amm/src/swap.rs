@@ -113,8 +113,10 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         | Message::RemoveLiquidity { .. }
         | Message::RemoveLiquidityWithPolicy { .. }
         | Message::SyncReserves
+        | Message::SyncReservesWithPolicy { .. }
         | Message::CreatePriceObservations { .. }
         | Message::CreateOraclePriceAccount { .. }
+        | Message::CreateOraclePriceAccountWithPolicy { .. }
         | Message::WithdrawProtocolFees { .. }
         | Message::ReadState => unreachable!("swap continuation"),
     };

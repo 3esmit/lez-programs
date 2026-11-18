@@ -31,8 +31,10 @@ pub(crate) fn start(input: &ReceiveInput, state: Option<AmmState>, request: Mess
         | Message::SwapExactOutput { deadline, .. }
         | Message::SwapExactOutputWithPolicy { deadline, .. } => Some(*deadline),
         Message::SyncReserves
+        | Message::SyncReservesWithPolicy { .. }
         | Message::CreatePriceObservations { .. }
-        | Message::CreateOraclePriceAccount { .. } => None,
+        | Message::CreateOraclePriceAccount { .. }
+        | Message::CreateOraclePriceAccountWithPolicy { .. } => None,
         Message::Initialize { .. }
         | Message::UpdateConfig { .. }
         | Message::WithdrawProtocolFees { .. }
@@ -134,8 +136,10 @@ pub(crate) fn reply(input: &ReceiveInput, mut pending: Pending) -> Response {
                 ..
             } => vec![*user_input_holding, *user_output_holding],
             Message::SyncReserves
+            | Message::SyncReservesWithPolicy { .. }
             | Message::CreatePriceObservations { .. }
-            | Message::CreateOraclePriceAccount { .. } => vec![],
+            | Message::CreateOraclePriceAccount { .. }
+            | Message::CreateOraclePriceAccountWithPolicy { .. } => vec![],
             Message::Initialize { .. }
             | Message::UpdateConfig { .. }
             | Message::WithdrawProtocolFees { .. }
@@ -253,8 +257,10 @@ fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         | Message::SwapExactOutput { .. }
         | Message::SwapExactOutputWithPolicy { .. } => swap::execute(input, pending),
         Message::SyncReserves
+        | Message::SyncReservesWithPolicy { .. }
         | Message::CreatePriceObservations { .. }
-        | Message::CreateOraclePriceAccount { .. } => sync::execute(input, pending),
+        | Message::CreateOraclePriceAccount { .. }
+        | Message::CreateOraclePriceAccountWithPolicy { .. } => sync::execute(input, pending),
         Message::WithdrawProtocolFees { .. } => config::withdraw(input, pending),
         Message::Initialize { .. } | Message::UpdateConfig { .. } | Message::ReadState => {
             unreachable!("operation continuation")

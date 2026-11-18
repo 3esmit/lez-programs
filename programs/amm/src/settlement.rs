@@ -1,4 +1,7 @@
-use amm_core::{compute_pool_pda_seed, oracle, AmmConfig, AmmState, Internal, PoolDefinition};
+use amm_core::{
+    compute_pool_pda_seed, oracle, policy::CalculationPolicy, spot_price_q64_64, AmmConfig,
+    AmmState, Internal, PoolDefinition,
+};
 use lee_core::{
     account::{AccountId, Actor},
     program::{PdaSeed, ReceiveInput, Response, SyncMessage},
@@ -41,7 +44,20 @@ pub(crate) fn pool(
     pool: PoolDefinition,
     response: Response,
 ) -> Response {
-    let price = amm_core::spot_price_q64_64(pool.reserve_a, pool.reserve_b);
+    pool_with_policy(input, config, pool, None, response)
+}
+
+pub(crate) fn pool_with_policy(
+    input: &ReceiveInput,
+    config: &AmmConfig,
+    pool: PoolDefinition,
+    policy: Option<&CalculationPolicy>,
+    response: Response,
+) -> Response {
+    let price = spot_price_q64_64(pool.reserve_a, pool.reserve_b);
+    if let Some(policy) = policy {
+        policy.assert_matches(&[pool.reserve_a, pool.reserve_b], [price]);
+    }
     let response = response.send(oracle_call(
         input,
         config,

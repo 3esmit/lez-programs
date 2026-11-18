@@ -51,8 +51,10 @@ pub(crate) fn forward(input: &ReceiveInput, message: Message) -> Response {
         | Message::SwapExactOutput { .. }
         | Message::SwapExactOutputWithPolicy { .. }
         | Message::SyncReserves
+        | Message::SyncReservesWithPolicy { .. }
         | Message::CreatePriceObservations { .. }
         | Message::CreateOraclePriceAccount { .. }
+        | Message::CreateOraclePriceAccountWithPolicy { .. }
         | Message::ReadState => unreachable!("only admin messages are forwarded"),
     };
     Response::keep_state().send(SyncMessage::new(actor(input, to), &message).with_pda_seeds(seed))

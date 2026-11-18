@@ -456,6 +456,36 @@
           }
         }
       ]
+    },
+    {
+      "name": "SyncReservesWithPolicy",
+      "tag": 17,
+      "docs": "Inputs are [authenticated vault balance A, authenticated vault balance B].\nThe output must equal the new Q64.64 spot price after adopting both balances.",
+      "fields": [
+        {
+          "name": "policy",
+          "type": {
+            "defined": "CalculationPolicy"
+          }
+        }
+      ]
+    },
+    {
+      "name": "CreateOraclePriceAccountWithPolicy",
+      "tag": 18,
+      "docs": "Inputs are [recorded reserve A, recorded reserve B].\nThe output must equal the initial Q64.64 price for the oracle account.",
+      "fields": [
+        {
+          "name": "window_duration",
+          "type": "u64"
+        },
+        {
+          "name": "policy",
+          "type": {
+            "defined": "CalculationPolicy"
+          }
+        }
+      ]
     }
   ],
   "state": {
@@ -610,6 +640,9 @@
               "type": "u8"
             }
           ]
+        },
+        {
+          "name": "SpotPriceQ64_64"
         }
       ]
     },
@@ -1173,6 +1206,32 @@
             },
             {
               "name": "deadline",
+              "type": "u64"
+            },
+            {
+              "name": "policy",
+              "type": {
+                "defined": "CalculationPolicy"
+              }
+            }
+          ]
+        },
+        {
+          "name": "SyncReservesWithPolicy",
+          "fields": [
+            {
+              "name": "policy",
+              "type": {
+                "defined": "CalculationPolicy"
+              }
+            }
+          ]
+        },
+        {
+          "name": "CreateOraclePriceAccountWithPolicy",
+          "fields": [
+            {
+              "name": "window_duration",
               "type": "u64"
             },
             {

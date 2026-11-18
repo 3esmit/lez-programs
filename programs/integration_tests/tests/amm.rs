@@ -1079,6 +1079,103 @@ fn donations_are_synchronized_and_oracle_feeds_use_pool_prices() {
 }
 
 #[test]
+fn oracle_price_policies_match_their_reserve_sources_and_reject_reversed_prices() {
+    use CalculationOp::{Emit, Input, SpotPriceQ64_64};
+
+    let mut reference = Chain::new();
+    let mut chain = Chain::new();
+    let window_duration = 86_400_000;
+    for chain in [&mut reference, &mut chain] {
+        let vault = chain.pool().vault_a_id;
+        chain
+            .token_submit(
+                chain.user_a,
+                &[chain.user_a, vault],
+                &[&key(4)],
+                &TokenMessage::Transfer {
+                    to: vault,
+                    amount: 123,
+                },
+            )
+            .expect("donation");
+        chain
+            .call(
+                chain.pool,
+                &[],
+                &Message::CreatePriceObservations { window_duration },
+            )
+            .expect("observations");
+    }
+
+    let matching = calculation_policy(&[
+        Input { index: 0 },
+        Input { index: 1 },
+        SpotPriceQ64_64,
+        Emit,
+    ]);
+    let reversed = calculation_policy(&[
+        Input { index: 1 },
+        Input { index: 0 },
+        SpotPriceQ64_64,
+        Emit,
+    ]);
+    let create = |policy| Message::CreateOraclePriceAccountWithPolicy {
+        window_duration,
+        policy,
+    };
+    let before = chain.snapshot();
+    assert_refused(
+        &chain.call(chain.pool, &[], &create(reversed)),
+        "policy differs from canonical pool calculation",
+    );
+    assert_eq!(chain.snapshot(), before);
+    chain
+        .call(chain.pool, &[], &create(matching))
+        .expect("matching price account calculation");
+    reference
+        .call(
+            reference.pool,
+            &[],
+            &Message::CreateOraclePriceAccount { window_duration },
+        )
+        .expect("standard price account creation");
+    assert_eq!(chain.snapshot(), reference.snapshot());
+    assert_eq!(
+        chain.oracle().prices,
+        vec![oracle::Message::CreateOraclePriceAccount {
+            base_asset: chain.a,
+            quote_asset: chain.b,
+            initial_price: spot_price_q64_64(DEPOSIT_A, DEPOSIT_B),
+            window_duration,
+        }]
+    );
+
+    let sync = |policy| Message::SyncReservesWithPolicy { policy };
+    let before = chain.snapshot();
+    assert_refused(
+        &chain.call(chain.pool, &[], &sync(reversed)),
+        "policy differs from canonical pool calculation",
+    );
+    assert_eq!(chain.snapshot(), before);
+    let events = chain
+        .call(chain.pool, &[], &sync(matching))
+        .expect("matching post-sync price calculation");
+    reference
+        .call(reference.pool, &[], &Message::SyncReserves)
+        .expect("standard reserve synchronization");
+    assert_eq!(chain.snapshot(), reference.snapshot());
+    let synced_a = DEPOSIT_A + 123;
+    assert!(events.iter().any(|event| event.account_id == chain.amm
+        && matches!(
+            borsh::from_slice::<Event>(&event.event.data),
+            Ok(Event::ReservesSynced { reserve_a, reserve_b })
+                if reserve_a == synced_a && reserve_b == DEPOSIT_B
+        )));
+    assert_eq!(chain.oracle().price, spot_price_q64_64(synced_a, DEPOSIT_B));
+    chain.assert_reserves();
+}
+
+#[test]
 fn protocol_fee_withdrawal_follows_rotated_authority() {
     let mut chain = Chain::new();
     chain

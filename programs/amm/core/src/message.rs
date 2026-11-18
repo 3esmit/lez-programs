@@ -151,6 +151,17 @@ pub enum Message {
         deadline: u64,
         policy: CalculationPolicy,
     },
+    /// Inputs are [authenticated vault balance A, authenticated vault balance B].
+    /// The output must equal the new Q64.64 spot price after adopting both balances.
+    SyncReservesWithPolicy {
+        policy: CalculationPolicy,
+    },
+    /// Inputs are [recorded reserve A, recorded reserve B].
+    /// The output must equal the initial Q64.64 price for the oracle account.
+    CreateOraclePriceAccountWithPolicy {
+        window_duration: u64,
+        policy: CalculationPolicy,
+    },
 }
 
 /// Decoded only for messages from this AMM deployment. No generic forwarding or arbitrary

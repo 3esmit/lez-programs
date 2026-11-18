@@ -92,8 +92,12 @@ pub fn handle_message(input: &ReceiveInput) -> Response {
         | Message::SwapExactOutput { .. }
         | Message::SwapExactOutputWithPolicy { .. }
         | Message::SyncReserves
+        | Message::SyncReservesWithPolicy { .. }
         | Message::CreatePriceObservations { .. }
-        | Message::CreateOraclePriceAccount { .. }) => reads::start(input, state, message),
+        | Message::CreateOraclePriceAccount { .. }
+        | Message::CreateOraclePriceAccountWithPolicy { .. }) => {
+            reads::start(input, state, message)
+        }
     }
 }
 
