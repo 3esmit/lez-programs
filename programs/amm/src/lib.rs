@@ -17,6 +17,7 @@ use lee_core::{
 
 mod add;
 mod config;
+mod deposit;
 mod new_definition;
 mod reads;
 mod remove;
@@ -30,10 +31,16 @@ mod tests;
 pub fn handle_message(input: &ReceiveInput) -> Response {
     let state = AmmState::decode(&input.pre_state);
     if let Some(AmmState::Pending(pending)) = state {
-        return reads::reply(input, *pending);
+        return reads::reply(input, *pending, None);
     }
     if let Some(AmmState::ReadingLpSupply(pending)) = state {
         return reads::lp_supply_reply(input, *pending);
+    }
+    if let Some(AmmState::ReadingDepositConfig(pending)) = state {
+        return deposit::config_reply(input, *pending);
+    }
+    if let Some(AmmState::ReadingDepositHoldings(pending)) = state {
+        return reads::reply(input, pending.pending, Some(pending.input_definition));
     }
     if let Some(AmmState::Settling(next)) = state {
         assert_eq!(
@@ -71,6 +78,11 @@ pub fn handle_message(input: &ReceiveInput) -> Response {
             | Internal::UpdateConfig { .. }
             | Internal::WithdrawProtocolFees { .. }) => config::internal(input, state, message),
         };
+    }
+    if let (Some(AmmState::Pool(pool)), Some(sender)) = (&state, input.from) {
+        if sender.account_id == pool.vault_a_id || sender.account_id == pool.vault_b_id {
+            return deposit::start(input, pool.clone(), sender);
+        }
     }
     let message: Message = borsh::from_slice(&input.message).expect("AMM message must decode");
     match message {

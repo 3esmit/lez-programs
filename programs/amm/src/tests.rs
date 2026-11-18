@@ -237,3 +237,39 @@ fn lp_definition_read_authenticates_account_and_program_without_a_pda_grant() {
         assert!(std::panic::catch_unwind(|| handle_message(&call)).is_err());
     }
 }
+
+#[test]
+#[should_panic(expected = "deposit must come from the configured Token program")]
+fn callback_authenticates_token_deployment_before_decoding_the_receipt() {
+    let (a, b) = (AccountId::new([5; 32]), AccountId::new([6; 32]));
+    let config_id = amm_core::compute_config_pda(AMM, OWNER, [0; 32]);
+    let pool_id = amm_core::compute_pool_pda(AMM, config_id, a, b);
+    let vault_a_id = amm_core::compute_vault_pda(AMM, pool_id, a);
+    let pool = amm_core::PoolDefinition {
+        config_id,
+        definition_token_a_id: a,
+        definition_token_b_id: b,
+        vault_a_id,
+        vault_b_id: amm_core::compute_vault_pda(AMM, pool_id, b),
+        liquidity_pool_id: amm_core::compute_liquidity_token_pda(AMM, pool_id),
+        liquidity_pool_supply: 10_000,
+        reserve_a: 10_000,
+        reserve_b: 10_000,
+    };
+    let mut call = input(Some(AmmState::Pool(pool)), &());
+    call.receiver = Actor::new(pool_id, AMM);
+    call.from = Some(Actor::new(vault_a_id, ORACLE));
+
+    let response = handle_message(&call);
+    let [read] = response.sync_messages.as_slice() else {
+        panic!("one config read");
+    };
+    assert_eq!(read.to, Actor::new(config_id, AMM));
+    call.pre_state = response.post_state.expect("pending callback");
+    call.from = Some(read.to);
+    call.message = borsh::to_vec(&StateReply {
+        state: AmmState::Config(config()).encode().into(),
+    })
+    .expect("config reply encodes");
+    let _ = handle_message(&call);
+}

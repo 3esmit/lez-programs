@@ -15,6 +15,10 @@ pub enum AmmState {
     Settling(Box<AmmState>),
     /// Holdings are loaded; reconcile the LP definition's supply before pricing liquidity.
     ReadingLpSupply(Box<Pending>),
+    /// Read the pool configuration before decoding an incoming Token receipt.
+    ReadingDepositConfig(Box<DepositConfigRead>),
+    /// The deposit succeeded provisionally. Read only the other swap holdings.
+    ReadingDepositHoldings(Box<DepositHoldingsRead>),
 }
 
 impl AmmState {
@@ -76,4 +80,21 @@ pub struct Pending {
     pub expected_program: AccountId,
     pub remaining: Vec<AccountId>,
     pub holdings: Vec<Option<TokenHolding>>,
+}
+
+/// An untrusted receipt and its runtime sender, held while the pool reads its config.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct DepositConfigRead {
+    pub pool: PoolDefinition,
+    pub sender_account: AccountId,
+    pub sender_program: AccountId,
+    pub receipt: Vec<u8>,
+}
+
+/// Authenticated input for the exact-input continuation. The source holding has
+/// already been debited and is locked until the callback finishes.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct DepositHoldingsRead {
+    pub pending: Pending,
+    pub input_definition: AccountId,
 }

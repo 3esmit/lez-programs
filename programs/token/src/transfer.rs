@@ -40,10 +40,14 @@ pub(crate) fn increase_balance(
     definition: AccountId,
     amount: u128,
 ) -> Response {
-    let mut holding = match TokenState::decode(&input.pre_state) {
-        Some(TokenState::Holding(holding)) => holding,
+    let mut state = match TokenState::decode(&input.pre_state) {
+        Some(state @ (TokenState::Holding(_) | TokenState::AtomicTransfer { .. })) => state,
         None => panic!("recipient has no token holding; initialize it first"),
         Some(TokenState::Definition(_)) => panic!("recipient is a token definition"),
+    };
+    let holding = match &mut state {
+        TokenState::Holding(holding) | TokenState::AtomicTransfer { holding, .. } => holding,
+        TokenState::Definition(_) => unreachable!("a credit requires a holding"),
     };
     assert!(
         holding.definition_id == definition,
@@ -54,7 +58,7 @@ pub(crate) fn increase_balance(
         .checked_add(amount)
         .expect("balance overflow");
 
-    let response = Response::set_state(TokenState::Holding(holding).encode());
+    let response = Response::set_state(state.encode());
     // A credit from the definition is a mint, which the definition announced as `Minted`.
     if from.account_id == definition {
         return response;

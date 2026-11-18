@@ -92,6 +92,25 @@ pub enum Message {
     ReadState,
 }
 
+/// Borsh payload for Token's `TransferAndCallAtomic` to a pool vault. Set the
+/// callback account to the pool and the callback program to the AMM deployment.
+/// The authenticated Token receipt supplies the input asset and amount.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct SwapDeposit {
+    pub user_output_holding: AccountId,
+    pub min_amount_out: u128,
+    /// Last valid block timestamp in milliseconds (inclusive).
+    pub deadline: u64,
+}
+
+impl SwapDeposit {
+    /// Encode this payload for the `data` field of Token's `TransferAndCallAtomic`.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        borsh::to_vec(self).expect("swap deposit parameters encode")
+    }
+}
+
 /// Decoded only for messages from this AMM deployment. No generic forwarding or arbitrary
 /// seed grants: each privileged message is constructed by an authorized public handler.
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]

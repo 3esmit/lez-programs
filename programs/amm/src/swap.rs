@@ -2,7 +2,10 @@ use amm_core::{
     compute_protocol_fee_pda, compute_protocol_fee_pda_seed, compute_vault_pda_seed, event::Event,
     protocol_fee_amount, swap_exact_in_amounts, swap_exact_out_amounts, Message, Pending,
 };
-use lee_core::program::{ReceiveInput, Response};
+use lee_core::{
+    account::AccountId,
+    program::{ReceiveInput, Response},
+};
 use token_core::Message as TokenMessage;
 
 use crate::{
@@ -10,17 +13,25 @@ use crate::{
     settlement::{self, token_call},
 };
 
-pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
+pub(crate) fn execute(
+    input: &ReceiveInput,
+    pending: &Pending,
+    deposited_asset: Option<AccountId>,
+) -> Response {
     let mut pool = reads::pool(pending);
-    let [source, target, _, _] = pending.holdings.as_slice() else {
-        unreachable!("four holdings read")
+    let (token_in, source_balance, target) = match (deposited_asset, pending.holdings.as_slice()) {
+        (None, [source, target, _, _]) => {
+            let source = source.as_ref().expect("input holding must exist");
+            (source.definition_id, Some(source.balance), target)
+        }
+        (Some(definition), [target, _, _]) => (definition, None, target),
+        (_, _) => unreachable!("swap holdings read"),
     };
-    let source = source.as_ref().expect("input holding must exist");
-    let a_to_b = if source.definition_id == pool.definition_token_a_id {
+    let a_to_b = if token_in == pool.definition_token_a_id {
         true
     } else {
         assert_eq!(
-            source.definition_id, pool.definition_token_b_id,
+            token_in, pool.definition_token_b_id,
             "input token is not part of the pool"
         );
         false
@@ -105,7 +116,9 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         effective != 0 && amount_out != 0,
         "swap amounts must be nonzero"
     );
-    assert!(source.balance >= amount_in, "insufficient input balance");
+    if let Some(balance) = source_balance {
+        assert!(balance >= amount_in, "insufficient input balance");
+    }
     let swap_fee = amount_in
         .checked_sub(effective)
         .expect("effective input is at most gross input");
@@ -122,8 +135,9 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
     } else {
         (new_out, new_in)
     };
-    let mut response = Response::keep_state()
-        .send(token_call(
+    let mut response = Response::keep_state();
+    if deposited_asset.is_none() {
+        response = response.send(token_call(
             config,
             from,
             &TokenMessage::Transfer {
@@ -131,33 +145,31 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
                 amount: amount_in,
             },
             None,
-        ))
-        .send(token_call(
-            config,
-            vault_out,
-            &TokenMessage::Transfer {
-                to,
-                amount: amount_out,
-            },
-            Some(compute_vault_pda_seed(input.receiver.account_id, token_out)),
         ));
+    }
+    response = response.send(token_call(
+        config,
+        vault_out,
+        &TokenMessage::Transfer {
+            to,
+            amount: amount_out,
+        },
+        Some(compute_vault_pda_seed(input.receiver.account_id, token_out)),
+    ));
     if protocol_fee != 0 {
         let fee_holding = compute_protocol_fee_pda(
             input.receiver.program_account_id,
             pending.config_id,
-            source.definition_id,
+            token_in,
         );
         response = response
             .send(token_call(
                 config,
                 fee_holding,
                 &TokenMessage::InitializeHolding {
-                    definition: source.definition_id,
+                    definition: token_in,
                 },
-                Some(compute_protocol_fee_pda_seed(
-                    pending.config_id,
-                    source.definition_id,
-                )),
+                Some(compute_protocol_fee_pda_seed(pending.config_id, token_in)),
             ))
             .send(token_call(
                 config,
@@ -166,15 +178,12 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
                     to: fee_holding,
                     amount: protocol_fee,
                 },
-                Some(compute_vault_pda_seed(
-                    input.receiver.account_id,
-                    source.definition_id,
-                )),
+                Some(compute_vault_pda_seed(input.receiver.account_id, token_in)),
             ));
     }
     response = response.event(
         Event::Swapped {
-            token_in: source.definition_id,
+            token_in,
             amount_in,
             amount_out,
             protocol_fee,

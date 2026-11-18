@@ -1,4 +1,6 @@
-use amm_core::{AmmState, Internal, Message, Pending, PoolDefinition, MINIMUM_LIQUIDITY};
+use amm_core::{
+    AmmState, DepositHoldingsRead, Internal, Message, Pending, PoolDefinition, MINIMUM_LIQUIDITY,
+};
 use lee_core::{
     account::{AccountId, Actor},
     program::{ReceiveInput, Response, StateReply},
@@ -44,6 +46,10 @@ pub(crate) fn start(input: &ReceiveInput, state: Option<AmmState>, request: Mess
     };
     let response = Response::set_state(AmmState::Pending(Box::new(pending)).encode())
         .send_sync(expected, &Internal::ReadState);
+    with_deadline(response, deadline)
+}
+
+pub(crate) fn with_deadline(response: Response, deadline: Option<u64>) -> Response {
     // The former clock check accepted timestamp == deadline. An unbounded upper end
     // represents u64::MAX without overflowing its exclusive endpoint.
     match deadline.and_then(|value| value.checked_add(1)) {
@@ -64,7 +70,11 @@ fn state_reply(input: &ReceiveInput, pending: &Pending) -> StateReply {
     borsh::from_slice(&input.message).expect("state reply must decode")
 }
 
-pub(crate) fn reply(input: &ReceiveInput, mut pending: Pending) -> Response {
+pub(crate) fn reply(
+    input: &ReceiveInput,
+    mut pending: Pending,
+    deposited_asset: Option<AccountId>,
+) -> Response {
     let reply = state_reply(input, &pending);
     if pending.config.is_none() {
         let Some(AmmState::Config(config)) = AmmState::decode(&reply.state) else {
@@ -115,10 +125,12 @@ pub(crate) fn reply(input: &ReceiveInput, mut pending: Pending) -> Response {
     let holding = match TokenState::decode(&reply.state) {
         Some(TokenState::Holding(holding)) => Some(holding),
         None => None,
-        Some(TokenState::Definition(_)) => panic!("expected a token holding"),
+        Some(TokenState::Definition(_) | TokenState::AtomicTransfer { .. }) => {
+            panic!("expected a token holding")
+        }
     };
     pending.holdings.push(holding);
-    next(input, pending)
+    next(input, pending, deposited_asset)
 }
 
 pub(crate) fn lp_supply_reply(input: &ReceiveInput, mut pending: Pending) -> Response {
@@ -131,20 +143,33 @@ pub(crate) fn lp_supply_reply(input: &ReceiveInput, mut pending: Pending) -> Res
         .as_mut()
         .expect("liquidity operation has a pool")
         .liquidity_pool_supply = definition.total_supply;
-    execute(input, &pending)
+    execute(input, &pending, None)
 }
 
 pub(crate) fn holdings(
     input: &ReceiveInput,
+    pending: Pending,
+    accounts: Vec<AccountId>,
+) -> Response {
+    read_holdings(input, pending, accounts, None)
+}
+
+pub(crate) fn read_holdings(
+    input: &ReceiveInput,
     mut pending: Pending,
     mut accounts: Vec<AccountId>,
+    deposited_asset: Option<AccountId>,
 ) -> Response {
     accounts.reverse();
     pending.remaining = accounts;
-    next(input, pending)
+    next(input, pending, deposited_asset)
 }
 
-fn next(input: &ReceiveInput, mut pending: Pending) -> Response {
+fn next(
+    input: &ReceiveInput,
+    mut pending: Pending,
+    deposited_asset: Option<AccountId>,
+) -> Response {
     if let Some(account) = pending.remaining.pop() {
         let token = pending
             .config
@@ -154,19 +179,40 @@ fn next(input: &ReceiveInput, mut pending: Pending) -> Response {
         let expected = Actor::new(account, token);
         pending.expected_account = expected.account_id;
         pending.expected_program = expected.program_account_id;
-        return Response::set_state(AmmState::Pending(Box::new(pending)).encode())
+        let state = match deposited_asset {
+            None => AmmState::Pending(Box::new(pending)),
+            Some(input_definition) => {
+                AmmState::ReadingDepositHoldings(Box::new(DepositHoldingsRead {
+                    pending,
+                    input_definition,
+                }))
+            }
+        };
+        return Response::set_state(state.encode())
             .send_sync(expected, &token_core::Message::ReadState);
     }
     if let Some(pool) = &pending.pool {
         let [.., a, b] = pending.holdings.as_slice() else {
             unreachable!("vaults were read")
         };
+        let prior_balance = |snapshot, definition| {
+            let current = holding(snapshot, definition).balance;
+            if deposited_asset != Some(definition) {
+                return current;
+            }
+            let Message::SwapExactInput { swap_amount_in, .. } = pending.request else {
+                unreachable!("deposit only funds exact input swaps")
+            };
+            current
+                .checked_sub(swap_amount_in)
+                .expect("deposit exceeds vault balance")
+        };
         assert!(
-            holding(a, pool.definition_token_a_id).balance >= pool.reserve_a,
+            prior_balance(a, pool.definition_token_a_id) >= pool.reserve_a,
             "vault A is below reserve"
         );
         assert!(
-            holding(b, pool.definition_token_b_id).balance >= pool.reserve_b,
+            prior_balance(b, pool.definition_token_b_id) >= pool.reserve_b,
             "vault B is below reserve"
         );
     }
@@ -191,10 +237,14 @@ fn next(input: &ReceiveInput, mut pending: Pending) -> Response {
         return Response::set_state(AmmState::ReadingLpSupply(Box::new(pending)).encode())
             .send_sync(expected, &token_core::Message::ReadState);
     }
-    execute(input, &pending)
+    execute(input, &pending, deposited_asset)
 }
 
-fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
+fn execute(
+    input: &ReceiveInput,
+    pending: &Pending,
+    deposited_asset: Option<AccountId>,
+) -> Response {
     if let Some(pool) = &pending.pool {
         assert!(
             pool.liquidity_pool_supply >= MINIMUM_LIQUIDITY,
@@ -206,7 +256,7 @@ fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         Message::AddLiquidity { .. } => add::execute(input, pending),
         Message::RemoveLiquidity { .. } => remove::execute(input, pending),
         Message::SwapExactInput { .. } | Message::SwapExactOutput { .. } => {
-            swap::execute(input, pending)
+            swap::execute(input, pending, deposited_asset)
         }
         Message::SyncReserves
         | Message::CreatePriceObservations { .. }

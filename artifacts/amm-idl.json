@@ -362,6 +362,70 @@
               }
             }
           ]
+        },
+        {
+          "name": "ReadingDepositConfig",
+          "fields": [
+            {
+              "name": "0",
+              "type": {
+                "defined": "DepositConfigRead"
+              }
+            }
+          ]
+        },
+        {
+          "name": "ReadingDepositHoldings",
+          "fields": [
+            {
+              "name": "0",
+              "type": {
+                "defined": "DepositHoldingsRead"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "DepositConfigRead",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "pool",
+          "type": {
+            "defined": "PoolDefinition"
+          }
+        },
+        {
+          "name": "sender_account",
+          "type": "account_id"
+        },
+        {
+          "name": "sender_program",
+          "type": "account_id"
+        },
+        {
+          "name": "receipt",
+          "type": {
+            "vec": "u8"
+          }
+        }
+      ]
+    },
+    {
+      "name": "DepositHoldingsRead",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "pending",
+          "type": {
+            "defined": "Pending"
+          }
+        },
+        {
+          "name": "input_definition",
+          "type": "account_id"
         }
       ]
     },

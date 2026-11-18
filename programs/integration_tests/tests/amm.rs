@@ -4,7 +4,7 @@ use amm_core::{
     compute_config_pda, compute_liquidity_token_pda, compute_lp_lock_holding_pda, compute_pool_pda,
     compute_protocol_fee_pda, compute_vault_pda, event::Event, oracle, spot_price_q64_64,
     swap_exact_in_amounts, swap_exact_out_amounts, AmmConfig, AmmState, Message, PoolDefinition,
-    MINIMUM_LIQUIDITY,
+    SwapDeposit, MINIMUM_LIQUIDITY,
 };
 use integration_tests::{account, assert_refused, deploy, deploy_at, key, submit};
 use lee::{error::LeeError, PrivateKey, V03State};
@@ -270,6 +270,39 @@ impl Chain {
         }
     }
 
+    fn swap_deposit(
+        &mut self,
+        a_to_b: bool,
+        amount: u128,
+        min_amount_out: u128,
+    ) -> Result<Vec<TransactionEvent>, LeeError> {
+        let (source, target, definition, signer) = if a_to_b {
+            (self.user_a, self.user_b, self.a, key(4))
+        } else {
+            (self.user_b, self.user_a, self.b, key(5))
+        };
+        let message = TokenMessage::TransferAndCallAtomic {
+            to: compute_vault_pda(self.amm, self.pool, definition),
+            amount,
+            callback_account: self.pool,
+            callback_program: self.amm,
+            data: SwapDeposit {
+                user_output_holding: target,
+                min_amount_out,
+                deadline: u64::MAX,
+            }
+            .encode(),
+        };
+        let actors = self.actors();
+        submit(
+            &mut self.state,
+            Actor::new(source, self.token),
+            &actors,
+            &[&signer],
+            &message,
+        )
+    }
+
     fn snapshot(&self) -> Vec<(Actor, Vec<u8>)> {
         self.actors()
             .into_iter()
@@ -381,6 +414,78 @@ fn exact_input_and_output_in_both_directions_preserve_reserves_and_protocol_fees
         );
         chain.assert_reserves();
     }
+}
+
+#[test]
+fn callback_swaps_match_direct_swaps_in_both_directions() {
+    let mut direct = Chain::new();
+    let mut callback = Chain::new();
+
+    // A prior donation increases the vault balance without changing recorded reserves.
+    for chain in [&mut direct, &mut callback] {
+        let vault = chain.pool().vault_a_id;
+        chain
+            .token_submit(
+                chain.user_a,
+                &[chain.user_a, vault],
+                &[&key(4)],
+                &TokenMessage::Transfer {
+                    to: vault,
+                    amount: 500,
+                },
+            )
+            .expect("donate to the input vault");
+    }
+    for (a_to_b, key_byte) in [(true, 4), (false, 5)] {
+        let message = direct.swap_in(a_to_b, 10_000);
+        direct
+            .call(direct.pool, &[&key(key_byte)], &message)
+            .expect("direct swap");
+        callback
+            .swap_deposit(a_to_b, 10_000, 1)
+            .expect("swap after receiving the input");
+        assert_eq!(callback.snapshot(), direct.snapshot());
+        let pool = callback.pool();
+        assert_eq!(
+            callback.balance(pool.vault_a_id),
+            pool.reserve_a.checked_add(500).expect("vault balance")
+        );
+        assert_eq!(callback.balance(pool.vault_b_id), pool.reserve_b);
+    }
+}
+
+#[test]
+fn callback_swap_rejection_rolls_back_the_input_deposit() {
+    let mut chain = Chain::new();
+    let before = chain.snapshot();
+    assert_refused(
+        &chain.swap_deposit(true, 10_000, u128::MAX),
+        "output below minimum",
+    );
+    assert_eq!(chain.snapshot(), before);
+    chain
+        .swap_deposit(true, 10_000, 1)
+        .expect("retry after rollback");
+    chain.assert_reserves();
+}
+
+#[test]
+fn callback_oracle_failure_rolls_back_input_payout_and_fees() {
+    let mut chain = Chain::new();
+    let mut oracle = chain.oracle();
+    oracle.reject_updates = true;
+    let mut account = chain.state.get_account_by_id(chain.pool);
+    account.data.set_actor_state(
+        chain.oracle,
+        borsh::to_vec(&oracle).expect("mock state encodes").into(),
+    );
+    chain.state.force_insert_account(chain.pool, account);
+    let before = chain.snapshot();
+    assert_refused(
+        &chain.swap_deposit(true, 10_000, 1),
+        "mock oracle refused update",
+    );
+    assert_eq!(chain.snapshot(), before);
 }
 
 #[test]
