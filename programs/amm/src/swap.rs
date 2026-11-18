@@ -95,6 +95,7 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         | Message::NewDefinition { .. }
         | Message::AddLiquidity { .. }
         | Message::RemoveLiquidity { .. }
+        | Message::RemoveLiquidityQuoted { .. }
         | Message::SyncReserves
         | Message::CreatePriceObservations { .. }
         | Message::CreateOraclePriceAccount { .. }

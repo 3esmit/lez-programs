@@ -21,6 +21,7 @@ pub(crate) fn start(input: &ReceiveInput, state: Option<AmmState>, request: Mess
         Message::NewDefinition { deadline, .. }
         | Message::AddLiquidity { deadline, .. }
         | Message::RemoveLiquidity { deadline, .. }
+        | Message::RemoveLiquidityQuoted { deadline, .. }
         | Message::SwapExactInput { deadline, .. }
         | Message::SwapExactOutput { deadline, .. } => Some(*deadline),
         Message::SyncReserves
@@ -84,6 +85,12 @@ pub(crate) fn reply(input: &ReceiveInput, mut pending: Pending) -> Response {
                 ..
             }
             | Message::RemoveLiquidity {
+                user_holding_a,
+                user_holding_b,
+                user_holding_lp,
+                ..
+            }
+            | Message::RemoveLiquidityQuoted {
                 user_holding_a,
                 user_holding_b,
                 user_holding_lp,
@@ -172,7 +179,9 @@ fn next(input: &ReceiveInput, mut pending: Pending) -> Response {
     }
     if matches!(
         pending.request,
-        Message::AddLiquidity { .. } | Message::RemoveLiquidity { .. }
+        Message::AddLiquidity { .. }
+            | Message::RemoveLiquidity { .. }
+            | Message::RemoveLiquidityQuoted { .. }
     ) {
         let pool = pending
             .pool
@@ -204,7 +213,9 @@ fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
     match pending.request {
         Message::NewDefinition { .. } => new_definition::execute(input, pending),
         Message::AddLiquidity { .. } => add::execute(input, pending),
-        Message::RemoveLiquidity { .. } => remove::execute(input, pending),
+        Message::RemoveLiquidity { .. } | Message::RemoveLiquidityQuoted { .. } => {
+            remove::execute(input, pending)
+        }
         Message::SwapExactInput { .. } | Message::SwapExactOutput { .. } => {
             swap::execute(input, pending)
         }

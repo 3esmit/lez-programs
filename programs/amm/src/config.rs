@@ -43,6 +43,7 @@ pub(crate) fn forward(input: &ReceiveInput, message: Message) -> Response {
         Message::NewDefinition { .. }
         | Message::AddLiquidity { .. }
         | Message::RemoveLiquidity { .. }
+        | Message::RemoveLiquidityQuoted { .. }
         | Message::SwapExactInput { .. }
         | Message::SwapExactOutput { .. }
         | Message::SyncReserves

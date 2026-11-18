@@ -10,7 +10,7 @@ use crate::{
 };
 
 pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
-    let Message::RemoveLiquidity {
+    let (Message::RemoveLiquidity {
         user_holding_a,
         user_holding_b,
         user_holding_lp,
@@ -18,7 +18,16 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         min_amount_to_remove_token_a: min_a,
         min_amount_to_remove_token_b: min_b,
         ..
-    } = pending.request
+    }
+    | Message::RemoveLiquidityQuoted {
+        user_holding_a,
+        user_holding_b,
+        user_holding_lp,
+        remove_liquidity_amount: liquidity,
+        min_amount_to_remove_token_a: min_a,
+        min_amount_to_remove_token_b: min_b,
+        ..
+    }) = pending.request
     else {
         unreachable!("remove continuation")
     };
@@ -42,12 +51,26 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         liquidity <= unlocked,
         "cannot remove locked minimum liquidity"
     );
+    if let Message::RemoveLiquidityQuoted { quote, .. } = &pending.request {
+        assert_eq!(
+            (quote.reserve_a, quote.reserve_b, quote.lp_supply),
+            (pool.reserve_a, pool.reserve_b, pool.liquidity_pool_supply),
+            "stale liquidity removal quote"
+        );
+    }
     let amount_a = mul_div_floor(pool.reserve_a, liquidity, pool.liquidity_pool_supply);
     let amount_b = mul_div_floor(pool.reserve_b, liquidity, pool.liquidity_pool_supply);
     assert!(
         amount_a >= min_a && amount_b >= min_b,
         "withdrawal below minimum"
     );
+    if let Message::RemoveLiquidityQuoted { quote, .. } = &pending.request {
+        assert_eq!(
+            (quote.amount_a, quote.amount_b),
+            (amount_a, amount_b),
+            "liquidity removal quote has incorrect outputs"
+        );
+    }
     pool.liquidity_pool_supply = pool
         .liquidity_pool_supply
         .checked_sub(liquidity)

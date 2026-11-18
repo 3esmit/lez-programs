@@ -3,6 +3,18 @@ use lee_core::account::AccountId;
 
 use crate::AmmConfig;
 
+/// The pricing inputs and exact outputs proposed by a client for one removal.
+/// The reserves are the pool's recorded values, and the supply is the LP definition's
+/// current total supply. Excess vault balances do not affect the quote until sync.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct RemovalQuote {
+    pub reserve_a: u128,
+    pub reserve_b: u128,
+    pub lp_supply: u128,
+    pub amount_a: u128,
+    pub amount_b: u128,
+}
+
 /// Public actor messages. NewDefinition goes to the config actor; other pool operations
 /// go to the pool actor. Initialization and admin
 /// operations go to the authorized owner's/authority's AMM actor, which forwards them.
@@ -90,6 +102,18 @@ pub enum Message {
     },
     /// Reply to the sender with a `lee_core::program::StateReply`. Busy actors reject reads.
     ReadState,
+    /// Like RemoveLiquidity, with an exact quote. Reject stale pricing inputs or
+    /// incorrect outputs before settlement.
+    RemoveLiquidityQuoted {
+        user_holding_a: AccountId,
+        user_holding_b: AccountId,
+        user_holding_lp: AccountId,
+        remove_liquidity_amount: u128,
+        min_amount_to_remove_token_a: u128,
+        min_amount_to_remove_token_b: u128,
+        deadline: u64,
+        quote: RemovalQuote,
+    },
 }
 
 /// Decoded only for messages from this AMM deployment. No generic forwarding or arbitrary

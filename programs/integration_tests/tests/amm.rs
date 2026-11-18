@@ -4,7 +4,7 @@ use amm_core::{
     compute_config_pda, compute_liquidity_token_pda, compute_lp_lock_holding_pda, compute_pool_pda,
     compute_protocol_fee_pda, compute_vault_pda, event::Event, oracle, spot_price_q64_64,
     swap_exact_in_amounts, swap_exact_out_amounts, AmmConfig, AmmState, Message, PoolDefinition,
-    MINIMUM_LIQUIDITY,
+    RemovalQuote, MINIMUM_LIQUIDITY,
 };
 use integration_tests::{account, assert_refused, deploy, deploy_at, key, submit};
 use lee::{error::LeeError, PrivateKey, V03State};
@@ -270,6 +270,27 @@ impl Chain {
         }
     }
 
+    fn remove_quoted(&self, liquidity: u128) -> Message {
+        let pool = self.pool();
+        let lp_supply = self.lp_supply();
+        Message::RemoveLiquidityQuoted {
+            user_holding_a: self.user_a,
+            user_holding_b: self.user_b,
+            user_holding_lp: self.user_lp,
+            remove_liquidity_amount: liquidity,
+            min_amount_to_remove_token_a: 1,
+            min_amount_to_remove_token_b: 1,
+            deadline: u64::MAX,
+            quote: RemovalQuote {
+                reserve_a: pool.reserve_a,
+                reserve_b: pool.reserve_b,
+                lp_supply,
+                amount_a: amm_core::mul_div_floor(pool.reserve_a, liquidity, lp_supply),
+                amount_b: amm_core::mul_div_floor(pool.reserve_b, liquidity, lp_supply),
+            },
+        }
+    }
+
     fn snapshot(&self) -> Vec<(Actor, Vec<u8>)> {
         self.actors()
             .into_iter()
@@ -518,6 +539,133 @@ fn direct_lp_burns_donate_to_remaining_liquidity_holders() {
     assert_eq!(chain.balance(chain.user_lp), 0);
     assert_eq!(chain.pool().liquidity_pool_supply, MINIMUM_LIQUIDITY);
     chain.assert_reserves();
+}
+
+#[test]
+fn quoted_removal_rejects_a_stale_lp_supply_and_accepts_a_fresh_quote() {
+    let mut chain = Chain::new();
+    let liquidity = 10_000;
+    let stale = chain.remove_quoted(liquidity);
+    let definition = chain.pool().liquidity_pool_id;
+    chain
+        .token_submit(
+            chain.user_lp,
+            &[chain.user_lp, definition],
+            &[&key(6)],
+            &TokenMessage::Burn { amount: liquidity },
+        )
+        .expect("external burn");
+    let before = chain.snapshot();
+    assert_refused(
+        &chain.call(chain.pool, &[&key(6)], &stale),
+        "stale liquidity removal quote",
+    );
+    assert_eq!(chain.snapshot(), before);
+
+    let fresh = chain.remove_quoted(liquidity);
+    let Message::RemoveLiquidityQuoted { quote, .. } = &fresh else {
+        panic!("quoted removal");
+    };
+    let before_a = chain.balance(chain.user_a);
+    let before_b = chain.balance(chain.user_b);
+    let before_lp = chain.balance(chain.user_lp);
+    chain
+        .call(chain.pool, &[&key(6)], &fresh)
+        .expect("fresh quote settles");
+    assert_eq!(
+        chain.balance(chain.user_a),
+        before_a.checked_add(quote.amount_a).expect("A credit")
+    );
+    assert_eq!(
+        chain.balance(chain.user_b),
+        before_b.checked_add(quote.amount_b).expect("B credit")
+    );
+    assert_eq!(
+        chain.balance(chain.user_lp),
+        before_lp.checked_sub(liquidity).expect("LP debit")
+    );
+    chain.assert_reserves();
+}
+
+#[test]
+fn quoted_removal_ignores_vault_excess_until_reserves_sync() {
+    let mut chain = Chain::new();
+    let liquidity = 10_000;
+    let prior_quote = chain.remove_quoted(liquidity);
+    let donation = 10_000;
+    let vault_a = chain.pool().vault_a_id;
+    chain
+        .token_submit(
+            chain.user_a,
+            &[chain.user_a, vault_a],
+            &[&key(4)],
+            &TokenMessage::Transfer {
+                to: vault_a,
+                amount: donation,
+            },
+        )
+        .expect("deposit directly into vault");
+    assert_eq!(chain.pool().reserve_a, DEPOSIT_A);
+    chain
+        .call(chain.pool, &[&key(6)], &prior_quote)
+        .expect("unsynced donation does not affect the quote");
+    let old_reserve = chain.pool().reserve_a;
+    assert_eq!(
+        chain.balance(vault_a),
+        old_reserve.checked_add(donation).expect("vault excess")
+    );
+
+    let prior_quote = chain.remove_quoted(liquidity);
+    chain
+        .call(chain.pool, &[], &Message::SyncReserves)
+        .expect("sync");
+    assert_eq!(
+        chain.pool().reserve_a,
+        old_reserve.checked_add(donation).expect("synced reserve")
+    );
+    let before = chain.snapshot();
+    assert_refused(
+        &chain.call(chain.pool, &[&key(6)], &prior_quote),
+        "stale liquidity removal quote",
+    );
+    assert_eq!(chain.snapshot(), before);
+    chain.assert_reserves();
+}
+
+#[test]
+fn quoted_removal_rejects_an_incorrect_output_and_enforces_normal_guards() {
+    let mut chain = Chain::new();
+    let mut wrong = chain.remove_quoted(10_000);
+    let Message::RemoveLiquidityQuoted { quote, .. } = &mut wrong else {
+        panic!("quoted removal");
+    };
+    quote.amount_a = quote.amount_a.checked_add(1).expect("claimed extra A");
+    let before = chain.snapshot();
+    assert_refused(
+        &chain.call(chain.pool, &[&key(6)], &wrong),
+        "liquidity removal quote has incorrect outputs",
+    );
+
+    let mut excessive_minimum = chain.remove_quoted(10_000);
+    let Message::RemoveLiquidityQuoted {
+        min_amount_to_remove_token_a,
+        quote,
+        ..
+    } = &mut excessive_minimum
+    else {
+        panic!("quoted removal");
+    };
+    *min_amount_to_remove_token_a = quote.amount_a.checked_add(1).expect("excessive minimum");
+    assert_refused(
+        &chain.call(chain.pool, &[&key(6)], &excessive_minimum),
+        "withdrawal below minimum",
+    );
+    let valid = chain.remove_quoted(10_000);
+    assert_refused(
+        &chain.call(chain.pool, &[], &valid),
+        "holding must authorize the burn",
+    );
+    assert_eq!(chain.snapshot(), before);
 }
 
 #[test]

@@ -81,6 +81,7 @@ pub fn handle_message(input: &ReceiveInput) -> Response {
         | Message::WithdrawProtocolFees { .. } => config::forward(input, message),
         message @ (Message::AddLiquidity { .. }
         | Message::RemoveLiquidity { .. }
+        | Message::RemoveLiquidityQuoted { .. }
         | Message::SwapExactInput { .. }
         | Message::SwapExactOutput { .. }
         | Message::SyncReserves
