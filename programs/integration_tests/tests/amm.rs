@@ -312,6 +312,53 @@ fn creation_initializes_vaults_lp_lock_and_authenticated_oracle() {
 }
 
 #[test]
+fn public_read_state_replies_without_changing_the_amm_actor() {
+    let (state, ids) = deploy(&[
+        amm_methods::AMM_ELF,
+        token_methods::TOKEN_ELF,
+        oracle_mock_methods::ORACLE_MOCK_ELF,
+        oracle_mock_methods::READ_STATE_PROBE_ELF,
+    ]);
+    let [amm, token, oracle, probe] = ids.as_slice() else {
+        panic!("four guests deployed");
+    };
+    let mut chain = Chain::setup(state, *amm, *token, *oracle, 2_000);
+    chain.create().expect("pool created");
+    let before = chain.snapshot();
+    let caller = Actor::new(chain.user_a, *probe);
+
+    for account in [chain.config, chain.pool] {
+        let target = Actor::new(account, chain.amm);
+        let expected = chain
+            .state
+            .get_account_by_id(account)
+            .data
+            .actor_state(chain.amm)
+            .clone();
+        submit(&mut chain.state, caller, &[caller, target], &[], &target)
+            .expect("AMM replies to the calling actor");
+        assert_eq!(
+            chain
+                .state
+                .get_account_by_id(caller.account_id)
+                .data
+                .actor_state(caller.program_account_id),
+            &expected
+        );
+    }
+    assert_eq!(chain.snapshot(), before);
+}
+
+#[test]
+fn public_read_state_as_a_root_call_fails() {
+    let mut chain = Chain::new();
+    let before = chain.snapshot();
+    let result = chain.call(chain.pool, &[], &Message::ReadState);
+    assert_refused(&result, "ReadState needs a sender to reply to");
+    assert_eq!(chain.snapshot(), before);
+}
+
+#[test]
 fn exact_input_and_output_in_both_directions_preserve_reserves_and_protocol_fees() {
     let mut chain = Chain::new();
     for a_to_b in [true, false] {
