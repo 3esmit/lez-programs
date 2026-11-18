@@ -26,7 +26,9 @@ pub(crate) fn initialize_holding(input: &ReceiveInput, definition: AccountId) ->
         Some(TokenState::Holding(holding)) if holding.definition_id == definition => {
             Response::keep_state()
         }
-        Some(TokenState::Holding(_) | TokenState::Definition(_)) => {
+        Some(
+            TokenState::Holding(_) | TokenState::Definition(_) | TokenState::CheckedTransfer { .. },
+        ) => {
             panic!("account already holds another token state")
         }
     }
