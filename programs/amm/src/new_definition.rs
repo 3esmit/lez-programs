@@ -7,7 +7,10 @@ use amm_core::{
 use lee_core::program::{ReceiveInput, Response, SyncMessage};
 use token_core::Message as TokenMessage;
 
-use crate::settlement::{finish, oracle_call, token_call};
+use crate::{
+    coordinator,
+    settlement::{oracle_call, token_call},
+};
 
 pub(crate) fn forward(input: &ReceiveInput, state: Option<AmmState>, request: Message) -> Response {
     assert!(
@@ -180,5 +183,5 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
             }
             .to_program_event(),
         );
-    finish(input, AmmState::Pool(pool), response)
+    coordinator::settle(input, AmmState::Pool(pool), response)
 }

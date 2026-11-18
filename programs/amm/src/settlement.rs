@@ -1,8 +1,10 @@
-use amm_core::{compute_pool_pda_seed, oracle, AmmConfig, AmmState, Internal, PoolDefinition};
+use amm_core::{compute_pool_pda_seed, oracle, AmmConfig, AmmState, PoolDefinition};
 use lee_core::{
     account::{AccountId, Actor},
     program::{PdaSeed, ReceiveInput, Response, SyncMessage},
 };
+
+use crate::coordinator;
 
 pub(crate) fn token_call(
     config: &AmmConfig,
@@ -30,11 +32,6 @@ pub(crate) fn oracle_call(
     )])
 }
 
-pub(crate) fn finish(input: &ReceiveInput, state: AmmState, mut response: Response) -> Response {
-    response.post_state = Some(AmmState::Settling(Box::new(state)).encode().into());
-    response.send_sync(input.receiver, &Internal::Complete)
-}
-
 pub(crate) fn pool(
     input: &ReceiveInput,
     config: &AmmConfig,
@@ -48,5 +45,5 @@ pub(crate) fn pool(
         &pool,
         &oracle::Message::UpdateCurrentTick { price },
     ));
-    finish(input, AmmState::Pool(pool), response)
+    coordinator::settle(input, AmmState::Pool(pool), response)
 }

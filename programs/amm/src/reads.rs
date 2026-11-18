@@ -1,11 +1,15 @@
-use amm_core::{AmmState, Internal, Message, Pending, PoolDefinition, MINIMUM_LIQUIDITY};
+use amm_core::{AmmConfig, AmmState, Message, Pending, PoolDefinition, MINIMUM_LIQUIDITY};
 use lee_core::{
     account::{AccountId, Actor},
-    program::{ReceiveInput, Response, StateReply},
+    program::{ReceiveInput, Response},
 };
-use token_core::{TokenHolding, TokenState};
+use token_core::TokenHolding;
 
-use crate::{actor, add, config, new_definition, remove, swap, sync};
+use crate::{
+    actor, add, config,
+    coordinator::{ReadStep, ReadValue},
+    new_definition, remove, swap, sync,
+};
 
 pub(crate) fn start(input: &ReceiveInput, state: Option<AmmState>, request: Message) -> Response {
     let (config_id, pool) = if let Message::NewDefinition { config, .. } = &request {
@@ -42,8 +46,7 @@ pub(crate) fn start(input: &ReceiveInput, state: Option<AmmState>, request: Mess
         remaining: vec![],
         holdings: vec![],
     };
-    let response = Response::set_state(AmmState::Pending(Box::new(pending)).encode())
-        .send_sync(expected, &Internal::ReadState);
+    let response = ReadStep::Config.ask(expected, pending);
     // The former clock check accepted timestamp == deadline. An unbounded upper end
     // represents u64::MAX without overflowing its exclusive endpoint.
     match deadline.and_then(|value| value.checked_add(1)) {
@@ -52,86 +55,66 @@ pub(crate) fn start(input: &ReceiveInput, state: Option<AmmState>, request: Mess
     }
 }
 
-fn state_reply(input: &ReceiveInput, pending: &Pending) -> StateReply {
-    assert_eq!(
-        input.from,
-        Some(Actor::new(
-            pending.expected_account,
-            pending.expected_program
-        )),
-        "unexpected AMM state reply sender"
-    );
-    borsh::from_slice(&input.message).expect("state reply must decode")
-}
-
-pub(crate) fn reply(input: &ReceiveInput, mut pending: Pending) -> Response {
-    let reply = state_reply(input, &pending);
-    if pending.config.is_none() {
-        let Some(AmmState::Config(config)) = AmmState::decode(&reply.state) else {
-            panic!("AMM config must be initialized")
-        };
-        pending.config = Some(config);
-        let mut accounts = match &pending.request {
-            Message::NewDefinition {
-                user_holding_a,
-                user_holding_b,
-                ..
-            } => vec![*user_holding_a, *user_holding_b],
-            Message::AddLiquidity {
-                user_holding_a,
-                user_holding_b,
-                user_holding_lp,
-                ..
-            }
-            | Message::RemoveLiquidity {
-                user_holding_a,
-                user_holding_b,
-                user_holding_lp,
-                ..
-            } => vec![*user_holding_a, *user_holding_b, *user_holding_lp],
-            Message::SwapExactInput {
-                user_input_holding,
-                user_output_holding,
-                ..
-            }
-            | Message::SwapExactOutput {
-                user_input_holding,
-                user_output_holding,
-                ..
-            } => vec![*user_input_holding, *user_output_holding],
-            Message::SyncReserves
-            | Message::CreatePriceObservations { .. }
-            | Message::CreateOraclePriceAccount { .. } => vec![],
-            Message::Initialize { .. }
-            | Message::UpdateConfig { .. }
-            | Message::WithdrawProtocolFees { .. }
-            | Message::ReadState => unreachable!("pool operation"),
-        };
-        if let Some(pool) = &pending.pool {
-            accounts.extend([pool.vault_a_id, pool.vault_b_id]);
+pub(crate) fn resume(input: &ReceiveInput, mut pending: Pending, step: ReadStep) -> Response {
+    match step.receive(input, &pending) {
+        ReadValue::Config(config) => config_reply(input, pending, config),
+        ReadValue::Holding(holding) => {
+            pending.holdings.push(holding);
+            next(input, pending)
         }
-        return holdings(input, pending, accounts);
+        ReadValue::LpSupply(supply) => {
+            pending
+                .pool
+                .as_mut()
+                .expect("liquidity operation has a pool")
+                .liquidity_pool_supply = supply;
+            execute(input, &pending)
+        }
     }
-    let holding = match TokenState::decode(&reply.state) {
-        Some(TokenState::Holding(holding)) => Some(holding),
-        None => None,
-        Some(TokenState::Definition(_)) => panic!("expected a token holding"),
-    };
-    pending.holdings.push(holding);
-    next(input, pending)
 }
 
-pub(crate) fn lp_supply_reply(input: &ReceiveInput, mut pending: Pending) -> Response {
-    let reply = state_reply(input, &pending);
-    let Some(TokenState::Definition(definition)) = TokenState::decode(&reply.state) else {
-        panic!("LP token definition must be initialized")
+fn config_reply(input: &ReceiveInput, mut pending: Pending, config: AmmConfig) -> Response {
+    pending.config = Some(config);
+    let mut accounts = match &pending.request {
+        Message::NewDefinition {
+            user_holding_a,
+            user_holding_b,
+            ..
+        } => vec![*user_holding_a, *user_holding_b],
+        Message::AddLiquidity {
+            user_holding_a,
+            user_holding_b,
+            user_holding_lp,
+            ..
+        }
+        | Message::RemoveLiquidity {
+            user_holding_a,
+            user_holding_b,
+            user_holding_lp,
+            ..
+        } => vec![*user_holding_a, *user_holding_b, *user_holding_lp],
+        Message::SwapExactInput {
+            user_input_holding,
+            user_output_holding,
+            ..
+        }
+        | Message::SwapExactOutput {
+            user_input_holding,
+            user_output_holding,
+            ..
+        } => vec![*user_input_holding, *user_output_holding],
+        Message::SyncReserves
+        | Message::CreatePriceObservations { .. }
+        | Message::CreateOraclePriceAccount { .. } => vec![],
+        Message::Initialize { .. }
+        | Message::UpdateConfig { .. }
+        | Message::WithdrawProtocolFees { .. }
+        | Message::ReadState => unreachable!("pool operation"),
     };
-    pending
-        .pool
-        .as_mut()
-        .expect("liquidity operation has a pool")
-        .liquidity_pool_supply = definition.total_supply;
-    execute(input, &pending)
+    if let Some(pool) = &pending.pool {
+        accounts.extend([pool.vault_a_id, pool.vault_b_id]);
+    }
+    holdings(input, pending, accounts)
 }
 
 pub(crate) fn holdings(
@@ -151,11 +134,7 @@ fn next(input: &ReceiveInput, mut pending: Pending) -> Response {
             .as_ref()
             .expect("config was read")
             .token_program_id;
-        let expected = Actor::new(account, token);
-        pending.expected_account = expected.account_id;
-        pending.expected_program = expected.program_account_id;
-        return Response::set_state(AmmState::Pending(Box::new(pending)).encode())
-            .send_sync(expected, &token_core::Message::ReadState);
+        return ReadStep::Holding.ask(Actor::new(account, token), pending);
     }
     if let Some(pool) = &pending.pool {
         let [.., a, b] = pending.holdings.as_slice() else {
@@ -184,12 +163,9 @@ fn next(input: &ReceiveInput, mut pending: Pending) -> Response {
             .expect("config was read")
             .token_program_id;
         let expected = Actor::new(pool.liquidity_pool_id, token);
-        pending.expected_account = expected.account_id;
-        pending.expected_program = expected.program_account_id;
         // LP holders may burn directly through token. Read its authoritative supply
         // without granting the mint-authority seed to this read-only operation.
-        return Response::set_state(AmmState::ReadingLpSupply(Box::new(pending)).encode())
-            .send_sync(expected, &token_core::Message::ReadState);
+        return ReadStep::LpSupply.ask(expected, pending);
     }
     execute(input, &pending)
 }

@@ -5,7 +5,7 @@ use amm_core::{
 };
 use lee_core::program::{ReceiveInput, Response, SyncMessage};
 
-use crate::{actor, reads, settlement};
+use crate::{actor, coordinator, reads, settlement};
 
 pub(crate) fn forward(input: &ReceiveInput, message: Message) -> Response {
     assert!(input.is_authorized, "AMM owner or authority must authorize");
@@ -171,5 +171,5 @@ pub(crate) fn withdraw(input: &ReceiveInput, pending: &Pending) -> Response {
             }
             .to_program_event(),
         );
-    settlement::finish(input, AmmState::Config(config.clone()), response)
+    coordinator::settle(input, AmmState::Config(config.clone()), response)
 }

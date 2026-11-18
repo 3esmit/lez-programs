@@ -1,7 +1,7 @@
 use amm_core::{event::Event, oracle, spot_price_q64_64, AmmState, Message, Pending};
 use lee_core::program::{ReceiveInput, Response};
 
-use crate::{reads, settlement};
+use crate::{coordinator, reads, settlement};
 
 pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
     let mut pool = reads::pool(pending);
@@ -57,5 +57,5 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
     };
     let response =
         Response::keep_state().send(settlement::oracle_call(input, config, &pool, &message));
-    settlement::finish(input, AmmState::Pool(pool), response)
+    coordinator::settle(input, AmmState::Pool(pool), response)
 }

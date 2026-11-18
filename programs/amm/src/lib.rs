@@ -17,6 +17,7 @@ use lee_core::{
 
 mod add;
 mod config;
+mod coordinator;
 mod new_definition;
 mod reads;
 mod remove;
@@ -30,25 +31,14 @@ mod tests;
 pub fn handle_message(input: &ReceiveInput) -> Response {
     let state = AmmState::decode(&input.pre_state);
     if let Some(AmmState::Pending(pending)) = state {
-        return reads::reply(input, *pending);
+        let step = coordinator::ReadStep::pending(&pending);
+        return reads::resume(input, *pending, step);
     }
     if let Some(AmmState::ReadingLpSupply(pending)) = state {
-        return reads::lp_supply_reply(input, *pending);
+        return reads::resume(input, *pending, coordinator::ReadStep::LpSupply);
     }
     if let Some(AmmState::Settling(next)) = state {
-        assert_eq!(
-            input.from,
-            Some(input.receiver),
-            "AMM operation is settling"
-        );
-        let message: Internal =
-            borsh::from_slice(&input.message).expect("AMM internal message must decode");
-        assert_eq!(
-            message,
-            Internal::Complete,
-            "expected settlement completion"
-        );
-        return Response::set_state(next.encode());
+        return coordinator::complete(input, &next);
     }
     if input.from_own_program() {
         let message: Internal =
