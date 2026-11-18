@@ -1,81 +1,124 @@
-//! The AMM Program implementation.
+//! Constant-product AMM on LEZ's actor interface.
+//!
+//! Config and pool actors own their state. A pool reads the config, holdings and LP supply
+//! through synchronous, sender-authenticated `StateReply` conversations. It then emits
+//! token messages with narrowly scoped PDA grants. Declaring each vault/destination via
+//! a synchronous read or initialization ensures token credits settle atomically.
+//!
+//! Pending reads and settlement lock the actor against reentrancy. A refusal anywhere
+//! rolls back the transaction, including the lock, transfers and oracle notifications.
 
 pub use amm_core as core;
+use amm_core::{AmmState, DepositFunding, Internal, Message};
+use lee_core::{
+    account::{AccountId, Actor},
+    program::{ReceiveInput, Response, StateReply},
+};
 
-pub mod add;
-pub mod create_oracle_price_account;
-pub mod create_price_observations;
-pub mod initialize;
-pub mod new_definition;
-pub mod remove;
-pub mod swap;
-pub mod sync;
-pub mod update_config;
-pub mod withdraw_protocol_fees;
-
+mod add;
+mod config;
+mod deposit;
+mod new_definition;
+mod reads;
+mod remove;
+mod settlement;
+mod swap;
+mod sync;
+#[cfg(test)]
 mod tests;
 
-/// Test-only view of what an [`AccountStateDiff`] leaves behind.
-///
-/// Since LEZ v0.2.5 a diff carries a *change* rather than a whole post-state account:
-/// `post_data` is `None` when the data is untouched, and ownership is not in the diff at
-/// all — the runtime derives it (see `acquire_ownership_on_data_write`). These mirror that
-/// derivation so assertions can stay written in terms of the resulting account.
-/// `pub` only so an accessor no single program happens to use is not dead code; the whole
-/// trait is `#[cfg(test)]`, so it never exists in a real build.
-#[cfg(test)]
-pub trait StateDiffExt {
-    /// The data the account ends up with.
-    fn post_data(&self) -> &lee_core::account::Data;
-
-    /// The owner the account ends up with: writing data to a default-owned account makes
-    /// `executing_account_id` its owner.
-    fn post_owner(
-        &self,
-        executing_account_id: lee_core::account::AccountId,
-    ) -> lee_core::account::AccountId;
-
-    /// Whether this diff changes the account's data at all.
-    fn writes_data(&self) -> bool;
-
-    /// The whole account the diff leaves behind, via the runtime's own `post_state`.
-    fn post_account(
-        &self,
-        executing_account_id: lee_core::account::AccountId,
-    ) -> lee_core::account::Account;
-}
-
-#[cfg(test)]
-impl StateDiffExt for lee_core::program::AccountStateDiff {
-    fn post_data(&self) -> &lee_core::account::Data {
-        self.post_data
-            .as_ref()
-            .unwrap_or(&self.pre_state.account.data)
+/// Dispatch one actor message, authenticating internal messages and outstanding replies.
+pub fn handle_message(input: &ReceiveInput) -> Response {
+    let state = AmmState::decode(&input.pre_state);
+    if let Some(AmmState::Pending(pending)) = state {
+        return reads::reply(input, *pending, None);
     }
-
-    fn post_owner(
-        &self,
-        executing_account_id: lee_core::account::AccountId,
-    ) -> lee_core::account::AccountId {
-        let pre = &self.pre_state.account;
-        if pre.program_owner == lee_core::program::DEFAULT_PROGRAM_OWNER && self.writes_data() {
-            executing_account_id
-        } else {
-            pre.program_owner
+    if let Some(AmmState::ReadingLpSupply(pending)) = state {
+        return reads::lp_supply_reply(input, *pending, None);
+    }
+    if let Some(AmmState::ReadingDepositConfig(pending)) = state {
+        return deposit::config_reply(input, *pending);
+    }
+    if let Some(AmmState::ReadingDepositHoldings(pending)) = state {
+        let Message::SwapExactInput { swap_amount_in, .. } = pending.pending.request else {
+            unreachable!("legacy deposit only funds exact input swaps")
+        };
+        let funding = DepositFunding {
+            definition: pending.input_definition,
+            amount: swap_amount_in,
+        };
+        return reads::reply(input, pending.pending, Some(funding));
+    }
+    if let Some(AmmState::ReadingFundedHoldings(pending)) = state {
+        return reads::reply(input, pending.pending, Some(pending.funding));
+    }
+    if let Some(AmmState::ReadingFundedLpSupply(pending)) = state {
+        return reads::lp_supply_reply(input, pending.pending, Some(pending.funding));
+    }
+    if let Some(AmmState::Settling(next)) = state {
+        assert_eq!(
+            input.from,
+            Some(input.receiver),
+            "AMM operation is settling"
+        );
+        let message: Internal =
+            borsh::from_slice(&input.message).expect("AMM internal message must decode");
+        assert_eq!(
+            message,
+            Internal::Complete,
+            "expected settlement completion"
+        );
+        return Response::set_state(next.encode());
+    }
+    if input.from_own_program() {
+        let message: Internal =
+            borsh::from_slice(&input.message).expect("AMM internal message must decode");
+        return match message {
+            Internal::ReadState => read_state(input),
+            Internal::Complete => panic!("no settlement in progress"),
+            Internal::NewPool { request } => {
+                let Message::NewDefinition { config, .. } = *request else {
+                    panic!("expected pool creation")
+                };
+                assert_eq!(
+                    input.from,
+                    Some(actor(input, config)),
+                    "pool creation must come from its config"
+                );
+                reads::start(input, state, *request)
+            }
+            message @ (Internal::InitializeConfig { .. }
+            | Internal::UpdateConfig { .. }
+            | Internal::WithdrawProtocolFees { .. }) => config::internal(input, state, message),
+        };
+    }
+    if let (Some(AmmState::Pool(pool)), Some(sender)) = (&state, input.from) {
+        if sender.account_id == pool.vault_a_id || sender.account_id == pool.vault_b_id {
+            return deposit::start(input, pool.clone(), sender);
         }
     }
-
-    fn writes_data(&self) -> bool {
-        self.post_data
-            .as_ref()
-            .is_some_and(|data| *data != self.pre_state.account.data)
+    let message: Message = borsh::from_slice(&input.message).expect("AMM message must decode");
+    match message {
+        Message::ReadState => read_state(input),
+        message @ Message::NewDefinition { .. } => new_definition::forward(input, state, message),
+        Message::Initialize { .. }
+        | Message::UpdateConfig { .. }
+        | Message::WithdrawProtocolFees { .. } => config::forward(input, message),
+        message @ (Message::AddLiquidity { .. }
+        | Message::RemoveLiquidity { .. }
+        | Message::SwapExactInput { .. }
+        | Message::SwapExactOutput { .. }
+        | Message::SyncReserves
+        | Message::CreatePriceObservations { .. }
+        | Message::CreateOraclePriceAccount { .. }) => reads::start(input, state, message),
     }
+}
 
-    fn post_account(
-        &self,
-        executing_account_id: lee_core::account::AccountId,
-    ) -> lee_core::account::Account {
-        lee_core::program::post_state(self, executing_account_id)
-            .expect("balance diff must apply to the pre-state balance")
-    }
+fn actor(input: &ReceiveInput, account_id: AccountId) -> Actor {
+    Actor::new(account_id, input.receiver.program_account_id)
+}
+
+fn read_state(input: &ReceiveInput) -> Response {
+    let reader = input.from.expect("ReadState needs a sender to reply to");
+    Response::keep_state().send_sync(reader, &StateReply::from(input))
 }

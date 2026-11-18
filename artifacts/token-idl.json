@@ -105,6 +105,35 @@
       "name": "ReadState",
       "tag": 6,
       "docs": "Reply to the sender with this actor's state, as a `lee_core::program::StateReply`."
+    },
+    {
+      "name": "TransferAndCallAtomic",
+      "tag": 7,
+      "docs": "Transfer and invoke a recipient hook in the same transaction, or revert application\neffects. The hook runs after the credit and receives `TokensReceived`, not raw `data`.\nIt must belong to another program. Required actors must participate immediately.\nThe credit drops inherited PDA grants; transaction credentials remain available.",
+      "fields": [
+        {
+          "name": "to",
+          "type": "account_id"
+        },
+        {
+          "name": "amount",
+          "type": "u128"
+        },
+        {
+          "name": "callback_account",
+          "type": "account_id"
+        },
+        {
+          "name": "callback_program",
+          "type": "account_id"
+        },
+        {
+          "name": "data",
+          "type": {
+            "vec": "u8"
+          }
+        }
+      ]
     }
   ],
   "state": {
@@ -292,6 +321,25 @@
               "type": {
                 "defined": "TokenHolding"
               }
+            }
+          ]
+        },
+        {
+          "name": "AtomicTransfer",
+          "fields": [
+            {
+              "name": "holding",
+              "type": {
+                "defined": "TokenHolding"
+              }
+            },
+            {
+              "name": "destination",
+              "type": "account_id"
+            },
+            {
+              "name": "acknowledged",
+              "type": "bool"
             }
           ]
         }
